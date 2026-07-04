@@ -1,0 +1,82 @@
+import { describe, expect, it } from "vitest";
+import { extractTranscriptLinks, findFeedItem } from "./resolver.js";
+import { rankTranscriptLinks } from "./transcripts/rss.js";
+
+const FEED_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+  <channel>
+    <title>Example Show</title>
+    <item>
+      <title>Episode One: Beginnings</title>
+      <guid isPermaLink="false">ep-guid-001</guid>
+      <link>https://example.com/episodes/1</link>
+      <enclosure url="https://cdn.example.com/audio/ep1.mp3?token=abc" type="audio/mpeg" length="1"/>
+      <podcast:transcript url="https://cdn.example.com/transcripts/ep1.vtt" type="text/vtt"/>
+      <podcast:transcript url="https://cdn.example.com/transcripts/ep1.json" type="application/json" language="en"/>
+      <podcast:transcript url="https://cdn.example.com/transcripts/ep1.html" type="text/html"/>
+    </item>
+    <item>
+      <title>Episode Two: No Transcript</title>
+      <guid isPermaLink="false">ep-guid-002</guid>
+      <enclosure url="https://cdn.example.com/audio/ep2.mp3" type="audio/mpeg" length="1"/>
+    </item>
+  </channel>
+</rss>`;
+
+describe("findFeedItem", () => {
+  it("matches by enclosure URL ignoring query strings", () => {
+    const item = findFeedItem(
+      FEED_XML,
+      { title: "totally different title", url: "https://cdn.example.com/audio/ep1.mp3?other=1", uuid: "x" },
+      "https://example.com/feed.xml",
+    );
+    expect(item?.itemTitle).toBe("Episode One: Beginnings");
+    expect(item?.itemGuid).toBe("ep-guid-001");
+    expect(item?.transcripts).toHaveLength(3);
+  });
+
+  it("falls back to title matching", () => {
+    const item = findFeedItem(
+      FEED_XML,
+      { title: "  episode two: NO transcript ", url: "", uuid: "x" },
+      "https://example.com/feed.xml",
+    );
+    expect(item?.itemGuid).toBe("ep-guid-002");
+    expect(item?.transcripts).toEqual([]);
+  });
+
+  it("returns undefined when nothing matches", () => {
+    const item = findFeedItem(
+      FEED_XML,
+      { title: "unknown", url: "https://elsewhere.com/a.mp3", uuid: "x" },
+      "https://example.com/feed.xml",
+    );
+    expect(item).toBeUndefined();
+  });
+});
+
+describe("extractTranscriptLinks", () => {
+  it("handles a single (non-array) transcript tag", () => {
+    const links = extractTranscriptLinks({
+      "podcast:transcript": { "@_url": "https://a.example/t.srt", "@_type": "application/srt" },
+    });
+    expect(links).toEqual([
+      { url: "https://a.example/t.srt", type: "application/srt", language: undefined, rel: undefined },
+    ]);
+  });
+
+  it("drops entries without a url", () => {
+    expect(extractTranscriptLinks({ "podcast:transcript": [{ "@_type": "text/vtt" }] })).toEqual([]);
+  });
+});
+
+describe("rankTranscriptLinks", () => {
+  it("prefers structured formats over html", () => {
+    const ranked = rankTranscriptLinks([
+      { url: "c.html", type: "text/html" },
+      { url: "a.json", type: "application/json" },
+      { url: "b.vtt", type: "text/vtt" },
+    ]);
+    expect(ranked.map((l) => l.url)).toEqual(["a.json", "b.vtt", "c.html"]);
+  });
+});

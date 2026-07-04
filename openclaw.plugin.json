@@ -1,0 +1,49 @@
+{
+  "id": "castrecall",
+  "name": "CastRecall",
+  "description": "Turn podcast listening into retrievable memory: sync Pocket Casts listen history (read-only), fetch or generate episode transcripts, store them privately with provenance, and create approval-gated review candidates. Never writes to durable memory itself.",
+  "version": "0.1.0",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "dataDir": {
+        "type": "string",
+        "description": "Where CastRecall stores transcripts and review candidates. Defaults to ~/.openclaw/castrecall. The CASTRECALL_DATA_DIR env var overrides this."
+      },
+      "historyLimit": {
+        "type": "number",
+        "description": "Max history entries ingested per sync (default 100)."
+      },
+      "sttEnabled": {
+        "type": "boolean",
+        "description": "Explicitly enable the paid speech-to-text fallback (default false; it costs money per episode)."
+      },
+      "sttProvider": {
+        "anyOf": [
+          {
+            "type": "string",
+            "const": "assemblyai"
+          },
+          {
+            "type": "string",
+            "const": "openai"
+          }
+        ],
+        "description": "Speech-to-text provider when sttEnabled is true (default assemblyai)."
+      }
+    },
+    "additionalProperties": false
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "castrecall_setup_status",
+      "castrecall_sync_history",
+      "castrecall_recent",
+      "castrecall_fetch_transcript",
+      "castrecall_generate_review"
+    ]
+  }
+}
