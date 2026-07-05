@@ -4,12 +4,15 @@
  */
 import { type ResolvedConfig } from "./config.js";
 import { type ExportResult } from "./corpus-export.js";
-import { type FetchLike } from "./pocketcasts/client.js";
+import type { FetchLike } from "./pocketcasts/client.js";
+import { type ExecImpl } from "./pocketcasts/secret-store.js";
 import { Storage, type ListenRecord } from "./storage.js";
 export type ToolDeps = {
     fetchImpl?: FetchLike;
+    execImpl?: ExecImpl;
     now?: () => Date;
     env?: NodeJS.ProcessEnv;
+    platform?: NodeJS.Platform;
 };
 /**
  * Opt-in corpus export: off unless config.exportDir is set. Reads only the

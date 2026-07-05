@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveConfig } from "./config.js";
+import type { ExecImpl } from "./pocketcasts/secret-store.js";
+import { clearPocketCastsSessionCache } from "./pocketcasts/session.js";
 import { Storage, type Provenance } from "./storage.js";
 import {
   fetchTranscript,
@@ -33,6 +35,7 @@ describe("tools", () => {
 
   beforeEach(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-tools-"));
+    clearPocketCastsSessionCache();
   });
 
   afterEach(async () => {
@@ -46,6 +49,7 @@ describe("tools", () => {
   it("setup_status reports configuration presence without leaking secrets", async () => {
     const status = (await setupStatus(
       config({ POCKETCASTS_EMAIL: "secret@example.com", POCKETCASTS_PASSWORD: "hunter2" }),
+      { env: { PATH: "" } },
     )) as Record<string, any>;
     expect(status.pocketcasts.credentialsConfigured).toBe(true);
     expect(JSON.stringify(status)).not.toContain("secret@example.com");
@@ -75,7 +79,9 @@ describe("tools", () => {
   });
 
   it("sync_history fails fast with an actionable error when credentials are missing", async () => {
-    await expect(syncHistory(config(), {})).rejects.toThrowError(/POCKETCASTS_EMAIL/);
+    await expect(syncHistory(config(), {}, { env: { PATH: "" } })).rejects.toThrowError(
+      /POCKETCASTS_EMAIL/,
+    );
   });
 
   it("setup_status reports sync health and cooldown state without leaking secrets", async () => {
@@ -86,10 +92,10 @@ describe("tools", () => {
       () => new Date("2026-07-05T00:00:00Z"),
     );
 
-    const status = (await setupStatus(config(), { now: () => new Date("2026-07-05T00:01:00Z") })) as Record<
-      string,
-      any
-    >;
+    const status = (await setupStatus(config(), {
+      now: () => new Date("2026-07-05T00:01:00Z"),
+      env: { PATH: "" },
+    })) as Record<string, any>;
     expect(status.sync.consecutiveFailures).toBe(1);
     expect(status.sync.lastError).toContain("HTTP 500");
     expect(status.sync.inCooldown).toBe(true);
@@ -274,15 +280,133 @@ describe("tools", () => {
     }) as typeof fetch;
 
     const cfg = config({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
-    const first = (await syncHistory(cfg, {}, { fetchImpl })) as Record<string, any>;
+    const first = (await syncHistory(cfg, {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(first.newListens).toHaveLength(1);
-    const second = (await syncHistory(cfg, {}, { fetchImpl })) as Record<string, any>;
+    const second = (await syncHistory(cfg, {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(second.newListens).toHaveLength(0);
     expect(second.totalSeen).toBe(1);
 
     const recent = (await listRecent(cfg, {})) as Record<string, any>;
     expect(recent.episodes[0].episodeUuid).toBe("ep-1");
     expect(recent.episodes[0].transcriptStatus).toBe("none");
+  });
+
+  describe("credential handling", () => {
+    let binDir: string;
+
+    beforeEach(async () => {
+      binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-keychain-bin-"));
+      await fs.writeFile(path.join(binDir, "security"), "#!/bin/sh\n", { mode: 0o755 });
+    });
+
+    afterEach(async () => {
+      await fs.rm(binDir, { recursive: true, force: true });
+    });
+
+    function keychainExec(initial: Record<string, string> = {}): {
+      execImpl: ExecImpl;
+      calls: string[][];
+    } {
+      const store = new Map(Object.entries(initial));
+      const calls: string[][] = [];
+      const execImpl: ExecImpl = async (argv) => {
+        calls.push(argv);
+        const action = argv[1];
+        const account = argv[argv.indexOf("-a") + 1];
+        if (action === "find-generic-password") {
+          const value = store.get(account);
+          return value === undefined
+            ? { code: 44, stdout: "", stderr: "not found" }
+            : { code: 0, stdout: `${value}\n`, stderr: "" };
+        }
+        if (action === "add-generic-password") {
+          store.set(account, argv[argv.indexOf("-w") + 1]);
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        throw new Error(`unexpected argv: ${argv.join(" ")}`);
+      };
+      return { execImpl, calls };
+    }
+
+    function loginFetch() {
+      const counts = { login: 0, history: 0 };
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.endsWith("/user/login")) {
+          counts.login += 1;
+          return new Response(JSON.stringify({ token: `tok-${counts.login}` }), { status: 200 });
+        }
+        if (url.endsWith("/user/history")) {
+          counts.history += 1;
+          return new Response(JSON.stringify({ episodes: [] }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+      return { fetchImpl, counts };
+    }
+
+    it("with no backend, sync_history authenticates from env vars and calls execImpl zero times", async () => {
+      const calls: unknown[] = [];
+      const execImpl: ExecImpl = async (argv) => {
+        calls.push(argv);
+        throw new Error("execImpl should never be called with no backend detected");
+      };
+      const cfg = config({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
+      const { fetchImpl, counts } = loginFetch();
+      const result = (await syncHistory(cfg, {}, { fetchImpl, execImpl, env: { PATH: "" } })) as Record<
+        string,
+        any
+      >;
+      expect(result.fetched).toBe(0);
+      expect(counts.login).toBe(1);
+      expect(calls).toHaveLength(0);
+    });
+
+    it("sync_history authenticates from keychain-stored credentials and reuses the token on a second call", async () => {
+      const { execImpl, calls } = keychainExec({
+        "pocketcasts-email": "keychain@example.com",
+        "pocketcasts-password": "kpw",
+      });
+      // Env vars are also set, proving the keychain wins over them.
+      const cfg = config({ POCKETCASTS_EMAIL: "env@example.com", POCKETCASTS_PASSWORD: "envpw" });
+      const { fetchImpl, counts } = loginFetch();
+      const deps = { fetchImpl, execImpl, env: { PATH: binDir }, platform: "darwin" as const };
+
+      await syncHistory(cfg, {}, deps);
+      await syncHistory(cfg, {}, deps);
+
+      expect(counts.login).toBe(1); // second call reused the cached token
+      const writeCall = calls.find((c) => c[1] === "add-generic-password");
+      expect(writeCall?.slice(0, 7)).toEqual([
+        path.join(binDir, "security"),
+        "add-generic-password",
+        "-U",
+        "-s",
+        "castrecall",
+        "-a",
+        "pocketcasts-token",
+      ]);
+    });
+
+    it("setup_status surfaces credentialSource and secretBackend/tokenCache without leaking any secret values", async () => {
+      const { execImpl } = keychainExec({
+        "pocketcasts-email": "keychain@example.com",
+        "pocketcasts-password": "kpw",
+      });
+      const status = (await setupStatus(config(), {
+        execImpl,
+        env: { PATH: binDir },
+        platform: "darwin",
+      })) as Record<string, any>;
+
+      expect(status.pocketcasts.credentialSource).toBe("keychain");
+      expect(status.pocketcasts.credentialsConfigured).toBe(true);
+      expect(status.secretBackend).toEqual({ available: true, kind: "macos-keychain", disabled: false });
+      expect(status.tokenCache).toEqual({ cached: false });
+      const serialized = JSON.stringify(status);
+      expect(serialized).not.toContain("keychain@example.com");
+      expect(serialized).not.toContain("kpw");
+    });
   });
 
   it("fetch_transcript rejects unknown episodes with a pointer to sync", async () => {

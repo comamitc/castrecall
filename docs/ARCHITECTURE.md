@@ -25,7 +25,9 @@ src/
 ├── corpus-export.ts       # Opt-in export: section-split, frontmattered markdown pages (gbrain, etc.)
 ├── resolver.ts            # Pocket Casts listen → RSS feed URL → feed item + transcript links
 ├── pocketcasts/
-│   └── client.ts          # Read-only unofficial API adapter (login + history)
+│   ├── client.ts          # Read-only unofficial API adapter (login + history)
+│   ├── secret-store.ts    # OS keychain backend (macOS `security` / libsecret `secret-tool`)
+│   └── session.ts         # Auth seam: credential resolution + token cache/refresh (see below)
 └── transcripts/
     ├── ladder.ts          # Orchestrates the four rungs, collects outcomes
     ├── rss.ts             # Rung 1: <podcast:transcript> fetch, format preference
@@ -97,6 +99,61 @@ Only episodes newly recorded this run get `fetchTranscript`, and only
 episodes newly stored this run get `generateReview` — a pre-existing
 stored-without-review episode is left for an explicit
 `castrecall_generate_review` call, not swept in by the scheduler.
+
+### Credential handling: the `session.ts` auth seam
+
+`pocketcasts/session.ts` is the only module that resolves credentials, obtains
+a session token, or re-authenticates — nothing outside it calls
+`login()`/`fetchHistory()` directly, keeping the "auth confined to one module"
+invariant from v0's design intact as this feature adds a second credential
+input mechanism.
+
+- **Credential precedence:** OS keychain (`resolvePocketCastsCredentials`)
+  wins over `POCKETCASTS_EMAIL`/`POCKETCASTS_PASSWORD` when a backend is
+  detected (`secret-store.ts`'s `detectSecretBackend`, following the same
+  "detect a CLI, drive it through an injected `ExecImpl`" pattern as
+  `transcripts/local-whisper.ts`) and both `pocketcasts-email` /
+  `pocketcasts-password` entries exist under the resolved service (default
+  `castrecall`, or `CASTRECALL_SECRET_SERVICE`). A keychain read failure
+  degrades to the env fallback — it never throws.
+- **Token precedence:** an in-memory, process-lifetime cache → a durable
+  keychain token record (account `pocketcasts-token`, JSON-encoded
+  `{ token, expiresAt, credentialHash }`) → a fresh `login()`. The keychain is
+  the *only* durable sink; with no backend, or with
+  `CASTRECALL_DISABLE_KEYCHAIN=1`, the token still lives in the in-memory
+  cache for the process's lifetime but is never written to disk — this never
+  regresses the pre-existing privacy posture, it only adds reuse.
+- **Expiry:** `client.ts`'s `parseTokenExpiry` decodes a JWT's `exp` claim when
+  present; a non-JWT or `exp`-less token falls back to `DEFAULT_TOKEN_TTL_MS`
+  (12h). A token within `TOKEN_EXPIRY_SKEW_MS` (60s) of its expiry is treated
+  as already expired, so a sync never races a token that expires mid-request.
+  A `401`/`403` from the history endpoint is always authoritative regardless
+  of the computed expiry: `fetchHistoryWithSession` invalidates the cached
+  token (best-effort keychain delete, always-effective in-memory clear) and
+  retries with exactly one fresh login; a second consecutive auth failure
+  propagates unchanged so `pipeline.ts`'s cooldown gate still engages.
+- **Single-flight:** concurrent callers share one in-flight login promise, so
+  two overlapping tool calls (or pipeline runs) with the same credentials
+  never issue two logins.
+- **`credentialHash`** (`sha256(email + "\n" + password)`) is stored alongside
+  the cached/keychain token and checked on every read — a password rotation
+  (in the keychain or env) invalidates any stale token automatically, in
+  memory and in the keychain record, without an explicit migration step.
+- **Failure isolation:** every keychain read degrades to "absent" (never
+  throws); a write failure after a successful login is swallowed (the token
+  still works from memory, so the sync itself succeeds); a delete failure
+  during 401 invalidation is swallowed (the in-memory clear is the
+  correctness-bearing step — a stale keychain entry is harmless because the
+  forced retry login never consults the cache).
+- **Subprocess safety:** `secret-store.ts` always invokes `security`/
+  `secret-tool` as an argv array (never `sh -c`), so no secret value ever
+  touches a shell line; the libsecret write additionally passes its value via
+  stdin rather than argv. The one accepted exception is the macOS write path
+  (`security add-generic-password -w <value>`), which briefly exposes the
+  value in the process argument list — acceptable for the short-lived session
+  token this code path writes; CastRecall itself never writes the account
+  email/password to the keychain (the user does that, following the recipe
+  `castrecall_setup`/README show).
 
 ### Corpus export is a projection, not a relocation
 
@@ -205,7 +262,7 @@ normalized title.
 | Risk | Handling |
 | --- | --- |
 | Unofficial Pocket Casts API breaks | Isolated in `pocketcasts/client.ts`; errors say explicitly the API shape may have changed. Documented in README. |
-| Credential exposure | Env-only, never logged or included in errors; `setup_status` reports booleans only. |
+| Credential exposure | Keychain-preferred (OS keychain via argv-only subprocess calls, stdin for libsecret writes), env-var fallback; never logged or included in errors; `setup_status` reports booleans/enums only (`credentialSource`, `secretBackend`, `tokenCache`), never values. See "Credential handling" above. |
 | Copyrighted transcripts | Stored as `privacyClass: private-source`; excerpt-only review candidates; README documents intended private use. |
 | Noisy over-ingestion | Approval gate; review candidates are write-once; excerpts are capped (5 × 600 chars). |
 | STT cost surprises | Free local Whisper is preferred whenever a CLI is detected; cloud STT is off by default and requires explicit `CASTRECALL_ENABLE_STT=true` plus a provider key; every skip says why. |

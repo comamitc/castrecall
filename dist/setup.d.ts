@@ -48,8 +48,18 @@ export declare function classifyExportDir(exportDir: string | undefined): {
     exportDir: string | null;
     mode: ExportMode;
 };
+export type SetupCredentialsInfo = {
+    source: "env" | "keychain" | "none";
+    configured: boolean;
+};
+export type SetupSecretBackendInfo = {
+    available: boolean;
+    kind?: "macos-keychain" | "libsecret";
+};
 export type SetupPlanDeps = {
     whisper: WhisperDetection;
     gbrain: GbrainDetection;
+    credentials: SetupCredentialsInfo;
+    secretBackend: SetupSecretBackendInfo;
 };
 export declare function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): SetupStep[];

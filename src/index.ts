@@ -80,11 +80,12 @@ export default defineToolPlugin({
       name: "castrecall_setup",
       description:
         "Guided first-run setup: walks through Pocket Casts credentials (incl. the unofficial-API " +
-        "and Google/Apple-SSO caveats), storage location, privacy defaults, optional transcript " +
-        "providers (Taddy, local Whisper, cloud STT), and export directory (offering a detected " +
-        "gbrain inbox). Never edits openclaw.json or writes secrets to disk — it only tells you " +
-        "which env vars to set and where. Pass { verify: true } to make one read-only Pocket Casts " +
-        "call confirming configured credentials actually work.",
+        "and Google/Apple-SSO caveats, and a keychain-preferred / env-var-fallback storage option), " +
+        "storage location, privacy defaults, optional transcript providers (Taddy, local Whisper, " +
+        "cloud STT), and export directory (offering a detected gbrain inbox). Never edits " +
+        "openclaw.json or writes secrets to disk itself — it only tells you which env vars to set, " +
+        "or the OS keychain command to run, and where. Pass { verify: true } to make one read-only " +
+        "Pocket Casts call confirming configured credentials actually work.",
       parameters: Type.Object({
         verify: Type.Optional(
           Type.Boolean({
@@ -98,8 +99,10 @@ export default defineToolPlugin({
       name: "castrecall_sync_history",
       description:
         "Sync Pocket Casts listening history (read-only) into CastRecall's private state. " +
-        "Records newly seen listens idempotently and reports them. Requires POCKETCASTS_EMAIL " +
-        "and POCKETCASTS_PASSWORD in the environment.",
+        "Records newly seen listens idempotently and reports them. Credentials are keychain-" +
+        "preferred: uses OS keychain (macOS Keychain / libsecret) entries when present, otherwise " +
+        "falls back to POCKETCASTS_EMAIL / POCKETCASTS_PASSWORD in the environment. The session " +
+        "token is cached and reused across syncs instead of logging in every time.",
       parameters: Type.Object({
         limit: Type.Optional(
           Type.Number({ description: "Max history entries to ingest this run (default 100)." }),

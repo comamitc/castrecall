@@ -34,6 +34,12 @@ export type ResolvedConfig = {
         openaiApiKey?: string;
         openaiModel: string;
     };
+    secrets: {
+        /** CASTRECALL_DISABLE_KEYCHAIN=1 disables the durable keychain sink only. */
+        keychainDisabled: boolean;
+        /** Service name under which OS keychain entries are stored. */
+        service: string;
+    };
 };
 export declare function envFlag(value: string | undefined): boolean | undefined;
 /**

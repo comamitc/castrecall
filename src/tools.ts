@@ -4,13 +4,15 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  CastrecallSetupError,
-  requirePocketCastsCredentials,
-  type ResolvedConfig,
-} from "./config.js";
+import { CastrecallSetupError, type ResolvedConfig } from "./config.js";
 import { CorpusExporter, type ExportResult } from "./corpus-export.js";
-import { fetchHistory, login, type FetchLike } from "./pocketcasts/client.js";
+import type { FetchLike } from "./pocketcasts/client.js";
+import { detectSecretBackend, type ExecImpl } from "./pocketcasts/secret-store.js";
+import {
+  fetchHistoryWithSession,
+  hasCachedPocketCastsTokenRecord,
+  resolvePocketCastsCredentials,
+} from "./pocketcasts/session.js";
 import { buildReviewCandidate } from "./review.js";
 import {
   buildSetupPlan,
@@ -30,8 +32,10 @@ import { Storage, type ListenRecord, type Provenance } from "./storage.js";
 
 export type ToolDeps = {
   fetchImpl?: FetchLike;
+  execImpl?: ExecImpl;
   now?: () => Date;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
 };
 
 function storageFor(config: ResolvedConfig): Storage {
@@ -146,6 +150,9 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
   const exportStatus = classifyExportDir(config.exportDir);
   const nextEligibleAt = state.sync?.nextEligibleAt;
   const lock = await storage.inspectPipelineLock(now);
+  const secretBackend = await detectSecretBackend(config, { env: deps.env, platform: deps.platform });
+  const resolvedCredentials = await resolvePocketCastsCredentials(config, deps);
+  const tokenCached = await hasCachedPocketCastsTokenRecord(config, deps);
   return {
     dataDir: config.dataDir,
     // Lock health is read straight from the lock file, so a hard-killed run
@@ -179,8 +186,17 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
         : {}),
     },
     pocketcasts: {
-      credentialsConfigured: Boolean(config.pocketcasts.email && config.pocketcasts.password),
+      credentialsConfigured: resolvedCredentials.source !== "none",
+      credentialSource: resolvedCredentials.source,
       note: "Unofficial API — read-only history access only. May break without notice.",
+    },
+    secretBackend: {
+      available: Boolean(secretBackend.backend),
+      kind: secretBackend.backend?.kind ?? null,
+      disabled: config.secrets.keychainDisabled,
+    },
+    tokenCache: {
+      cached: tokenCached,
     },
     transcriptLadder: {
       rss: "always on (open <podcast:transcript> standard)",
@@ -237,23 +253,33 @@ export async function setup(
 ): Promise<unknown> {
   const whisper = await detectLocalWhisper(config, deps.env);
   const gbrain = await detectGbrain({ env: deps.env });
-  const steps = buildSetupPlan(config, { whisper, gbrain });
+  const secretBackend = await detectSecretBackend(config, { env: deps.env, platform: deps.platform });
+  const resolvedCredentials = await resolvePocketCastsCredentials(config, deps);
+  const steps = buildSetupPlan(config, {
+    whisper,
+    gbrain,
+    credentials: {
+      source: resolvedCredentials.source,
+      configured: resolvedCredentials.source !== "none",
+    },
+    secretBackend: {
+      available: Boolean(secretBackend.backend),
+      kind: secretBackend.backend?.kind,
+    },
+  });
 
   let verify: { ok: boolean; detail?: string; sampleCount?: number } | undefined;
   if (params.verify) {
-    const { email, password } = config.pocketcasts;
-    if (!email || !password) {
+    if (resolvedCredentials.source === "none") {
       verify = {
         ok: false,
         detail:
           "Pocket Casts credentials are not configured. Set POCKETCASTS_EMAIL and " +
-          "POCKETCASTS_PASSWORD first (see the 'pocketcasts' step above).",
+          "POCKETCASTS_PASSWORD, or store them in the OS keychain (see the 'pocketcasts' step above).",
       };
     } else {
-      const fetchImpl = deps.fetchImpl ?? fetch;
       try {
-        const token = await login(email, password, fetchImpl);
-        const history = await fetchHistory(token, fetchImpl);
+        const history = await fetchHistoryWithSession(config, deps);
         verify = { ok: true, sampleCount: history.length };
       } catch (error) {
         verify = { ok: false, detail: error instanceof Error ? error.message : String(error) };
@@ -276,10 +302,7 @@ export async function syncHistory(
   params: { limit?: number },
   deps: ToolDeps = {},
 ): Promise<unknown> {
-  const fetchImpl = deps.fetchImpl ?? fetch;
-  const { email, password } = requirePocketCastsCredentials(config);
-  const token = await login(email, password, fetchImpl);
-  const history = await fetchHistory(token, fetchImpl);
+  const history = await fetchHistoryWithSession(config, deps);
   const limit = params.limit && params.limit > 0 ? params.limit : config.historyLimit;
   const storage = storageFor(config);
   await storage.init();

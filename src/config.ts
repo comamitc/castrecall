@@ -39,6 +39,12 @@ export type ResolvedConfig = {
     openaiApiKey?: string;
     openaiModel: string;
   };
+  secrets: {
+    /** CASTRECALL_DISABLE_KEYCHAIN=1 disables the durable keychain sink only. */
+    keychainDisabled: boolean;
+    /** Service name under which OS keychain entries are stored. */
+    service: string;
+  };
 };
 
 const DEFAULT_HISTORY_LIMIT = 100;
@@ -106,6 +112,10 @@ export function resolveConfig(
       openaiApiKey: nonEmpty(env.OPENAI_API_KEY),
       openaiModel: nonEmpty(env.CASTRECALL_OPENAI_STT_MODEL) ?? "gpt-4o-transcribe",
     },
+    secrets: {
+      keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,
+      service: nonEmpty(env.CASTRECALL_SECRET_SERVICE) ?? "castrecall",
+    },
   };
 }
 
@@ -125,7 +135,8 @@ export function requirePocketCastsCredentials(config: ResolvedConfig): {
   if (!email || !password) {
     throw new CastrecallSetupError(
       "Pocket Casts credentials are not configured. Set POCKETCASTS_EMAIL and POCKETCASTS_PASSWORD " +
-        "in the environment OpenClaw runs in (see the CastRecall README, 'First-run setup'). " +
+        "in the environment OpenClaw runs in, or store them in the OS keychain (macOS Keychain / " +
+        "libsecret) — see the CastRecall README, 'First-run setup'. " +
         "CastRecall only performs read-only history requests with them.",
     );
   }

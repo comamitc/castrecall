@@ -37,3 +37,9 @@ export declare class PocketCastsApiError extends Error {
 export declare function login(email: string, password: string, fetchImpl?: FetchLike): Promise<string>;
 /** Fetch the account's listening history (read-only). Newest first. */
 export declare function fetchHistory(token: string, fetchImpl?: FetchLike): Promise<PocketCastsEpisode[]>;
+/**
+ * Decode a JWT's `exp` claim (seconds since epoch) into milliseconds.
+ * Returns undefined for anything that isn't a well-formed JWT with a numeric
+ * `exp` — callers fall back to a conservative default TTL in that case.
+ */
+export declare function parseTokenExpiry(token: string): number | undefined;
