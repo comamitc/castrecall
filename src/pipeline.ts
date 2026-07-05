@@ -17,7 +17,13 @@
 import { CastrecallSetupError, type ResolvedConfig } from "./config.js";
 import { PocketCastsApiError } from "./pocketcasts/client.js";
 import { LOCK_TTL_MS, Storage } from "./storage.js";
-import { fetchTranscript, generateReview, syncHistory, type ToolDeps } from "./tools.js";
+import {
+  exportAndRecord,
+  fetchTranscript,
+  generateReview,
+  syncHistory,
+  type ToolDeps,
+} from "./tools.js";
 
 /** Renew the run lock at half the abandonment TTL, so a run that legitimately
  * takes longer than `LOCK_TTL_MS` (e.g. local-Whisper transcription) is never
@@ -93,7 +99,11 @@ export async function runPipeline(
 
     let stored = 0;
     let failed = 0;
-    const errors: Array<{ stage: "transcript" | "review"; episodeUuid: string; error: string }> = [];
+    const errors: Array<{
+      stage: "transcript" | "export" | "review";
+      episodeUuid: string;
+      error: string;
+    }> = [];
     for (const episode of pendingTranscripts) {
       try {
         const result = (await fetchTranscript(config, { episodeUuid: episode.uuid }, deps)) as {
@@ -114,11 +124,31 @@ export async function runPipeline(
       }
     }
 
-    // Review targets come from durable state, not this run's results: an
-    // episode stored by a prior run that crashed (or errored) before its
-    // review was generated must be picked up here, or it stays stranded
+    // Downstream worklists come from durable state, not this run's results:
+    // an episode stored by a prior run that crashed (or errored) before its
+    // export/review completed must be picked up here, or it stays stranded
     // until a human runs the per-episode tools.
     const stateAfterTranscripts = await storage.loadState();
+
+    // Export retry pass: fetchTranscript exports inline for the episodes it
+    // touches, but a stored episode whose export failed (or predates export
+    // being enabled) is never re-fetched by the transcript loop above.
+    let exported = 0;
+    if (config.exportDir) {
+      const exportTargets = Object.values(stateAfterTranscripts.episodes).filter(
+        (episode) =>
+          episode.transcriptStatus === "stored" && (!episode.exportedAt || episode.exportError),
+      );
+      for (const episode of exportTargets) {
+        const result = await exportAndRecord(config, storage, episode, now);
+        if (result && "error" in result) {
+          errors.push({ stage: "export", episodeUuid: episode.uuid, error: result.error });
+        } else if (result) {
+          exported += 1;
+        }
+      }
+    }
+
     const reviewTargets = Object.values(stateAfterTranscripts.episodes)
       .filter((episode) => episode.transcriptStatus === "stored" && !episode.reviewGeneratedAt)
       .map((episode) => episode.uuid);
@@ -143,6 +173,7 @@ export async function runPipeline(
     return {
       newListens: syncResult.newListens.length,
       transcripts: { stored, failed },
+      ...(config.exportDir ? { exports: { exported } } : {}),
       reviews: { generated, skipped },
       ...(errors.length > 0 ? { errors } : {}),
     };

@@ -31,6 +31,8 @@ export const BACKOFF_BASE_MS = 5 * 60_000;
 export const BACKOFF_CAP_MS = 60 * 60_000;
 /** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
 export const LOCK_TTL_MS = 10 * 60_000;
+/** The reclaim mutex guards a fast local critical section; anything older is a crashed reclaimer. */
+export const RECLAIM_MUTEX_TTL_MS = 30_000;
 
 export type SyncHealth = {
   consecutiveFailures: number;
@@ -57,6 +59,10 @@ export type ListenRecord = {
   transcriptError?: string;
   /** Last scheduled-run review-stage failure for this episode, if any. */
   reviewError?: string;
+  /** When corpus export last succeeded for this episode (only set when export is enabled). */
+  exportedAt?: string;
+  /** Last corpus-export failure for this episode, if any; cleared on the next successful export. */
+  exportError?: string;
   reviewGeneratedAt?: string;
   updatedAt: string;
 };
@@ -251,41 +257,101 @@ export class Storage {
     }
     const age = now().getTime() - mtimeMs;
     if (age <= LOCK_TTL_MS) return { acquired: false };
-    // Reclaim exclusively: rename steals whatever currently sits at
-    // lockPath. Only one contender's rename can ever succeed for a given
-    // file — once it moves, every other contender's rename fails with
-    // ENOENT — so the "read stale, then reclaim" gap above can't let two
-    // contenders both proceed. The winner then re-verifies staleness
-    // against what it actually grabbed: if a faster reclaimer already
-    // replaced the lock with a fresh one in that gap, this contender would
-    // otherwise steal a live lock, so it puts the fresh one back and backs
-    // off instead of overwriting it.
-    const evictedPath = `${this.lockPath}.evicted.${token}`;
-    try {
-      await fs.rename(this.lockPath, evictedPath);
-    } catch {
+
+    // Stale — reclaim, SERIALIZED through a reclaim mutex so no two
+    // contenders can ever run the evict sequence concurrently. The old
+    // check-evict-restore dance allowed a delayed reclaimer to steal a
+    // fresh lock created by a faster reclaimer, briefly exposing an empty
+    // lock path while a holder was live and letting a third contender in.
+    // With the mutex:
+    //   - only one contender evicts at a time, and it RE-verifies
+    //     staleness inside the mutex before touching the lock;
+    //   - there is no restore step at all — if another acquirer slips an
+    //     exclusive create in between evict and re-create, this reclaimer
+    //     simply loses and backs off (single-holder invariant holds);
+    //   - a live lock is therefore never renamed away and never
+    //     overwritten.
+    if (!(await this.acquireReclaimMutex(token, now))) {
       return { acquired: false };
     }
-    // Re-verify staleness against what was actually grabbed: rename preserves
-    // mtime, so if a faster reclaimer already replaced the lock with a fresh
-    // one in the read/steal gap, the grabbed file is young — put it back and
-    // back off instead of stealing a live lock.
-    let grabbedMtimeMs: number | undefined;
     try {
-      grabbedMtimeMs = (await fs.stat(evictedPath)).mtimeMs;
-    } catch {
-      grabbedMtimeMs = undefined;
-    }
-    const grabbedAge = grabbedMtimeMs === undefined ? Infinity : now().getTime() - grabbedMtimeMs;
-    if (grabbedAge <= LOCK_TTL_MS) {
-      await fs.rename(evictedPath, this.lockPath).catch(() => {});
+      await this.lockTestHooks?.insideReclaimMutex?.();
+      // Re-verify under the mutex: a faster reclaimer may have already
+      // evicted the stale lock and created a fresh one.
+      let currentMtimeMs: number | undefined;
+      try {
+        currentMtimeMs = (await fs.stat(this.lockPath)).mtimeMs;
+      } catch {
+        currentMtimeMs = undefined; // lock gone — fall through to create
+      }
+      if (currentMtimeMs !== undefined && now().getTime() - currentMtimeMs <= LOCK_TTL_MS) {
+        return { acquired: false };
+      }
+      if (currentMtimeMs !== undefined) {
+        const evictedPath = `${this.lockPath}.evicted.${token}`;
+        try {
+          await fs.rename(this.lockPath, evictedPath);
+        } catch {
+          return { acquired: false };
+        }
+        await fs.rm(evictedPath, { force: true });
+      }
+      await this.lockTestHooks?.afterEvict?.();
+      if (await this.createLockExclusive(token, now)) {
+        return { acquired: true, token };
+      }
       return { acquired: false };
+    } finally {
+      await fs.rm(this.reclaimMutexPath, { force: true });
     }
-    await fs.rm(evictedPath, { force: true });
-    if (await this.createLockExclusive(token, now)) {
-      return { acquired: true, token };
+  }
+
+  private get reclaimMutexPath(): string {
+    return `${this.lockPath}.reclaim`;
+  }
+
+  /**
+   * Test-only seam for orchestrating reclaim interleavings; never set in
+   * production code.
+   */
+  lockTestHooks?: {
+    insideReclaimMutex?: () => Promise<void>;
+    afterEvict?: () => Promise<void>;
+  };
+
+  /**
+   * Exclusive-create the short-lived reclaim mutex. The mutex guards a
+   * fast, purely local critical section, so a mutex older than
+   * `RECLAIM_MUTEX_TTL_MS` can only belong to a crashed reclaimer; it is
+   * stolen with an exclusive rename (only one thief can win) before
+   * re-creating.
+   */
+  private async acquireReclaimMutex(token: string, now: () => Date): Promise<boolean> {
+    const tryCreate = async (): Promise<boolean> => {
+      try {
+        await fs.writeFile(this.reclaimMutexPath, token, { encoding: "utf8", flag: "wx" });
+        return true;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+        throw error;
+      }
+    };
+    if (await tryCreate()) return true;
+    let mutexMtimeMs: number | undefined;
+    try {
+      mutexMtimeMs = (await fs.stat(this.reclaimMutexPath)).mtimeMs;
+    } catch {
+      return tryCreate(); // vanished — one more exclusive attempt
     }
-    return { acquired: false };
+    if (now().getTime() - mutexMtimeMs <= RECLAIM_MUTEX_TTL_MS) return false;
+    // Crashed reclaimer: steal exclusively (rename), then re-create.
+    try {
+      await fs.rename(this.reclaimMutexPath, `${this.reclaimMutexPath}.stale.${token}`);
+    } catch {
+      return false;
+    }
+    await fs.rm(`${this.reclaimMutexPath}.stale.${token}`, { force: true });
+    return tryCreate();
   }
 
   /**

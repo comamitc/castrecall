@@ -24,6 +24,8 @@ export declare const BACKOFF_BASE_MS: number;
 export declare const BACKOFF_CAP_MS: number;
 /** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
 export declare const LOCK_TTL_MS: number;
+/** The reclaim mutex guards a fast local critical section; anything older is a crashed reclaimer. */
+export declare const RECLAIM_MUTEX_TTL_MS = 30000;
 export type SyncHealth = {
     consecutiveFailures: number;
     lastError?: string;
@@ -48,6 +50,10 @@ export type ListenRecord = {
     transcriptError?: string;
     /** Last scheduled-run review-stage failure for this episode, if any. */
     reviewError?: string;
+    /** When corpus export last succeeded for this episode (only set when export is enabled). */
+    exportedAt?: string;
+    /** Last corpus-export failure for this episode, if any; cleared on the next successful export. */
+    exportError?: string;
     reviewGeneratedAt?: string;
     updatedAt: string;
 };
@@ -125,6 +131,23 @@ export declare class Storage {
     } | {
         acquired: false;
     }>;
+    private get reclaimMutexPath();
+    /**
+     * Test-only seam for orchestrating reclaim interleavings; never set in
+     * production code.
+     */
+    lockTestHooks?: {
+        insideReclaimMutex?: () => Promise<void>;
+        afterEvict?: () => Promise<void>;
+    };
+    /**
+     * Exclusive-create the short-lived reclaim mutex. The mutex guards a
+     * fast, purely local critical section, so a mutex older than
+     * `RECLAIM_MUTEX_TTL_MS` can only belong to a crashed reclaimer; it is
+     * stolen with an exclusive rename (only one thief can win) before
+     * re-creating.
+     */
+    private acquireReclaimMutex;
     /**
      * Exclusive-create the lock file and stamp its mtime from the caller's
      * clock (mtime is the staleness authority; the payload is informational).

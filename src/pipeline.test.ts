@@ -394,11 +394,87 @@ describe("runPipeline", () => {
       { fetchImpl },
     )) as Record<string, any>;
 
-    expect(result.transcripts.failed).toBe(2);
+    // ep-1's transcript stage SUCCEEDS (transcript stored); only its export
+    // fails, is persisted as exportError, and is reported as an export-stage
+    // error by the retry pass. ep-2 ends cleanly at no-transcript.
+    expect(result.transcripts).toEqual({ stored: 1, failed: 1 });
+    expect(result.exports).toEqual({ exported: 0 });
     expect(result.errors).toEqual(
-      expect.arrayContaining([expect.objectContaining({ stage: "transcript", episodeUuid: "ep-1" })]),
+      expect.arrayContaining([expect.objectContaining({ stage: "export", episodeUuid: "ep-1" })]),
     );
     expect(result.errors.some((e: any) => e.episodeUuid === "ep-2")).toBe(false);
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.episodes["ep-1"].transcriptStatus).toBe("stored");
+    expect(state.episodes["ep-1"].exportError).toBeTruthy();
+  });
+
+  it("retries a stored episode's failed export on the next scheduled run and clears the error", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([HISTORY_EPISODE]);
+
+    // Run 1: export dir blocked by a file → transcript stored, export fails.
+    const exportDir = path.join(dir, "export");
+    await fs.writeFile(exportDir, "squatter", "utf8");
+    const { fetchImpl } = makeFetchImpl();
+    await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, { fetchImpl });
+    let state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.episodes["ep-1"].exportError).toBeTruthy();
+
+    // Run 2: obstruction removed → the retry pass exports and clears the error.
+    await fs.rm(exportDir);
+    const second = (await runPipeline(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      {},
+      { fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl },
+    )) as Record<string, any>;
+    expect(second.exports.exported).toBe(1);
+    state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.episodes["ep-1"].exportError).toBeUndefined();
+    expect(state.episodes["ep-1"].exportedAt).toBeTruthy();
+    const pages = await fs.readdir(exportDir, { recursive: true });
+    expect(pages.length).toBeGreaterThan(0);
+  });
+
+  it("reconciles a pending review file left by a crash so scheduled runs converge", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([HISTORY_EPISODE]);
+    const longText = "Substantial paragraph. ".repeat(30);
+    await storage.storeTranscript("ep-1", {
+      raw: longText,
+      ext: "txt",
+      text: longText,
+      provenance: {
+        platform: "pocketcasts",
+        podcastTitle: "Example Show",
+        podcastUuid: "pod-1",
+        episodeTitle: "Episode One",
+        episodeUuid: "ep-1",
+        transcriptSource: "rss",
+        format: "txt",
+        fetchedAt: "2026-07-01T00:00:00Z",
+        privacyClass: "private-source",
+      },
+    });
+    await storage.updateEpisode("ep-1", { transcriptStatus: "stored" });
+    // Simulate the crash: the review file was written but the state update
+    // (reviewGeneratedAt) was lost.
+    await storage.writeReviewCandidate("ep-1", "# Review from crashed run\n");
+
+    const { fetchImpl } = makeFetchImpl({ episodes: [] });
+    const first = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(first.reviews).toEqual({ generated: 0, skipped: 1 });
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.episodes["ep-1"].reviewGeneratedAt).toBeTruthy();
+
+    // Converged: the next run has no review targets at all.
+    const second = (await runPipeline(config(), {}, {
+      fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+    })) as Record<string, any>;
+    expect(second.reviews).toEqual({ generated: 0, skipped: 0 });
   });
 
   it("renews the run lock during a long stage so a concurrent scheduler tick cannot steal it as stale", async () => {
