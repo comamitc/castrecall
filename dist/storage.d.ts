@@ -46,6 +46,8 @@ export type ListenRecord = {
     transcriptStatus: TranscriptStatus;
     transcriptSource?: string;
     transcriptError?: string;
+    /** Last scheduled-run review-stage failure for this episode, if any. */
+    reviewError?: string;
     reviewGeneratedAt?: string;
     updatedAt: string;
 };
@@ -124,11 +126,19 @@ export declare class Storage {
         acquired: false;
     }>;
     /**
-     * Renew a held lock's `acquiredAt` so a still-running pipeline invocation
-     * (e.g. a slow local-Whisper transcription well past `LOCK_TTL_MS`) is
-     * never reclaimed out from under it as abandoned. Only renews if `token`
-     * still matches the current holder; returns false if the lock was already
-     * stolen or released, so the caller can stop renewing.
+     * Exclusive-create the lock file and stamp its mtime from the caller's
+     * clock (mtime is the staleness authority; the payload is informational).
+     */
+    private createLockExclusive;
+    /**
+     * Renew a held lock so a still-running pipeline invocation (e.g. a slow
+     * local-Whisper transcription well past `LOCK_TTL_MS`) is never reclaimed
+     * as abandoned. Renewal is a pure token-verified TOUCH (utimes) — it never
+     * writes or renames the lock file. That makes it safe under any
+     * interleaving with stale reclaim: if this holder already lost the lock,
+     * the token check fails and it stops renewing; in the worst case a renewal
+     * that races a reclaim touches the NEW holder's live lock, which merely
+     * refreshes an already-live lock and can never produce two holders.
      */
     renewPipelineLock(token: string, now?: () => Date): Promise<boolean>;
     /** Release a held lock — only if `token` still matches the current holder. */

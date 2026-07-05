@@ -240,7 +240,7 @@ describe("runPipeline", () => {
     expect(state.episodes["ep-1"].transcriptStatus).toBe("failed");
   });
 
-  it("generates reviews only for episodes newly stored this run, not pre-existing stored ones", async () => {
+  it("picks up stored-but-unreviewed episodes from prior runs; skips those already reviewed", async () => {
     const storage = new Storage(dir);
     await storage.init();
     const longText = Array.from(
@@ -274,13 +274,74 @@ describe("runPipeline", () => {
       },
     });
     await storage.updateEpisode("ep-existing", { transcriptStatus: "stored" });
+    // A second pre-existing episode that already went through review must NOT
+    // get a duplicate: reviewGeneratedAt is the "done" marker.
+    await storage.recordListens([
+      {
+        uuid: "ep-reviewed",
+        title: "Already Reviewed",
+        url: "https://cdn.example.com/reviewed.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    await storage.updateEpisode("ep-reviewed", {
+      transcriptStatus: "stored",
+      reviewGeneratedAt: "2026-07-01T00:00:00Z",
+    });
 
     const { fetchImpl } = makeFetchImpl();
     const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
-    expect(result.reviews.generated).toBe(1);
+    // ep-1 (stored this run) AND ep-existing (stranded by a prior run) both
+    // get reviews; ep-reviewed is not re-reviewed.
+    expect(result.reviews.generated).toBe(2);
 
     const reviews = await fs.readdir(path.join(dir, "review", "pending"));
-    expect(reviews).toEqual(["ep-1.md"]);
+    expect(reviews.sort()).toEqual(["ep-1.md", "ep-existing.md"]);
+  });
+
+  it("persists review-stage failures to state so setup_status can expose them", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([HISTORY_EPISODE]);
+    // Stored transcript, no review yet — but a file squatting on the review
+    // pending dir path makes generateReview's mkdir throw.
+    const longText = "A ".repeat(200);
+    await storage.storeTranscript("ep-1", {
+      raw: longText,
+      ext: "txt",
+      text: longText,
+      provenance: {
+        platform: "pocketcasts",
+        podcastTitle: "Example Show",
+        podcastUuid: "pod-1",
+        episodeTitle: "Episode One",
+        episodeUuid: "ep-1",
+        transcriptSource: "rss",
+        format: "txt",
+        fetchedAt: "2026-07-01T00:00:00Z",
+        privacyClass: "private-source",
+      },
+    });
+    await storage.updateEpisode("ep-1", { transcriptStatus: "stored" });
+    // A write-protected pending dir makes the candidate write throw EACCES
+    // inside generateReview — a real failure, unlike EEXIST (benign skip).
+    const pendingDir = path.join(dir, "review", "pending");
+    await fs.chmod(pendingDir, 0o500);
+
+    try {
+      const { fetchImpl } = makeFetchImpl({ episodes: [] });
+      const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+      expect(result.errors).toEqual(
+        expect.arrayContaining([expect.objectContaining({ stage: "review", episodeUuid: "ep-1" })]),
+      );
+
+      const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+      expect(state.episodes["ep-1"].reviewError).toBeTruthy();
+      expect(state.episodes["ep-1"].reviewGeneratedAt).toBeUndefined();
+    } finally {
+      await fs.chmod(pendingDir, 0o755);
+    }
   });
 
   it("resumes an episode stranded with transcriptStatus 'none' by a prior crashed run, even when this run's history has no new listens", async () => {

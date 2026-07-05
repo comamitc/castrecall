@@ -380,6 +380,29 @@ describe("Storage", () => {
     expect(laterContender.acquired).toBe(true);
   });
 
+  it("a stale-reclaimed lock is never clobbered by the old holder's renewal (renew-vs-reclaim)", async () => {
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const first = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(first.acquired).toBe(true);
+    if (!first.acquired) throw new Error("unreachable");
+
+    // Reclaimer steals the stale lock.
+    const reclaimed = await storage.acquirePipelineLock(() => new Date());
+    expect(reclaimed.acquired).toBe(true);
+    if (!reclaimed.acquired) throw new Error("unreachable");
+
+    // The suspended old holder's heartbeat fires late: it must observe the
+    // loss (false) and — because renewal is a pure touch, never a write or
+    // rename — the reclaimer's lock file must remain intact and owned.
+    const renewed = await storage.renewPipelineLock(first.token, () => new Date());
+    expect(renewed).toBe(false);
+    expect(await storage.renewPipelineLock(reclaimed.token, () => new Date())).toBe(true);
+
+    // The reclaimer's live lock still excludes contenders.
+    const contender = await storage.acquirePipelineLock(() => new Date());
+    expect(contender.acquired).toBe(false);
+  });
+
   it("renewPipelineLock is a no-op once the lock has been stolen by another holder", async () => {
     const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
     const first = await storage.acquirePipelineLock(() => staleAcquiredAt);

@@ -55,6 +55,8 @@ export type ListenRecord = {
   transcriptStatus: TranscriptStatus;
   transcriptSource?: string;
   transcriptError?: string;
+  /** Last scheduled-run review-stage failure for this episode, if any. */
+  reviewError?: string;
   reviewGeneratedAt?: string;
   updatedAt: string;
 };
@@ -227,21 +229,27 @@ export class Storage {
   > {
     await fs.mkdir(path.join(this.dataDir, ".staging"), { recursive: true });
     const token = randomUUID();
-    const payload = { token, acquiredAt: now().toISOString() };
-    try {
-      await fs.writeFile(this.lockPath, JSON.stringify(payload), { encoding: "utf8", flag: "wx" });
+    if (await this.createLockExclusive(token, now)) {
       return { acquired: true, token };
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    // Someone holds the lock — reclaim only if it is stale.
-    let existing: { token?: string; acquiredAt?: string } | undefined;
+    // Someone holds the lock — reclaim only if it is stale. Staleness is the
+    // lock FILE's mtime, stamped from the holder's clock at acquire and on
+    // every heartbeat renewal. The payload's acquiredAt is informational
+    // only: renewal is a pure token-verified touch (see renewPipelineLock),
+    // so no renewal can ever rewrite or replace a lock file, which is what
+    // makes renew-vs-reclaim races structurally impossible.
+    let mtimeMs: number | undefined;
     try {
-      existing = JSON.parse(await fs.readFile(this.lockPath, "utf8"));
+      mtimeMs = (await fs.stat(this.lockPath)).mtimeMs;
     } catch {
-      existing = undefined;
+      // Lock vanished between the failed exclusive create and the stat (the
+      // holder released). One more exclusive attempt, then back off.
+      if (await this.createLockExclusive(token, now)) {
+        return { acquired: true, token };
+      }
+      return { acquired: false };
     }
-    const age = existing?.acquiredAt ? now().getTime() - new Date(existing.acquiredAt).getTime() : Infinity;
+    const age = now().getTime() - mtimeMs;
     if (age <= LOCK_TTL_MS) return { acquired: false };
     // Reclaim exclusively: rename steals whatever currently sits at
     // lockPath. Only one contender's rename can ever succeed for a given
@@ -258,47 +266,59 @@ export class Storage {
     } catch {
       return { acquired: false };
     }
-    let grabbed: { acquiredAt?: string } | undefined;
+    // Re-verify staleness against what was actually grabbed: rename preserves
+    // mtime, so if a faster reclaimer already replaced the lock with a fresh
+    // one in the read/steal gap, the grabbed file is young — put it back and
+    // back off instead of stealing a live lock.
+    let grabbedMtimeMs: number | undefined;
     try {
-      grabbed = JSON.parse(await fs.readFile(evictedPath, "utf8"));
+      grabbedMtimeMs = (await fs.stat(evictedPath)).mtimeMs;
     } catch {
-      grabbed = undefined;
+      grabbedMtimeMs = undefined;
     }
-    const grabbedAge = grabbed?.acquiredAt
-      ? now().getTime() - new Date(grabbed.acquiredAt).getTime()
-      : Infinity;
+    const grabbedAge = grabbedMtimeMs === undefined ? Infinity : now().getTime() - grabbedMtimeMs;
     if (grabbedAge <= LOCK_TTL_MS) {
       await fs.rename(evictedPath, this.lockPath).catch(() => {});
       return { acquired: false };
     }
     await fs.rm(evictedPath, { force: true });
-    try {
-      await fs.writeFile(this.lockPath, JSON.stringify(payload), { encoding: "utf8", flag: "wx" });
+    if (await this.createLockExclusive(token, now)) {
       return { acquired: true, token };
-    } catch {
-      return { acquired: false };
     }
+    return { acquired: false };
   }
 
   /**
-   * Renew a held lock's `acquiredAt` so a still-running pipeline invocation
-   * (e.g. a slow local-Whisper transcription well past `LOCK_TTL_MS`) is
-   * never reclaimed out from under it as abandoned. Only renews if `token`
-   * still matches the current holder; returns false if the lock was already
-   * stolen or released, so the caller can stop renewing.
+   * Exclusive-create the lock file and stamp its mtime from the caller's
+   * clock (mtime is the staleness authority; the payload is informational).
+   */
+  private async createLockExclusive(token: string, now: () => Date): Promise<boolean> {
+    const payload = { token, acquiredAt: now().toISOString() };
+    try {
+      await fs.writeFile(this.lockPath, JSON.stringify(payload), { encoding: "utf8", flag: "wx" });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") return false;
+      throw error;
+    }
+    await fs.utimes(this.lockPath, now(), now()).catch(() => {});
+    return true;
+  }
+
+  /**
+   * Renew a held lock so a still-running pipeline invocation (e.g. a slow
+   * local-Whisper transcription well past `LOCK_TTL_MS`) is never reclaimed
+   * as abandoned. Renewal is a pure token-verified TOUCH (utimes) — it never
+   * writes or renames the lock file. That makes it safe under any
+   * interleaving with stale reclaim: if this holder already lost the lock,
+   * the token check fails and it stops renewing; in the worst case a renewal
+   * that races a reclaim touches the NEW holder's live lock, which merely
+   * refreshes an already-live lock and can never produce two holders.
    */
   async renewPipelineLock(token: string, now: () => Date = () => new Date()): Promise<boolean> {
     try {
       const existing = JSON.parse(await fs.readFile(this.lockPath, "utf8")) as { token?: string };
       if (existing.token !== token) return false;
-    } catch {
-      return false;
-    }
-    const payload = { token, acquiredAt: now().toISOString() };
-    const tmpPath = `${this.lockPath}.${token}.renew.tmp`;
-    try {
-      await fs.writeFile(tmpPath, JSON.stringify(payload), "utf8");
-      await fs.rename(tmpPath, this.lockPath);
+      await fs.utimes(this.lockPath, now(), now());
       return true;
     } catch {
       return false;

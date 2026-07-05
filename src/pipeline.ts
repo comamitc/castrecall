@@ -93,7 +93,6 @@ export async function runPipeline(
 
     let stored = 0;
     let failed = 0;
-    const reviewTargets: string[] = [];
     const errors: Array<{ stage: "transcript" | "review"; episodeUuid: string; error: string }> = [];
     for (const episode of pendingTranscripts) {
       try {
@@ -102,19 +101,27 @@ export async function runPipeline(
         };
         if (result.status === "stored" || result.status === "already-stored") {
           stored += 1;
-          reviewTargets.push(episode.uuid);
         } else {
           failed += 1;
         }
       } catch (error) {
         failed += 1;
-        errors.push({
-          stage: "transcript",
-          episodeUuid: episode.uuid,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({ stage: "transcript", episodeUuid: episode.uuid, error: message });
+        // Persist the failure so setup_status can expose it and the episode
+        // stays visible as retryable work for the next scheduled run.
+        await storage.updateEpisode(episode.uuid, { transcriptError: message }, now);
       }
     }
+
+    // Review targets come from durable state, not this run's results: an
+    // episode stored by a prior run that crashed (or errored) before its
+    // review was generated must be picked up here, or it stays stranded
+    // until a human runs the per-episode tools.
+    const stateAfterTranscripts = await storage.loadState();
+    const reviewTargets = Object.values(stateAfterTranscripts.episodes)
+      .filter((episode) => episode.transcriptStatus === "stored" && !episode.reviewGeneratedAt)
+      .map((episode) => episode.uuid);
 
     let generated = 0;
     let skipped = 0;
@@ -127,11 +134,9 @@ export async function runPipeline(
         generated += result.generated.length;
         skipped += result.skipped.length;
       } catch (error) {
-        errors.push({
-          stage: "review",
-          episodeUuid,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        const message = error instanceof Error ? error.message : String(error);
+        errors.push({ stage: "review", episodeUuid, error: message });
+        await storage.updateEpisode(episodeUuid, { reviewError: message }, now);
       }
     }
 

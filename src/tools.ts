@@ -77,6 +77,13 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
       transcriptsStored: episodes.filter((e) => e.transcriptStatus === "stored").length,
       transcriptsFailed: episodes.filter((e) => e.transcriptStatus === "failed").length,
       pendingReviews: pendingReviews.length,
+      // Unresolved scheduled-run stage failures: an error is live only while
+      // its stage is still incomplete for that episode.
+      pipelineStageErrors: episodes.filter(
+        (e) =>
+          (e.transcriptError && e.transcriptStatus !== "stored") ||
+          (e.reviewError && !e.reviewGeneratedAt),
+      ).length,
     },
     lastSyncAt: state.lastSyncAt ?? null,
     sync: {
