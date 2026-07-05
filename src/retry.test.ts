@@ -129,6 +129,20 @@ describe("fetchWithRetry", () => {
     expect(delays).toEqual([1000]);
   });
 
+  it("clamps a large numeric Retry-After header to capMs", async () => {
+    const { sleep, delays } = noWaitSleep();
+    let calls = 0;
+    const fetchImpl: FetchLike = (async () => {
+      calls++;
+      if (calls === 1) {
+        return new Response("slow down", { status: 429, headers: { "retry-after": "3600" } });
+      }
+      return new Response("ok", { status: 200 });
+    }) as FetchLike;
+    await fetchWithRetry(fetchImpl, "https://example.test", undefined, { sleep });
+    expect(delays).toEqual([RETRY_CAP_MS]);
+  });
+
   it("falls back to exponential backoff when Retry-After is non-numeric", async () => {
     const { sleep, delays } = noWaitSleep();
     let calls = 0;

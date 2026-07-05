@@ -80,7 +80,7 @@ export async function fetchWithRetry(
     if (attempt === maxAttempts) return response;
     const delay =
       response.status === 429
-        ? (retryAfterMs(response) ?? backoffDelayMs(attempt, baseMs, capMs))
+        ? Math.min(retryAfterMs(response) ?? backoffDelayMs(attempt, baseMs, capMs), capMs)
         : backoffDelayMs(attempt, baseMs, capMs);
     await sleep(delay);
   }
