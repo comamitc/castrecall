@@ -72,9 +72,17 @@ review/pending/<episodeUuid>.md
 ```
 
 `.staging/` is CastRecall's private scratch namespace: transcript artifacts are
-assembled there and published into `sources/` with a single atomic rename, so a
-directory that exists under `sources/` is always complete. Downstream scans
-must skip `.staging/` (and any future dot-prefixed top-level entry).
+assembled there and published into `sources/` with a single atomic rename, so
+directories CastRecall publishes appear all-at-once, never half-written.
+Downstream scans must skip `.staging/` (and any future dot-prefixed top-level
+entry).
+
+**Completeness marker:** consumers must treat `transcript.txt` as the marker
+that a `sources/<episodeUuid>/` entry is complete. An entry lacking it (for
+example, one left behind by a pre-v0.1.0 writer, or external tampering) is
+incomplete: skip it. CastRecall itself refuses to treat such directories as
+stored — `storeTranscript` surfaces them with an error naming the path so they
+can be repaired or removed manually; it never deletes them silently.
 
 ### `provenance.json` fields
 

@@ -18,5 +18,12 @@ jobs:
       - run: npm run typecheck
       - run: npm run build
       - name: Committed dist must match built output
-        run: git diff --exit-code -- dist
+        run: |
+          git diff --exit-code -- dist
+          untracked="$(git ls-files --others --exclude-standard dist)"
+          if [ -n "$untracked" ]; then
+            echo "Build produced dist files that are not committed:" >&2
+            echo "$untracked" >&2
+            exit 1
+          fi
       - run: npm test
