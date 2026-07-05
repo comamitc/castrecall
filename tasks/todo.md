@@ -1,30 +1,43 @@
-# CastRecall Review and Fix Plan
+# CastRecall Roadmap Execution — autonomous pipeline run
 
-## Context
+Goal: drive all 16 roadmap issues through `/pipeline` to merge on `main`, cutting a release when each milestone empties. Started 2026-07-05. (Previous todo — the 2026-07-04 review-and-fix plan — completed in full; see commit 243d25c.)
 
-- Goal: review the completed CastRecall OpenClaw plugin against the product brief and Claude build prompt, fix safe defects, verify, commit, and push directly to `origin/main`.
-- Branch: `main`.
-- Worktree note: user explicitly requested direct `main` work, which conflicts with the shared contract's worktree rule; direct `main` work is being used for this run.
+## Order (milestone-driven; matches docs/roadmaps/castrecall.md)
 
-## Plan
+Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; the roadmap file, milestone membership, and the verified #15→#14 dependency all agree on corpus-feed first. Following milestone order.
 
-- [x] Read shared operating contract, local guidance, existing lessons, and confirm branch/remote state.
-- [x] Pull latest `origin/main`.
-- [x] Read product context, original build prompt, README, package metadata, plugin metadata, source layout, tests, and recent commits.
-- [x] Inspect OpenClaw plugin CLI expectations (`plugins build`, `plugins validate`, install/list/inspect smoke paths).
-- [x] Run baseline verification: dependency install, typecheck/build, tests, plugin build, plugin validate, and safe tool/status commands.
-- [x] Review implementation for OpenClaw compatibility, credential safety, read-only Pocket Casts behavior, transcript ladder correctness, storage/idempotency, and approval-gated review behavior.
-- [x] Fix concrete defects with targeted changes and meaningful tests.
-- [x] Regenerate generated plugin metadata with project commands.
-- [x] Update README, `.env.example`, and docs where behavior or setup differs.
-- [x] Re-run full verification, including local install smoke test if safe.
-- [x] Commit cohesive fixes on `main`, push to `origin/main`, and verify the remote branch tip.
+## Setup (done)
 
-## Review Notes
+- [x] Read agent contract, lessons.md, pipeline SKILL.md
+- [x] Doctor preflight: PASS (fixed: checkout stranded on roadmap branch → main; stale node_modules → npm ci)
+- [x] Merged PR #17 (roadmap doc → docs/roadmaps/castrecall.md on main, CI green)
+- [x] All 16 issues triaged to `pipeline:ready`
 
-- Fixed public install packaging: `dist/` is now intended to be committed, package artifact includes docs and `.env.example`, README uses OpenClaw's working `git:github.com/...@ref` syntax, and `package.json#openclaw` now declares install and compatibility metadata.
-- Fixed approval-gate leak: `castrecall_fetch_transcript` no longer returns transcript excerpts directly; it only returns paths/status and points callers to `castrecall_generate_review`.
-- Fixed review URL hygiene: model-facing review markdown strips query strings and fragments from provenance URLs while retaining full URLs in `provenance.json`.
-- Fixed RSS transcript edge cases: namespace alias tags, relative transcript URLs, `text/srt` format preference, VTT files whose first cue follows the header directly, common JSON transcript shapes, and SRT speaker labels.
-- Fixed state drift: when transcript files already exist, `castrecall_fetch_transcript` repairs the episode state to `stored` so bulk review generation can pick it up.
-- Final verification passed: `npm install`, `npm run typecheck`, `npm run build`, `npm test` (40 tests), `openclaw plugins build --root . --entry ./dist/index.js --check`, `openclaw plugins validate --root . --entry ./dist/index.js`, `npm pack --dry-run --json`, direct setup-status smoke without credentials, linked install smoke, and `npm-pack:` install smoke.
+## Execution queue
+
+### v0.1.0 — corpus feed
+- [ ] #15 contract hardening (prereq of #14) — pipeline → merge
+- [ ] #14 corpus-export mode — pipeline → merge (after #15)
+- [ ] #16 README positioning — pipeline → merge
+- [ ] release v0.1.0 → tag, close milestone
+
+### v0.2.0 — freshness & onboarding
+- [ ] #3 periodic sync · [ ] #2 setup flow · [ ] release v0.2.0
+
+### v0.3.0 — robustness
+- [ ] #7 credentials · [ ] #6 retry/backoff · [ ] release v0.3.0
+
+### v0.4.0–v0.9.0 — ladder breadth & distribution
+- [ ] #13, #12 → v0.4.0 · [ ] #10 → v0.5.0 · [ ] #9 → v0.6.0 · [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
+
+### v0.10.0 — memory-curation lane
+- [ ] #1 review disposition tool · [ ] release v0.10.0
+
+## Dependencies (verified)
+- #15 → #14 (content hash before export idempotency). No other hard edges.
+
+## Blockers
+- (none)
+
+## Merge/release log
+- PR #17 (roadmap doc) squash-merged to main — setup, not a roadmap issue.
