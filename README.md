@@ -107,13 +107,19 @@ Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`) can
 
 ```
 ~/.openclaw/castrecall/
-├── state.json                    # sync state: seen listens, transcript status
+├── state.json                    # sync state: seen listens, transcript status, schemaVersion
 ├── sources/<episodeUuid>/        # private source material
 │   ├── raw.<ext>                 # transcript exactly as fetched/generated
 │   ├── transcript.txt            # normalized plain text
-│   └── provenance.json           # platform, feed, URLs, timestamps, source, privacy class
+│   └── provenance.json           # platform, feed, URLs, timestamps, source, privacy class,
+│                                  # contentHash, schemaVersion
 └── review/pending/<episodeUuid>.md   # approval-gated review candidates
 ```
+
+`state.json` and `provenance.json` are a versioned, machine-readable
+interface — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#data-dir-versioned-machine-readable-interface)
+for the full field list and stability guarantees (episode/podcast UUIDs never
+change; sidecars are write-once).
 
 ## Example workflow
 

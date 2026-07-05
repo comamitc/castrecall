@@ -1,9 +1,10 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
-import { Storage, type Provenance } from "./storage.js";
+import { Storage, type Provenance, type StoredProvenance } from "./storage.js";
 
 const EPISODE: PocketCastsEpisode = {
   uuid: "ep-1",
@@ -17,6 +18,7 @@ const EPISODE: PocketCastsEpisode = {
 const PROVENANCE: Provenance = {
   platform: "pocketcasts",
   podcastTitle: "Example Show",
+  podcastUuid: "pod-1",
   episodeTitle: "Episode One",
   episodeUuid: "ep-1",
   audioUrl: "https://cdn.example.com/ep1.mp3",
@@ -112,5 +114,98 @@ describe("Storage", () => {
     await fs.writeFile(path.join(dir, "state.json"), "{corrupt", "utf8");
     const state = await storage.loadState();
     expect(state.episodes).toEqual({});
+  });
+
+  it("stamps provenance.json with a stable content hash of the transcript text", async () => {
+    const stored = await storage.storeTranscript("ep-1", {
+      raw: "WEBVTT\n\nfirst",
+      ext: "vtt",
+      text: "first version",
+      provenance: PROVENANCE,
+    });
+    const provenance = JSON.parse(
+      await fs.readFile(stored.provenancePath, "utf8"),
+    ) as StoredProvenance;
+    expect(provenance.contentHash).toBe(
+      createHash("sha256").update("first version", "utf8").digest("hex"),
+    );
+    expect(provenance.schemaVersion).toBe(1);
+    expect(provenance.podcastUuid).toBe("pod-1");
+
+    // Re-storing with different text must not overwrite the hash: it is
+    // computed once, at first write, and stable across re-runs.
+    await storage.storeTranscript("ep-1", {
+      raw: "different",
+      ext: "txt",
+      text: "second version",
+      provenance: { ...PROVENANCE, transcriptSource: "stt" },
+    });
+    const stillFirst = JSON.parse(
+      await fs.readFile(stored.provenancePath, "utf8"),
+    ) as StoredProvenance;
+    expect(stillFirst.contentHash).toBe(provenance.contentHash);
+  });
+
+  it("produces a valid content hash for empty transcript text", async () => {
+    const stored = await storage.storeTranscript("ep-1", {
+      raw: "",
+      ext: "txt",
+      text: "",
+      provenance: PROVENANCE,
+    });
+    const provenance = JSON.parse(
+      await fs.readFile(stored.provenancePath, "utf8"),
+    ) as StoredProvenance;
+    expect(provenance.contentHash).toBe(createHash("sha256").update("", "utf8").digest("hex"));
+  });
+
+  it("stamps schemaVersion on state.json alongside the internal version guard", async () => {
+    await storage.recordListens([EPISODE]);
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.version).toBe(1);
+    expect(state.schemaVersion).toBe(1);
+  });
+
+  it("loads legacy state.json missing schemaVersion without dropping episodes", async () => {
+    const legacy = {
+      version: 1,
+      episodes: { "ep-1": { ...EPISODE, transcriptStatus: "none", firstSeenAt: "x", updatedAt: "x" } },
+    };
+    await fs.writeFile(path.join(dir, "state.json"), JSON.stringify(legacy), "utf8");
+    const state = await storage.loadState();
+    expect(state.episodes["ep-1"]).toBeDefined();
+    expect(state.schemaVersion).toBe(1);
+  });
+
+  it("reads legacy provenance.json missing schemaVersion/contentHash/podcastUuid without throwing", async () => {
+    const legacyDir = storage.sourceDir("ep-1");
+    await fs.mkdir(legacyDir, { recursive: true });
+    const legacyProvenance = {
+      platform: "pocketcasts",
+      podcastTitle: "Example Show",
+      episodeTitle: "Episode One",
+      episodeUuid: "ep-1",
+      transcriptSource: "rss",
+      format: "vtt",
+      fetchedAt: "2026-07-04T00:00:00Z",
+      privacyClass: "private-source",
+    };
+    await fs.writeFile(path.join(legacyDir, "provenance.json"), JSON.stringify(legacyProvenance), "utf8");
+    const read = await storage.readProvenance("ep-1");
+    expect(read?.transcriptSource).toBe("rss");
+    expect(read?.contentHash).toBeUndefined();
+  });
+
+  it("never allows updateEpisode to change stable identifiers", async () => {
+    await storage.recordListens([EPISODE]);
+    const updated = await storage.updateEpisode("ep-1", {
+      transcriptStatus: "stored",
+      // Smuggle an attempt to change stable IDs past the type system.
+      podcastUuid: "evil",
+      uuid: "evil",
+    } as any);
+    expect(updated?.uuid).toBe("ep-1");
+    expect(updated?.podcastUuid).toBe("pod-1");
+    expect(updated?.transcriptStatus).toBe("stored");
   });
 });

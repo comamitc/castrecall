@@ -9,6 +9,7 @@ import { fetchTranscript, generateReview, listRecent, setupStatus, syncHistory }
 const PROVENANCE: Provenance = {
   platform: "pocketcasts",
   podcastTitle: "Example Show",
+  podcastUuid: "pod-1",
   episodeTitle: "Episode One",
   episodeUuid: "ep-1",
   audioUrl: "https://cdn.example.com/ep1.mp3?token=secret-audio",
