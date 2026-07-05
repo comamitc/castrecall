@@ -50,6 +50,24 @@ describe("tools", () => {
     await expect(syncHistory(config(), {})).rejects.toThrowError(/POCKETCASTS_EMAIL/);
   });
 
+  it("setup_status reports sync health and cooldown state without leaking secrets", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordSyncFailure(
+      "Pocket Casts history request failed with HTTP 500.",
+      () => new Date("2026-07-05T00:00:00Z"),
+    );
+
+    const status = (await setupStatus(config(), { now: () => new Date("2026-07-05T00:01:00Z") })) as Record<
+      string,
+      any
+    >;
+    expect(status.sync.consecutiveFailures).toBe(1);
+    expect(status.sync.lastError).toContain("HTTP 500");
+    expect(status.sync.inCooldown).toBe(true);
+    expect(JSON.stringify(status)).not.toContain("hunter2");
+  });
+
   it("sync_history records new listens via the (stubbed) Pocket Casts API", async () => {
     const fetchImpl = (async (input: any) => {
       const url = String(input);

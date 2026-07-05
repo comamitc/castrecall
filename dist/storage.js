@@ -14,12 +14,18 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { CastrecallSetupError } from "./config.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
  * shape). Bump only for breaking changes; new fields are additive within a
  * major version — see docs/ARCHITECTURE.md.
  */
 export const SCHEMA_VERSION = 1;
+/** Capped exponential backoff for the periodic-sync cooldown gate. */
+export const BACKOFF_BASE_MS = 5 * 60_000;
+export const BACKOFF_CAP_MS = 60 * 60_000;
+/** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
+export const LOCK_TTL_MS = 10 * 60_000;
 const EMPTY_STATE = { version: 1, schemaVersion: SCHEMA_VERSION, episodes: {} };
 export class Storage {
     dataDir;
@@ -45,12 +51,13 @@ export class Storage {
             const parsed = JSON.parse(raw);
             if (parsed.version !== 1 || typeof parsed.episodes !== "object")
                 return { ...EMPTY_STATE };
-            // schemaVersion is additive: legacy state.json predating it still loads.
+            // schemaVersion/sync are additive: legacy state.json predating them still loads.
             return {
                 version: 1,
                 lastSyncAt: parsed.lastSyncAt,
                 episodes: parsed.episodes,
                 schemaVersion: parsed.schemaVersion ?? SCHEMA_VERSION,
+                sync: parsed.sync,
             };
         }
         catch {
@@ -93,6 +100,254 @@ export class Storage {
         state.lastSyncAt = timestamp;
         await this.saveState(state);
         return { added, totalSeen: Object.keys(state.episodes).length };
+    }
+    /** Clear backoff state after a successful login + history fetch. */
+    async recordSyncSuccess(now = () => new Date()) {
+        const state = await this.loadState();
+        state.sync = { consecutiveFailures: 0 };
+        state.lastSyncAt = now().toISOString();
+        await this.saveState(state);
+    }
+    /**
+     * Record a sync failure and compute the next eligible retry time via
+     * capped exponential backoff, so a scheduler never hammers the unofficial
+     * Pocket Casts API.
+     */
+    async recordSyncFailure(message, now = () => new Date()) {
+        const state = await this.loadState();
+        const consecutiveFailures = (state.sync?.consecutiveFailures ?? 0) + 1;
+        const delay = Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_CAP_MS);
+        const nowDate = now();
+        const sync = {
+            consecutiveFailures,
+            lastError: message,
+            lastErrorAt: nowDate.toISOString(),
+            nextEligibleAt: new Date(nowDate.getTime() + delay).toISOString(),
+        };
+        state.sync = sync;
+        await this.saveState(state);
+        return sync;
+    }
+    get lockPath() {
+        return path.join(this.dataDir, ".staging", "pipeline.lock");
+    }
+    /**
+     * Exclusive-create a run lock so overlapping scheduler invocations never
+     * both hit the unofficial Pocket Casts API concurrently.
+     *
+     * FAIL-CLOSED DESIGN — there is deliberately NO automatic stale-lock
+     * reclaim. Plain POSIX filesystem operations have no compare-and-swap, so
+     * every check-then-steal scheme has a stall window in which a delayed
+     * reclaimer can evict a fresh holder's live lock (proven repeatedly in
+     * review). Instead:
+     *   - the scheduled path only ever exclusive-creates (`wx`) and touches
+     *     its OWN lock — it can never delete or replace anyone else's;
+     *   - a live holder renews the lock's mtime on a heartbeat, so a lock
+     *     whose mtime is older than `LOCK_TTL_MS` can only belong to a
+     *     hard-killed run (SIGKILL/power loss — normal errors release in
+     *     `finally`);
+     *   - such a stale lock is REPORTED (`staleLockAgeMs`) and recovery is an
+     *     explicit, human-triggered `breakStaleLock` — never scheduled.
+     */
+    async acquirePipelineLock(now = () => new Date()) {
+        await fs.mkdir(path.join(this.dataDir, ".staging"), { recursive: true });
+        // Distinguish recovery blockage explicitly: an orphaned recovery mutex
+        // (hard-killed recovery) must be diagnosable, not a generic "locked".
+        if (await this.recoveryMutexExists()) {
+            return { acquired: false, recoveryBlocked: true };
+        }
+        const token = randomUUID();
+        if (await this.tryAcquireExclusive(token, now)) {
+            return { acquired: true, token };
+        }
+        if (await this.recoveryMutexExists()) {
+            return { acquired: false, recoveryBlocked: true };
+        }
+        let mtimeMs;
+        try {
+            mtimeMs = (await fs.stat(this.lockPath)).mtimeMs;
+        }
+        catch {
+            // Lock vanished between the failed exclusive create and the stat (the
+            // holder released). One more exclusive attempt, then back off.
+            if (await this.tryAcquireExclusive(token, now)) {
+                return { acquired: true, token };
+            }
+            return { acquired: false };
+        }
+        const age = now().getTime() - mtimeMs;
+        if (age > LOCK_TTL_MS) {
+            return { acquired: false, staleLockAgeMs: age };
+        }
+        return { acquired: false };
+    }
+    /**
+     * Exclusive acquisition that PARTICIPATES in the recovery mutex: it fails
+     * closed while a recovery is in progress, and re-checks after creating —
+     * an acquirer that raced past the pre-check while the mutex was being
+     * created releases its own lock and backs off. This closes the window
+     * where a recovery that already re-verified a stale lock could otherwise
+     * remove a fresh lock created by a scheduled tick in that gap: no
+     * scheduled acquirer can ever HOLD a lock while the mutex exists.
+     */
+    async tryAcquireExclusive(token, now) {
+        if (await this.recoveryMutexExists())
+            return false;
+        if (!(await this.createLockExclusive(token, now)))
+            return false;
+        if (await this.recoveryMutexExists()) {
+            await this.releasePipelineLock(token);
+            return false;
+        }
+        return true;
+    }
+    async recoveryMutexExists() {
+        try {
+            await fs.stat(this.recoveryMutexPath);
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+    get recoveryMutexPath() {
+        return `${this.lockPath}.recovery`;
+    }
+    /**
+     * Explicit recovery from a crashed run's leftover lock. Serialized behind
+     * an UNSTEALABLE recovery mutex (exclusive-create, no TTL, no takeover):
+     * two concurrent recoveries cannot both proceed, so the re-checked stale
+     * lock cannot be swapped for a fresh one between the check and the
+     * removal. A crashed recovery leaves the mutex behind and every later
+     * recovery fails closed with the manual remediation — by design, the
+     * failure mode is "a human removes one file", never "two runs proceed".
+     * Throws CastrecallSetupError when recovery is blocked; must never be
+     * called from a scheduler.
+     */
+    async breakStaleLock(now = () => new Date()) {
+        await fs.mkdir(path.join(this.dataDir, ".staging"), { recursive: true });
+        try {
+            await fs.writeFile(this.recoveryMutexPath, new Date().toISOString(), {
+                encoding: "utf8",
+                flag: "wx",
+            });
+        }
+        catch (error) {
+            if (error.code !== "EEXIST")
+                throw error;
+            throw new CastrecallSetupError(`Stale-lock recovery is blocked: ${this.recoveryMutexPath} exists, which means another ` +
+                "recovery is in progress or a previous recovery was hard-killed. After confirming no " +
+                "recovery is running, remove that file manually and retry.");
+        }
+        try {
+            // Scheduled acquirers fail closed while the mutex exists AND self-release
+            // if they raced past the pre-check (see tryAcquireExclusive), so from
+            // here on no scheduled tick can hold a lock: what we re-verify below is
+            // what we remove.
+            try {
+                const age = now().getTime() - (await fs.stat(this.lockPath)).mtimeMs;
+                if (age <= LOCK_TTL_MS)
+                    return { acquired: false }; // live again — refuse
+                await fs.rm(this.lockPath, { force: true });
+            }
+            catch {
+                // Lock already gone — fall through to the exclusive create.
+            }
+            // Direct exclusive create (NOT acquirePipelineLock — that would fail
+            // closed on our own mutex). A raced create losing here is a clean back-off.
+            const token = randomUUID();
+            if (await this.createLockExclusive(token, now)) {
+                return { acquired: true, token };
+            }
+            return { acquired: false };
+        }
+        finally {
+            await fs.rm(this.recoveryMutexPath, { force: true });
+        }
+    }
+    /**
+     * Read-only lock health for status surfaces: whether a run lock exists,
+     * its age, and whether it reads as stale (heartbeat stopped > LOCK_TTL_MS
+     * ago — a hard-killed run).
+     */
+    async inspectPipelineLock(now = () => new Date()) {
+        const recovery = (await this.recoveryMutexExists())
+            ? { recoveryMutex: { path: this.recoveryMutexPath } }
+            : {};
+        try {
+            const ageMs = now().getTime() - (await fs.stat(this.lockPath)).mtimeMs;
+            return { held: true, ageMs, stale: ageMs > LOCK_TTL_MS, ...recovery };
+        }
+        catch {
+            return { held: false, ...recovery };
+        }
+    }
+    /**
+     * Exclusive-create the lock file and stamp its mtime from the caller's
+     * clock (mtime is the staleness authority; the payload is informational).
+     */
+    async createLockExclusive(token, now) {
+        const payload = { token, acquiredAt: now().toISOString() };
+        try {
+            await fs.writeFile(this.lockPath, JSON.stringify(payload), { encoding: "utf8", flag: "wx" });
+        }
+        catch (error) {
+            if (error.code === "EEXIST")
+                return false;
+            throw error;
+        }
+        await fs.utimes(this.lockPath, now(), now()).catch(() => { });
+        return true;
+    }
+    /**
+     * Renew a held lock so a still-running pipeline invocation (e.g. a slow
+     * local-Whisper transcription well past `LOCK_TTL_MS`) is never reclaimed
+     * as abandoned. Renewal is a pure token-verified TOUCH (utimes) — it never
+     * writes or renames the lock file. That makes it safe under any
+     * interleaving with stale reclaim: if this holder already lost the lock,
+     * the token check fails and it stops renewing; in the worst case a renewal
+     * that races a reclaim touches the NEW holder's live lock, which merely
+     * refreshes an already-live lock and can never produce two holders.
+     */
+    async renewPipelineLock(token, now = () => new Date()) {
+        let raw;
+        try {
+            raw = await fs.readFile(this.lockPath, "utf8");
+        }
+        catch (error) {
+            // File gone = the lock was released or explicitly broken: definitive.
+            // Any other read failure is a transient filesystem problem — the caller
+            // must NOT treat it as loss (that would strand a lock we still own).
+            return error.code === "ENOENT" ? "lost" : "transient-error";
+        }
+        let parsedToken;
+        try {
+            parsedToken = JSON.parse(raw).token;
+        }
+        catch {
+            return "transient-error";
+        }
+        if (parsedToken !== token)
+            return "lost";
+        try {
+            await fs.utimes(this.lockPath, now(), now());
+            return "renewed";
+        }
+        catch {
+            return "transient-error";
+        }
+    }
+    /** Release a held lock — only if `token` still matches the current holder. */
+    async releasePipelineLock(token) {
+        try {
+            const existing = JSON.parse(await fs.readFile(this.lockPath, "utf8"));
+            if (existing.token !== token)
+                return;
+            await fs.rm(this.lockPath, { force: true });
+        }
+        catch {
+            // Lock already gone — nothing to do.
+        }
     }
     async updateEpisode(episodeUuid, patch, now = () => new Date()) {
         const state = await this.loadState();

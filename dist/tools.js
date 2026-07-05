@@ -21,6 +21,43 @@ function storageFor(config) {
  * state.json) and recomputes the content hash for legacy sidecars that
  * predate it, so export never emits an undefined content_hash.
  */
+/**
+ * Run the opt-in corpus export for an episode and persist the outcome:
+ * `exportedAt` on success (clearing any prior `exportError`), `exportError`
+ * on failure. Never throws — a failed export must not mask the successful
+ * transcript stage, and the persisted error is what lets scheduled runs
+ * retry the export later and setup_status surface it.
+ */
+export async function exportAndRecord(config, storage, record, now = () => new Date()) {
+    if (!config.exportDir)
+        return undefined;
+    try {
+        const result = await exportIfEnabled(config, storage, record);
+        if (result === undefined) {
+            // Export was enabled but its inputs are missing on disk — that is a
+            // repairable failure, never a success: recording exportedAt here would
+            // stop scheduled runs from ever retrying this episode.
+            const message = `Corpus export skipped for ${record.uuid}: transcript.txt or provenance.json is missing ` +
+                `under sources/${record.uuid}/. Repair or remove the directory, or re-run ` +
+                "castrecall_fetch_transcript for this episode.";
+            await storage.updateEpisode(record.uuid, { exportError: message }, now);
+            return { error: message };
+        }
+        // A clean content-hash skip on an episode with no outstanding error is a
+        // pure no-op: rewriting state here would make every scheduled tick mutate
+        // state.json once per stored episode for nothing.
+        if (result.skipped && !record.exportError) {
+            return result;
+        }
+        await storage.updateEpisode(record.uuid, { exportedAt: now().toISOString(), exportError: undefined }, now);
+        return result;
+    }
+    catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await storage.updateEpisode(record.uuid, { exportError: message }, now);
+        return { error: message };
+    }
+}
 async function exportIfEnabled(config, storage, record) {
     if (!config.exportDir)
         return undefined;
@@ -32,15 +69,66 @@ async function exportIfEnabled(config, storage, record) {
     const exporter = new CorpusExporter(config.exportDir);
     return exporter.exportEpisode({ record, provenance, text, contentHash });
 }
-export async function setupStatus(config) {
+/**
+ * Live (unresolved) scheduled-run stage failures: an error counts only while
+ * its stage is still incomplete for that episode, so a later success clears
+ * it from this view.
+ */
+function livePipelineErrors(episodes, config) {
+    const errors = [];
+    for (const e of episodes) {
+        if (e.transcriptError && e.transcriptStatus !== "stored") {
+            errors.push({ stage: "transcript", episodeUuid: e.uuid, title: e.title, error: e.transcriptError, at: e.updatedAt });
+        }
+        if (config.exportDir && e.exportError) {
+            errors.push({ stage: "export", episodeUuid: e.uuid, title: e.title, error: e.exportError, at: e.updatedAt });
+        }
+        if (e.reviewError && !e.reviewGeneratedAt) {
+            errors.push({ stage: "review", episodeUuid: e.uuid, title: e.title, error: e.reviewError, at: e.updatedAt });
+        }
+    }
+    return errors;
+}
+export async function setupStatus(config, deps = {}) {
     const storage = storageFor(config);
     const state = await storage.loadState();
     const episodes = Object.values(state.episodes);
     const pendingReviews = await storage.listPendingReviews();
     const stt = sttAvailability(config);
     const whisper = await detectLocalWhisper(config);
+    const now = deps.now ?? (() => new Date());
+    const nextEligibleAt = state.sync?.nextEligibleAt;
+    const lock = await storage.inspectPipelineLock(now);
     return {
         dataDir: config.dataDir,
+        // Lock health is read straight from the lock file, so a hard-killed run
+        // is visible here even though it never got to write anything to state.
+        pipelineLock: {
+            ...(lock.held
+                ? {
+                    held: true,
+                    ageMinutes: Math.round(lock.ageMs / 60_000),
+                    stale: lock.stale,
+                    ...(lock.stale
+                        ? {
+                            note: "Stale lock: a run was hard-killed. Scheduled runs are skipping (fail-closed). " +
+                                "After confirming no run is alive, recover with castrecall_run_pipeline " +
+                                "{ breakStaleLock: true }.",
+                        }
+                        : {}),
+                }
+                : { held: false }),
+            ...(lock.recoveryMutex
+                ? {
+                    recoveryMutex: {
+                        path: lock.recoveryMutex.path,
+                        note: "A stale-lock recovery is in progress — or was hard-killed and left this mutex " +
+                            "behind, which blocks all scheduled runs (fail-closed). If no recovery is " +
+                            "running, remove the file manually; scheduled runs resume on the next tick.",
+                    },
+                }
+                : {}),
+        },
         pocketcasts: {
             credentialsConfigured: Boolean(config.pocketcasts.email && config.pocketcasts.password),
             note: "Unofficial API — read-only history access only. May break without notice.",
@@ -58,8 +146,19 @@ export async function setupStatus(config) {
             transcriptsStored: episodes.filter((e) => e.transcriptStatus === "stored").length,
             transcriptsFailed: episodes.filter((e) => e.transcriptStatus === "failed").length,
             pendingReviews: pendingReviews.length,
+            pipelineStageErrors: livePipelineErrors(episodes, config).length,
         },
+        // Actionable detail for every live stage failure (stage errors are
+        // cleared when their stage later succeeds, so this converges to []).
+        pipelineErrors: livePipelineErrors(episodes, config).slice(0, 20),
         lastSyncAt: state.lastSyncAt ?? null,
+        sync: {
+            lastError: state.sync?.lastError ?? null,
+            lastErrorAt: state.sync?.lastErrorAt ?? null,
+            consecutiveFailures: state.sync?.consecutiveFailures ?? 0,
+            nextEligibleAt: nextEligibleAt ?? null,
+            inCooldown: Boolean(nextEligibleAt && now() < new Date(nextEligibleAt)),
+        },
         privacyModel: "Full transcripts are stored privately under the data dir and are never " +
             "promoted into durable memory by CastRecall. Review candidates in " +
             "review/pending/ require explicit human approval.",
@@ -112,7 +211,7 @@ export async function fetchTranscript(config, params, deps = {}) {
                 transcriptSource: provenance?.transcriptSource,
                 transcriptError: undefined,
             }, deps.now ?? (() => new Date()));
-        const exportResult = await exportIfEnabled(config, storage, updated ?? record);
+        const exportResult = await exportAndRecord(config, storage, updated ?? record, deps.now ?? (() => new Date()));
         return {
             status: "already-stored",
             episode: summarizeListen(updated ?? record),
@@ -164,7 +263,7 @@ export async function fetchTranscript(config, params, deps = {}) {
         provenance,
     });
     await storage.updateEpisode(record.uuid, { transcriptStatus: "stored", transcriptSource: result.transcript.source, transcriptError: undefined }, now);
-    const exportResult = await exportIfEnabled(config, storage, record);
+    const exportResult = await exportAndRecord(config, storage, record, now);
     return {
         status: "stored",
         episode: summarizeListen({ ...record, transcriptStatus: "stored" }),
@@ -210,6 +309,12 @@ export async function generateReview(config, params, deps = {}) {
         });
         const written = await storage.writeReviewCandidate(record.uuid, markdown);
         if (written.alreadyExists) {
+            // Reconcile state: a pending review file without reviewGeneratedAt means
+            // a prior run crashed between the write and the state update. Mark it
+            // done so scheduled runs converge instead of re-targeting it forever.
+            if (!record.reviewGeneratedAt) {
+                await storage.updateEpisode(record.uuid, { reviewGeneratedAt: now().toISOString(), reviewError: undefined }, now);
+            }
             skipped.push({
                 episodeUuid: record.uuid,
                 title: record.title,
@@ -217,7 +322,7 @@ export async function generateReview(config, params, deps = {}) {
             });
         }
         else {
-            await storage.updateEpisode(record.uuid, { reviewGeneratedAt: now().toISOString() }, now);
+            await storage.updateEpisode(record.uuid, { reviewGeneratedAt: now().toISOString(), reviewError: undefined }, now);
             generated.push({ episodeUuid: record.uuid, title: record.title, path: written.path });
         }
     }

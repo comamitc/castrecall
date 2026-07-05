@@ -47,7 +47,8 @@
       "castrecall_sync_history",
       "castrecall_recent",
       "castrecall_fetch_transcript",
-      "castrecall_generate_review"
+      "castrecall_generate_review",
+      "castrecall_run_pipeline"
     ]
   }
 }

@@ -19,6 +19,18 @@ import type { PocketCastsEpisode } from "./pocketcasts/client.js";
  */
 export declare const SCHEMA_VERSION = 1;
 export type TranscriptStatus = "none" | "stored" | "failed";
+/** Capped exponential backoff for the periodic-sync cooldown gate. */
+export declare const BACKOFF_BASE_MS: number;
+export declare const BACKOFF_CAP_MS: number;
+/** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
+export declare const LOCK_TTL_MS: number;
+export type SyncHealth = {
+    consecutiveFailures: number;
+    lastError?: string;
+    lastErrorAt?: string;
+    /** Set only while backing off; cleared on the next success. */
+    nextEligibleAt?: string;
+};
 export type ListenRecord = {
     uuid: string;
     title: string;
@@ -34,6 +46,12 @@ export type ListenRecord = {
     transcriptStatus: TranscriptStatus;
     transcriptSource?: string;
     transcriptError?: string;
+    /** Last scheduled-run review-stage failure for this episode, if any. */
+    reviewError?: string;
+    /** When corpus export last succeeded for this episode (only set when export is enabled). */
+    exportedAt?: string;
+    /** Last corpus-export failure for this episode, if any; cleared on the next successful export. */
+    exportError?: string;
     reviewGeneratedAt?: string;
     updatedAt: string;
 };
@@ -43,6 +61,7 @@ export type CastrecallState = {
     schemaVersion: number;
     lastSyncAt?: string;
     episodes: Record<string, ListenRecord>;
+    sync?: SyncHealth;
 };
 export type Provenance = {
     platform: "pocketcasts";
@@ -90,6 +109,105 @@ export declare class Storage {
         added: ListenRecord[];
         totalSeen: number;
     }>;
+    /** Clear backoff state after a successful login + history fetch. */
+    recordSyncSuccess(now?: () => Date): Promise<void>;
+    /**
+     * Record a sync failure and compute the next eligible retry time via
+     * capped exponential backoff, so a scheduler never hammers the unofficial
+     * Pocket Casts API.
+     */
+    recordSyncFailure(message: string, now?: () => Date): Promise<SyncHealth>;
+    private get lockPath();
+    /**
+     * Exclusive-create a run lock so overlapping scheduler invocations never
+     * both hit the unofficial Pocket Casts API concurrently.
+     *
+     * FAIL-CLOSED DESIGN — there is deliberately NO automatic stale-lock
+     * reclaim. Plain POSIX filesystem operations have no compare-and-swap, so
+     * every check-then-steal scheme has a stall window in which a delayed
+     * reclaimer can evict a fresh holder's live lock (proven repeatedly in
+     * review). Instead:
+     *   - the scheduled path only ever exclusive-creates (`wx`) and touches
+     *     its OWN lock — it can never delete or replace anyone else's;
+     *   - a live holder renews the lock's mtime on a heartbeat, so a lock
+     *     whose mtime is older than `LOCK_TTL_MS` can only belong to a
+     *     hard-killed run (SIGKILL/power loss — normal errors release in
+     *     `finally`);
+     *   - such a stale lock is REPORTED (`staleLockAgeMs`) and recovery is an
+     *     explicit, human-triggered `breakStaleLock` — never scheduled.
+     */
+    acquirePipelineLock(now?: () => Date): Promise<{
+        acquired: true;
+        token: string;
+    } | {
+        acquired: false;
+        staleLockAgeMs?: number;
+        recoveryBlocked?: boolean;
+    }>;
+    /**
+     * Exclusive acquisition that PARTICIPATES in the recovery mutex: it fails
+     * closed while a recovery is in progress, and re-checks after creating —
+     * an acquirer that raced past the pre-check while the mutex was being
+     * created releases its own lock and backs off. This closes the window
+     * where a recovery that already re-verified a stale lock could otherwise
+     * remove a fresh lock created by a scheduled tick in that gap: no
+     * scheduled acquirer can ever HOLD a lock while the mutex exists.
+     */
+    private tryAcquireExclusive;
+    private recoveryMutexExists;
+    private get recoveryMutexPath();
+    /**
+     * Explicit recovery from a crashed run's leftover lock. Serialized behind
+     * an UNSTEALABLE recovery mutex (exclusive-create, no TTL, no takeover):
+     * two concurrent recoveries cannot both proceed, so the re-checked stale
+     * lock cannot be swapped for a fresh one between the check and the
+     * removal. A crashed recovery leaves the mutex behind and every later
+     * recovery fails closed with the manual remediation — by design, the
+     * failure mode is "a human removes one file", never "two runs proceed".
+     * Throws CastrecallSetupError when recovery is blocked; must never be
+     * called from a scheduler.
+     */
+    breakStaleLock(now?: () => Date): Promise<{
+        acquired: true;
+        token: string;
+    } | {
+        acquired: false;
+        staleLockAgeMs?: number;
+    }>;
+    /**
+     * Read-only lock health for status surfaces: whether a run lock exists,
+     * its age, and whether it reads as stale (heartbeat stopped > LOCK_TTL_MS
+     * ago — a hard-killed run).
+     */
+    inspectPipelineLock(now?: () => Date): Promise<({
+        held: false;
+    } | {
+        held: true;
+        ageMs: number;
+        stale: boolean;
+    }) & {
+        recoveryMutex?: {
+            path: string;
+        };
+    }>;
+    /**
+     * Exclusive-create the lock file and stamp its mtime from the caller's
+     * clock (mtime is the staleness authority; the payload is informational).
+     */
+    private createLockExclusive;
+    /**
+     * Renew a held lock so a still-running pipeline invocation (e.g. a slow
+     * local-Whisper transcription well past `LOCK_TTL_MS`) is never reclaimed
+     * as abandoned. Renewal is a pure token-verified TOUCH (utimes) — it never
+     * writes or renames the lock file. That makes it safe under any
+     * interleaving with stale reclaim: if this holder already lost the lock,
+     * the token check fails and it stops renewing; in the worst case a renewal
+     * that races a reclaim touches the NEW holder's live lock, which merely
+     * refreshes an already-live lock and can never produce two holders.
+     */
+    renewPipelineLock(token: string, now?: () => Date): Promise<"renewed" | "lost" | "transient-error">;
+    /** Release a held lock — only if `token` still matches the current holder. */
+    releasePipelineLock(token: string): Promise<void>;
     updateEpisode(episodeUuid: string, patch: Partial<Omit<ListenRecord, "uuid" | "podcastUuid">>, now?: () => Date): Promise<ListenRecord | undefined>;
     hasTranscript(episodeUuid: string): Promise<boolean>;
     readTranscript(episodeUuid: string): Promise<string | undefined>;
