@@ -20,6 +20,7 @@ const TYPE_PREFERENCE = [
   "text/vtt",
   "application/srt",
   "application/x-subrip",
+  "text/srt",
   "text/plain",
   "text/html",
 ];

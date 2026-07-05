@@ -49,10 +49,10 @@ export function buildReviewCandidate(options: {
     "## Provenance",
     "",
     `- Platform: Pocket Casts (listen history)`,
-    provenance.feedUrl ? `- Feed: ${provenance.feedUrl}` : undefined,
-    provenance.episodeUrl ? `- Episode page: ${provenance.episodeUrl}` : undefined,
-    provenance.audioUrl ? `- Audio: ${provenance.audioUrl}` : undefined,
-    `- Transcript: ${provenance.transcriptSource}${provenance.transcriptSourceUrl ? ` (${provenance.transcriptSourceUrl})` : ""}`,
+    provenance.feedUrl ? `- Feed: ${reviewUrl(provenance.feedUrl)}` : undefined,
+    provenance.episodeUrl ? `- Episode page: ${reviewUrl(provenance.episodeUrl)}` : undefined,
+    provenance.audioUrl ? `- Audio: ${reviewUrl(provenance.audioUrl)}` : undefined,
+    `- Transcript: ${provenance.transcriptSource}${provenance.transcriptSourceUrl ? ` (${reviewUrl(provenance.transcriptSourceUrl)})` : ""}`,
     `- Fetched: ${provenance.fetchedAt}`,
     `- Full transcript (${wordCount.toLocaleString()} words): ${transcriptPath}`,
     "",
@@ -111,4 +111,18 @@ function sentenceChunks(text: string): string[] {
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
+}
+
+function reviewUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    const hadPrivateParts = url.search.length > 0 || url.hash.length > 0;
+    url.search = "";
+    url.hash = "";
+    return hadPrivateParts
+      ? `${url.toString()} (query removed; full URL is in provenance.json)`
+      : url.toString();
+  } catch {
+    return value;
+  }
 }

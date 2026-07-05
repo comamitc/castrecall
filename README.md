@@ -36,8 +36,8 @@ Use it with those expectations.
 ## Install
 
 ```bash
-# from GitHub
-openclaw plugins install https://github.com/comamitc/castrecall
+# from GitHub (current public install path)
+openclaw plugins install git:github.com/comamitc/castrecall@main
 
 # or from a local clone (for development)
 git clone https://github.com/comamitc/castrecall
@@ -46,6 +46,11 @@ openclaw plugins install --link .
 ```
 
 Then enable it if needed with `openclaw plugins enable castrecall`.
+
+OpenClaw's current installer does not accept bare HTTPS GitHub URLs such as
+`https://github.com/comamitc/castrecall`; use the `git:github.com/...@ref`
+form above. When CastRecall is published to ClawHub, the install target will be
+`openclaw plugins install clawhub:comamitc/castrecall`.
 
 ## First-run setup
 
@@ -73,7 +78,7 @@ Then enable it if needed with `openclaw plugins enable castrecall`.
 Cheapest and most open first; every rung reports why it hit, missed, or was skipped:
 
 1. **RSS `<podcast:transcript>`** (always on, free) — the open [podcast namespace](https://podcastindex.org/namespace/1.0) standard. Supports plain text, HTML, VTT, SRT, and JSON transcripts, normalized to clean text with speaker labels where available.
-2. **Taddy** (optional) — set `TADDY_API_KEY` + `TADDY_USER_ID` ([free signup](https://taddy.org/developers); transcript access needs a paid Taddy plan).
+2. **Taddy** (optional) — set `TADDY_API_KEY` + `TADDY_USER_ID` ([free signup](https://taddy.org/developers); podcast-provided transcripts may be available to free accounts, while generated/on-demand transcripts use Taddy plan credits).
 3. **Speech-to-text** (optional, **costs money**, disabled by default) — enable explicitly with `CASTRECALL_ENABLE_STT=true`. Providers: **AssemblyAI** (default; transcribes straight from the audio URL) or **OpenAI** (`gpt-4o-transcribe`; requires downloading and uploading the audio, 25 MB API limit).
 
 If no rung produces a transcript, the episode is marked `failed` with the per-rung reasons — no fake output, ever.

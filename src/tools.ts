@@ -114,11 +114,26 @@ export async function fetchTranscript(
   }
   if (await storage.hasTranscript(record.uuid)) {
     const provenance = await storage.readProvenance(record.uuid);
+    const updated =
+      record.transcriptStatus === "stored" && record.transcriptSource === provenance?.transcriptSource
+        ? record
+        : await storage.updateEpisode(
+            record.uuid,
+            {
+              transcriptStatus: "stored",
+              transcriptSource: provenance?.transcriptSource,
+              transcriptError: undefined,
+            },
+            deps.now ?? (() => new Date()),
+          );
     return {
       status: "already-stored",
-      episode: summarizeListen(record),
+      episode: summarizeListen(updated ?? record),
       transcriptPath: `${storage.sourceDir(record.uuid)}/transcript.txt`,
       source: provenance?.transcriptSource,
+      note:
+        "Transcript content is stored as private source material. Use castrecall_generate_review " +
+        "to create an approval-gated review candidate.",
     };
   }
 
@@ -176,7 +191,9 @@ export async function fetchTranscript(
     transcriptPath: stored.textPath,
     provenancePath: stored.provenancePath,
     ladder: result.rungs,
-    excerpt: result.transcript.text.slice(0, 400),
+    note:
+      "Transcript content is stored as private source material. Use castrecall_generate_review " +
+      "to create an approval-gated review candidate.",
   };
 }
 

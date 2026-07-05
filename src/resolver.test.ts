@@ -68,6 +68,27 @@ describe("extractTranscriptLinks", () => {
   it("drops entries without a url", () => {
     expect(extractTranscriptLinks({ "podcast:transcript": [{ "@_type": "text/vtt" }] })).toEqual([]);
   });
+
+  it("handles namespace aliases and relative transcript URLs", () => {
+    const links = extractTranscriptLinks(
+      {
+        "pc:transcript": {
+          "@_url": "../transcripts/ep1.srt?download=1",
+          "@_type": "text/srt",
+          "@_language": "en",
+        },
+      },
+      "https://example.com/podcasts/feed.xml",
+    );
+    expect(links).toEqual([
+      {
+        url: "https://example.com/transcripts/ep1.srt?download=1",
+        type: "text/srt",
+        language: "en",
+        rel: undefined,
+      },
+    ]);
+  });
 });
 
 describe("rankTranscriptLinks", () => {
@@ -76,7 +97,8 @@ describe("rankTranscriptLinks", () => {
       { url: "c.html", type: "text/html" },
       { url: "a.json", type: "application/json" },
       { url: "b.vtt", type: "text/vtt" },
+      { url: "d.srt", type: "text/srt" },
     ]);
-    expect(ranked.map((l) => l.url)).toEqual(["a.json", "b.vtt", "c.html"]);
+    expect(ranked.map((l) => l.url)).toEqual(["a.json", "b.vtt", "d.srt", "c.html"]);
   });
 });

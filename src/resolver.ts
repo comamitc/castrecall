@@ -144,24 +144,23 @@ export function findFeedItem(
     itemGuid: best.guid ? String(best.guid) : undefined,
     itemLink: textOf(best.item?.link),
     enclosureUrl: best.enclosureUrl,
-    transcripts: extractTranscriptLinks(best.item),
+    transcripts: extractTranscriptLinks(best.item, feedUrl),
   };
 }
 
-/** Extract `<podcast:transcript>` links from a parsed feed item. */
-export function extractTranscriptLinks(item: any): TranscriptLink[] {
-  const raw = item?.["podcast:transcript"];
-  if (!raw) return [];
-  const entries = Array.isArray(raw) ? raw : [raw];
+/** Extract podcast-namespace transcript links from a parsed feed item. */
+export function extractTranscriptLinks(item: any, baseUrl?: string): TranscriptLink[] {
+  const entries = transcriptTagValues(item);
   return entries
-    .map(
-      (entry: any): Partial<TranscriptLink> => ({
-        url: entry?.["@_url"],
+    .map((entry: any): Partial<TranscriptLink> => {
+      const url = resolveMaybeRelativeUrl(entry?.["@_url"] ?? entry?.["@_href"], baseUrl);
+      return {
+        url,
         type: entry?.["@_type"],
         language: entry?.["@_language"],
         rel: entry?.["@_rel"],
-      }),
-    )
+      };
+    })
     .filter((link): link is TranscriptLink => typeof link.url === "string" && link.url.length > 0);
 }
 
@@ -181,4 +180,30 @@ function normalizeTitle(title: string): string {
 function stripQuery(url: string): string {
   const index = url.indexOf("?");
   return index === -1 ? url : url.slice(0, index);
+}
+
+function transcriptTagValues(item: any): any[] {
+  if (!item || typeof item !== "object") return [];
+  const values: any[] = [];
+  for (const [key, value] of Object.entries(item)) {
+    if (!isTranscriptElementName(key)) continue;
+    values.push(...(Array.isArray(value) ? value : [value]));
+  }
+  return values;
+}
+
+function isTranscriptElementName(key: string): boolean {
+  const lower = key.toLowerCase();
+  return lower === "transcript" || lower.endsWith(":transcript");
+}
+
+function resolveMaybeRelativeUrl(url: unknown, baseUrl: string | undefined): string | undefined {
+  if (typeof url !== "string" || !url.trim()) return undefined;
+  const trimmed = url.trim();
+  if (!baseUrl) return trimmed;
+  try {
+    return new URL(trimmed, baseUrl).toString();
+  } catch {
+    return trimmed;
+  }
 }

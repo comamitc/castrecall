@@ -27,10 +27,12 @@
     "dist",
     "openclaw.plugin.json",
     "README.md",
+    ".env.example",
+    "docs",
     "LICENSE"
   ],
   "peerDependencies": {
-    "openclaw": ">=2026.5.17"
+    "openclaw": ">=2026.6.11"
   },
   "dependencies": {
     "fast-xml-parser": "^5.2.0",
@@ -44,6 +46,19 @@
   "openclaw": {
     "extensions": [
       "./dist/index.js"
-    ]
+    ],
+    "install": {
+      "clawhubSpec": "clawhub:comamitc/castrecall",
+      "localPath": ".",
+      "defaultChoice": "clawhub",
+      "minHostVersion": ">=2026.6.11"
+    },
+    "compat": {
+      "pluginApi": ">=2026.6.11"
+    },
+    "build": {
+      "openclawVersion": "2026.6.11",
+      "pluginSdkVersion": "2026.6.11"
+    }
   }
 }

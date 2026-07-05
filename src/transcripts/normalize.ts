@@ -72,12 +72,13 @@ export function normalizeTranscript(body: string, format: TranscriptFormat): Nor
 
 function parseVtt(body: string): { text: string; segments: TranscriptSegment[] } {
   const segments: TranscriptSegment[] = [];
-  const blocks = body.replace(/\r\n/g, "\n").split(/\n\n+/);
+  const withoutHeader = body.replace(/\r\n/g, "\n").replace(/^\uFEFF?WEBVTT[^\n]*\n?/i, "");
+  const blocks = withoutHeader.split(/\n\n+/);
   for (const block of blocks) {
     const lines = block.split("\n").filter((line) => line.trim().length > 0);
     if (lines.length === 0) continue;
     const first = lines[0].trim();
-    if (first.startsWith("WEBVTT") || first.startsWith("NOTE") || first.startsWith("STYLE")) {
+    if (first.startsWith("NOTE") || first.startsWith("STYLE")) {
       continue;
     }
     let index = 0;
@@ -103,12 +104,11 @@ function parseSrt(body: string): { text: string; segments: TranscriptSegment[] }
     const timingIndex = lines.findIndex((line) => line.includes("-->"));
     if (timingIndex === -1) continue;
     const [start, end] = lines[timingIndex].split("-->").map((part) => part.trim());
-    const text = lines
-      .slice(timingIndex + 1)
-      .map((line) => stripCueTags(line).text)
-      .filter(Boolean)
-      .join(" ");
-    if (text) segments.push({ start, end, text });
+    const cueLines = lines.slice(timingIndex + 1).map(stripCueTags).filter(({ text }) => text);
+    if (cueLines.length === 0) continue;
+    const speaker = cueLines.find((line) => line.speaker)?.speaker;
+    const text = cueLines.map((line) => line.text).join(" ");
+    if (text) segments.push({ start, end, speaker, text });
   }
   return { text: joinSegments(segments), segments };
 }
@@ -124,27 +124,40 @@ function parseJsonTranscript(body: string): { text: string; segments: Transcript
   } catch {
     throw new Error("Transcript declared as JSON could not be parsed.");
   }
+  const parsedRecord = typeof parsed === "object" && parsed !== null ? (parsed as Record<string, unknown>) : {};
   const rawSegments = Array.isArray(parsed)
     ? parsed
-    : Array.isArray((parsed as Record<string, unknown>)?.segments)
-      ? ((parsed as Record<string, unknown>).segments as unknown[])
-      : undefined;
+    : Array.isArray(parsedRecord.segments)
+      ? parsedRecord.segments
+      : Array.isArray(parsedRecord.transcript)
+        ? parsedRecord.transcript
+        : Array.isArray(parsedRecord.items)
+          ? parsedRecord.items
+          : undefined;
   if (!rawSegments) {
-    throw new Error("JSON transcript had no 'segments' array (podcast-namespace format expected).");
+    const text = firstString(parsedRecord, ["body", "text", "transcript"]);
+    if (text) return { text: collapseWhitespace(text), segments: [{ text: collapseWhitespace(text) }] };
+    throw new Error("JSON transcript had no usable transcript text or segments.");
   }
   const segments: TranscriptSegment[] = [];
   for (const raw of rawSegments) {
+    if (typeof raw === "string") {
+      const text = raw.trim();
+      if (text) segments.push({ text });
+      continue;
+    }
     if (typeof raw !== "object" || raw === null) continue;
     const record = raw as Record<string, unknown>;
-    const text = typeof record.body === "string" ? record.body.trim() : "";
+    const text = firstString(record, ["body", "text", "line", "caption"]);
     if (!text) continue;
     segments.push({
-      start: record.startTime !== undefined ? String(record.startTime) : undefined,
-      end: record.endTime !== undefined ? String(record.endTime) : undefined,
-      speaker: typeof record.speaker === "string" ? record.speaker : undefined,
-      text,
+      start: firstDefined(record, ["startTime", "start", "startTimecode"]),
+      end: firstDefined(record, ["endTime", "end", "endTimecode"]),
+      speaker: firstString(record, ["speaker", "speakerName", "speakerLabel"]),
+      text: text.trim(),
     });
   }
+  if (segments.length === 0) throw new Error("JSON transcript had no usable transcript text.");
   return { text: joinSegments(segments), segments };
 }
 
@@ -212,4 +225,20 @@ function collapseWhitespace(text: string): string {
     .join("\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function firstDefined(record: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (value !== undefined && value !== null && value !== "") return String(value);
+  }
+  return undefined;
 }
