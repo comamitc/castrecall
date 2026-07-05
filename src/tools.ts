@@ -3,11 +3,13 @@
  * (config, params) so they are testable without the OpenClaw runtime.
  */
 
+import { createHash } from "node:crypto";
 import {
   CastrecallSetupError,
   requirePocketCastsCredentials,
   type ResolvedConfig,
 } from "./config.js";
+import { CorpusExporter, type ExportResult } from "./corpus-export.js";
 import { fetchHistory, login, type FetchLike } from "./pocketcasts/client.js";
 import { buildReviewCandidate } from "./review.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
@@ -24,6 +26,27 @@ export type ToolDeps = {
 
 function storageFor(config: ResolvedConfig): Storage {
   return new Storage(config.dataDir);
+}
+
+/**
+ * Opt-in corpus export: off unless config.exportDir is set. Reads only the
+ * stored transcript + provenance sidecar (never review candidates or
+ * state.json) and recomputes the content hash for legacy sidecars that
+ * predate it, so export never emits an undefined content_hash.
+ */
+async function exportIfEnabled(
+  config: ResolvedConfig,
+  storage: Storage,
+  record: ListenRecord,
+): Promise<ExportResult | undefined> {
+  if (!config.exportDir) return undefined;
+  const text = await storage.readTranscript(record.uuid);
+  const provenance = await storage.readProvenance(record.uuid);
+  if (!text || !provenance) return undefined;
+  const contentHash =
+    provenance.contentHash ?? createHash("sha256").update(text, "utf8").digest("hex");
+  const exporter = new CorpusExporter(config.exportDir);
+  return exporter.exportEpisode({ record, provenance, text, contentHash });
 }
 
 export async function setupStatus(config: ResolvedConfig): Promise<unknown> {
@@ -132,11 +155,13 @@ export async function fetchTranscript(
             },
             deps.now ?? (() => new Date()),
           );
+    const exportResult = await exportIfEnabled(config, storage, updated ?? record);
     return {
       status: "already-stored",
       episode: summarizeListen(updated ?? record),
       transcriptPath: `${storage.sourceDir(record.uuid)}/transcript.txt`,
       source: provenance?.transcriptSource,
+      export: exportResult,
       note:
         "Transcript content is stored as private source material. Use castrecall_generate_review " +
         "to create an approval-gated review candidate.",
@@ -193,6 +218,7 @@ export async function fetchTranscript(
     { transcriptStatus: "stored", transcriptSource: result.transcript.source, transcriptError: undefined },
     now,
   );
+  const exportResult = await exportIfEnabled(config, storage, record);
   return {
     status: "stored",
     episode: summarizeListen({ ...record, transcriptStatus: "stored" }),
@@ -201,6 +227,7 @@ export async function fetchTranscript(
     transcriptPath: stored.textPath,
     provenancePath: stored.provenancePath,
     ladder: result.rungs,
+    export: exportResult,
     note:
       "Transcript content is stored as private source material. Use castrecall_generate_review " +
       "to create an approval-gated review candidate.",

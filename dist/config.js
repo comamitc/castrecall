@@ -28,9 +28,11 @@ export function resolveConfig(settings = {}, env = process.env) {
     const sttEnabled = envFlag(env.CASTRECALL_ENABLE_STT) ?? settings.sttEnabled ?? false;
     const providerRaw = nonEmpty(env.CASTRECALL_STT_PROVIDER)?.toLowerCase() ?? settings.sttProvider ?? "assemblyai";
     const provider = providerRaw === "openai" ? "openai" : "assemblyai";
+    const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
     return {
         dataDir,
         historyLimit,
+        exportDir,
         pocketcasts: {
             email: nonEmpty(env.POCKETCASTS_EMAIL),
             password: nonEmpty(env.POCKETCASTS_PASSWORD),

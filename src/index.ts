@@ -43,6 +43,15 @@ const configSchema = Type.Object(
         description: "Speech-to-text provider when sttEnabled is true (default assemblyai).",
       }),
     ),
+    exportDir: Type.Optional(
+      Type.String({
+        description:
+          "Opt-in: also write section-split, frontmattered markdown pages here on transcript " +
+          "store (e.g. a gbrain inbox or a brain's sources/ root — the exporter always appends " +
+          "podcasts/<show-slug>, so don't point this at sources/podcasts). Off by default. The " +
+          "CASTRECALL_EXPORT_DIR env var overrides this.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );

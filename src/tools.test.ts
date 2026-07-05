@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -171,6 +172,193 @@ describe("tools", () => {
     expect(result.status).toBe("stored");
     expect(JSON.stringify(result)).not.toContain("Private transcript text");
     expect(result.note).toContain("castrecall_generate_review");
+  });
+
+  it("does not create an export directory when CASTRECALL_EXPORT_DIR is unset", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    await storage.storeTranscript("ep-1", {
+      raw: "stored",
+      ext: "txt",
+      text: "stored transcript text with enough words to review later",
+      provenance: PROVENANCE,
+    });
+
+    const result = (await fetchTranscript(config(), { episodeUuid: "ep-1" })) as Record<string, any>;
+    expect(result.export).toBeUndefined();
+    const exportDir = path.join(dir, "export");
+    await expect(fs.access(exportDir)).rejects.toThrow();
+  });
+
+  it("writes section pages + an index page under CASTRECALL_EXPORT_DIR on fresh transcript store", async () => {
+    const exportDir = path.join(dir, "export");
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.includes("export_feed_urls")) {
+        return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+          status: 200,
+        });
+      }
+      if (url === "https://example.com/feed.xml") {
+        return new Response(
+          `<?xml version="1.0"?>
+          <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+            <channel>
+              <item>
+                <title>Episode One</title>
+                <guid>ep-1</guid>
+                <enclosure url="https://cdn.example.com/ep1.mp3" />
+                <podcast:transcript url="https://cdn.example.com/ep1.vtt" type="text/vtt" />
+              </item>
+            </channel>
+          </rss>`,
+          { status: 200 },
+        );
+      }
+      if (url === "https://cdn.example.com/ep1.vtt") {
+        return new Response("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript body.", {
+          status: 200,
+          headers: { "content-type": "text/vtt" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = (await fetchTranscript(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      { episodeUuid: "ep-1" },
+      { fetchImpl },
+    )) as Record<string, any>;
+    expect(result.export.skipped).toBe(false);
+    expect(result.export.exported).toBeGreaterThan(0);
+
+    const episodeDir = path.join(exportDir, "podcasts", "example-show", "episode-one-25422834");
+    const files = await fs.readdir(episodeDir);
+    expect(files).toContain("index.md");
+
+    // Already-stored branch on a second call: no new writes, export skipped.
+    const second = (await fetchTranscript(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      { episodeUuid: "ep-1" },
+      { fetchImpl },
+    )) as Record<string, any>;
+    expect(second.status).toBe("already-stored");
+    expect(second.export.skipped).toBe(true);
+  });
+
+  it("recomputes the content hash for a legacy provenance sidecar missing contentHash", async () => {
+    const exportDir = path.join(dir, "export");
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const text = "Legacy transcript text stored before the content hash field existed.";
+    const legacyProvenance = {
+      platform: "pocketcasts",
+      podcastTitle: "Example Show",
+      episodeTitle: "Episode One",
+      episodeUuid: "ep-1",
+      transcriptSource: "rss",
+      format: "txt",
+      fetchedAt: "2026-07-04T00:00:00Z",
+      privacyClass: "private-source",
+    };
+    const sourceDir = storage.sourceDir("ep-1");
+    await fs.mkdir(sourceDir, { recursive: true });
+    await fs.writeFile(path.join(sourceDir, "transcript.txt"), text, "utf8");
+    await fs.writeFile(path.join(sourceDir, "provenance.json"), JSON.stringify(legacyProvenance), "utf8");
+
+    const result = (await fetchTranscript(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      { episodeUuid: "ep-1" },
+    )) as Record<string, any>;
+    expect(result.status).toBe("already-stored");
+    expect(result.export.skipped).toBe(false);
+
+    const indexPath = path.join(
+      exportDir,
+      "podcasts",
+      "example-show",
+      "episode-one-25422834",
+      "index.md",
+    );
+    const indexContent = await fs.readFile(indexPath, "utf8");
+    const expectedHash = createHash("sha256").update(text, "utf8").digest("hex");
+    expect(indexContent).toContain(`content_hash: "${expectedHash}"`);
+  });
+
+  it("never exports review candidates or state files", async () => {
+    const exportDir = path.join(dir, "export");
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    await storage.storeTranscript("ep-1", {
+      raw: "stored",
+      ext: "txt",
+      text: "stored transcript text with enough words to review later, covering a durable idea in depth.",
+      provenance: PROVENANCE,
+    });
+    await storage.updateEpisode("ep-1", { transcriptStatus: "stored" });
+
+    await fetchTranscript(config({ CASTRECALL_EXPORT_DIR: exportDir }), { episodeUuid: "ep-1" });
+    await generateReview(config({ CASTRECALL_EXPORT_DIR: exportDir }), { episodeUuid: "ep-1" });
+
+    async function listFiles(root: string): Promise<string[]> {
+      const out: string[] = [];
+      async function walk(current: string) {
+        const entries = await fs.readdir(current, { withFileTypes: true });
+        for (const entry of entries) {
+          const full = path.join(current, entry.name);
+          if (entry.isDirectory()) await walk(full);
+          else out.push(path.relative(root, full));
+        }
+      }
+      await walk(root);
+      return out;
+    }
+
+    const files = await listFiles(exportDir);
+    for (const f of files) {
+      expect(f).not.toBe("state.json");
+      expect(f).not.toMatch(/(^|\/)review\//);
+      const content = await fs.readFile(path.join(exportDir, f), "utf8");
+      expect(content).not.toContain("status: pending-review");
+    }
   });
 
   it("fetch_transcript repairs state when transcript files already exist", async () => {

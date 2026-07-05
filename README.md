@@ -70,7 +70,7 @@ form above. When CastRecall is published to ClawHub, the install target will be
 | `castrecall_setup_status` | Setup/health report: configured providers, ladder availability, counts. Run first. |
 | `castrecall_sync_history` | Read-only Pocket Casts history sync; records new listens idempotently. |
 | `castrecall_recent` | Lists synced listens with transcript status and episode UUIDs. |
-| `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. |
+| `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |
 | `castrecall_generate_review` | Writes approval-gated review candidates for stored transcripts. |
 
 ## The transcript ladder
@@ -91,6 +91,7 @@ If no rung produces a transcript, the episode is marked `failed` with the per-ru
 | `POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD` | for sync | Read-only history access (unofficial API). |
 | `CASTRECALL_DATA_DIR` | no | Data dir (default `~/.openclaw/castrecall`). |
 | `CASTRECALL_HISTORY_LIMIT` | no | Max entries per sync (default 100). |
+| `CASTRECALL_EXPORT_DIR` | no | Enables corpus export (markdown pages) to this directory. Off by default — see "Corpus export" below. |
 | `TADDY_API_KEY` / `TADDY_USER_ID` | no | Enables the Taddy ladder rung. |
 | `CASTRECALL_WHISPER_MODEL` | for whisper.cpp | ggml model path (whisper.cpp) or model name (other Whisper CLIs). |
 | `CASTRECALL_WHISPER_COMMAND` | no | Custom local transcription command with an `{input}` placeholder; stdout = transcript. |
@@ -101,7 +102,51 @@ If no rung produces a transcript, the episode is marked `failed` with the per-ru
 | `OPENAI_API_KEY` | with STT | OpenAI transcription. |
 | `CASTRECALL_OPENAI_STT_MODEL` | no | Default `gpt-4o-transcribe`. |
 
-Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`) can also be set via the plugin's config schema; env vars win when both are set.
+Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`, `exportDir`) can also be set via the plugin's config schema; env vars win when both are set.
+
+## Corpus export (gbrain & other markdown brains)
+
+CastRecall's primary intended downstream consumer is markdown-native idea-generation
+tooling like [garrytan/gbrain](https://github.com/garrytan/gbrain)'s `lsd` /
+`brainstorm` modes. Corpus export is an **opt-in** projection that, after a
+transcript is stored, also writes it out as section-split, frontmattered
+markdown pages — separate from (and never replacing) the private data dir.
+
+Enable it by setting `CASTRECALL_EXPORT_DIR` (or the `exportDir` plugin
+setting) to a directory. It is off by default; nothing is written unless one
+of these is set.
+
+**Layout:**
+
+```
+<export-dir>/podcasts/<show-slug>/<episode-slug>/
+├── 01-<section-slug>.md   # ~1-2k words each, verbatim transcript text
+├── 02-<section-slug>.md
+├── ...
+└── index.md                # episode index, links to every section
+```
+
+Each page's frontmatter: `title`, `show`, `episode`, `episode_url`, `audio_url`,
+`listen_date`, `transcript_source`, `content_hash`, and `generated: false`
+(this is verbatim transcript, not model output) — vendor-neutral fields that
+also line up with gbrain's `media`/source conventions.
+
+Export is idempotent: an episode whose transcript content hash hasn't changed
+re-exports nothing. It only ever reads a stored transcript + its provenance
+sidecar — review candidates and `state.json` are never exported.
+
+**Two ways to point gbrain at it:**
+
+- **Watched inbox** — point `CASTRECALL_EXPORT_DIR` at `~/.gbrain/inbox/`;
+  gbrain's watched-inbox ingestion picks the pages up automatically.
+- **Domain-bank bucket** — point it at a brain's `sources/` root
+  (e.g. `~/.gbrain/sources`), *not* `sources/podcasts` — the exporter already
+  adds its own `podcasts/<show-slug>/` prefix under whatever directory you
+  point it at, so pointing at `sources/` yields `sources/podcasts/<show-slug>/`.
+  Each show then gets its own two-segment prefix, which gbrain's
+  LSD/brainstorm far-set selection treats as an automatic domain-bank bucket
+  (it samples one far page per two-segment prefix; LSD adds stale-bias on
+  top) — no gbrain-side registration needed.
 
 ## Data layout
 
@@ -148,7 +193,7 @@ change; sidecars are write-once).
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (35 tests: parsing, normalization, storage idempotency, error paths)
+npm test            # vitest (86 tests: parsing, normalization, storage idempotency, corpus export, error paths)
 npm run plugin:build     # tsc + openclaw plugins build (regenerates openclaw.plugin.json)
 npm run plugin:validate  # openclaw plugins validate
 ```

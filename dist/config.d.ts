@@ -5,10 +5,13 @@ export type PluginSettings = {
     historyLimit?: number;
     sttEnabled?: boolean;
     sttProvider?: SttProvider;
+    exportDir?: string;
 };
 export type ResolvedConfig = {
     dataDir: string;
     historyLimit: number;
+    /** Corpus export: off (undefined) by default — see docs/ARCHITECTURE.md. */
+    exportDir?: string;
     pocketcasts: {
         email?: string;
         password?: string;
