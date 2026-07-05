@@ -25,10 +25,25 @@ export const DEFAULT_TOKEN_TTL_MS = 12 * 60 * 60_000;
 export const TOKEN_EXPIRY_SKEW_MS = 60_000;
 let cache;
 const inFlightLogins = new Map();
+/**
+ * Serializes durable token writes/deletes per service so a delayed persist
+ * can never run after (and undo) a 401 invalidation's keychain delete: the
+ * write re-checks that its entry is still the active cache INSIDE the
+ * critical section, and an invalidation queued behind an in-flight write
+ * simply deletes afterwards — either order converges to the correct state.
+ */
+const tokenWriteLocks = new Map();
+async function withTokenWriteLock(service, fn) {
+    const prev = tokenWriteLocks.get(service) ?? Promise.resolve();
+    const run = prev.then(fn, fn);
+    tokenWriteLocks.set(service, run.then(() => undefined, () => undefined));
+    return run;
+}
 /** Test isolation: resets the in-memory token cache and any in-flight login. */
 export function clearPocketCastsSessionCache() {
     cache = undefined;
     inFlightLogins.clear();
+    tokenWriteLocks.clear();
 }
 function credentialHash(email, password) {
     return createHash("sha256").update(`${email}\n${password}`, "utf8").digest("hex");
@@ -101,7 +116,7 @@ async function invalidateSession(config, deps) {
     if (!detection.backend)
         return;
     try {
-        await deleteSecret(detection.backend, config.secrets.service, TOKEN_ACCOUNT, { execImpl: deps.execImpl });
+        await withTokenWriteLock(config.secrets.service, () => deleteSecret(detection.backend, config.secrets.service, TOKEN_ACCOUNT, { execImpl: deps.execImpl }));
     }
     catch {
         // Ignored: the in-memory invalidation above is the correctness-bearing step; a stale
@@ -111,10 +126,22 @@ async function invalidateSession(config, deps) {
 async function loginAndCache(config, deps, email, password, hash, nowMs) {
     const token = await login(email, password, deps.fetchImpl);
     const expiresAt = parseTokenExpiry(token) ?? nowMs + DEFAULT_TOKEN_TTL_MS;
-    const persisted = !deps.skipTokenPersist;
-    cache = { service: config.secrets.service, credentialHash: hash, token, expiresAt, persisted };
-    if (persisted) {
-        await persistTokenToKeychain(config, deps, hash, token, expiresAt);
+    const entry = {
+        service: config.secrets.service,
+        credentialHash: hash,
+        token,
+        expiresAt,
+        persisted: !deps.skipTokenPersist,
+    };
+    cache = entry;
+    if (entry.persisted) {
+        await withTokenWriteLock(config.secrets.service, async () => {
+            // Skip the write if an invalidation raced in after this login: a
+            // stale persist must never durably resurrect a deleted token.
+            if (cache !== entry)
+                return;
+            await persistTokenToKeychain(config, deps, hash, token, expiresAt);
+        });
     }
     return token;
 }
@@ -191,8 +218,16 @@ export async function getPocketCastsToken(config, deps = {}, forceLogin = false)
 async function upgradeToPersisted(config, deps, entry) {
     if (entry.persisted || deps.skipTokenPersist)
         return;
-    await persistTokenToKeychain(config, deps, entry.credentialHash, entry.token, entry.expiresAt);
-    entry.persisted = true;
+    await withTokenWriteLock(config.secrets.service, async () => {
+        // Re-check INSIDE the critical section: if a 401 invalidation (which
+        // also serializes through this lock) cleared or replaced the entry, the
+        // durable write must be skipped — persisting now would resurrect a
+        // token the invalidation just deleted.
+        if (cache !== entry || entry.persisted)
+            return;
+        await persistTokenToKeychain(config, deps, entry.credentialHash, entry.token, entry.expiresAt);
+        entry.persisted = true;
+    });
 }
 /**
  * Whether a durable token record currently exists in the keychain — a cheap,

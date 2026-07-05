@@ -517,6 +517,73 @@ describe("session", () => {
       expect(await pending).toBe("tok-1");
     });
 
+    it("a delayed persist can never resurrect a token that a 401 invalidation deleted", async () => {
+      const config = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
+      // login-1 → tok-1; first history call 401s (invalidating tok-1);
+      // login-2 → tok-2; second history call succeeds.
+      const counts = { login: 0, history: 0 };
+      const fetchImpl = (async (input: unknown) => {
+        const url = String(input);
+        if (url.endsWith("/user/login")) {
+          counts.login += 1;
+          return new Response(JSON.stringify({ token: `tok-${counts.login}` }), { status: 200 });
+        }
+        if (url.endsWith("/user/history")) {
+          counts.history += 1;
+          return new Response(
+            counts.history === 1 ? JSON.stringify({}) : JSON.stringify({ episodes: [] }),
+            { status: counts.history === 1 ? 401 : 200 },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+      // Keychain whose token writes hang until released, so the tok-1
+      // persist is still in flight when the 401 invalidation arrives.
+      let releaseWrite!: () => void;
+      const writeGate = new Promise<void>((resolve) => (releaseWrite = resolve));
+      let gated = true;
+      const store = new Map<string, string>();
+      const execImpl: ExecImpl = async (argv) => {
+        if (argv[1] === "find-generic-password") {
+          const value = store.get(argv[argv.indexOf("-a") + 1]);
+          return value === undefined
+            ? { code: 44, stdout: "", stderr: "" }
+            : { code: 0, stdout: `${value}\n`, stderr: "" };
+        }
+        if (argv[1] === "add-generic-password") {
+          if (gated) {
+            gated = false; // only the first (tok-1) write is delayed
+            await writeGate;
+          }
+          store.set(argv[argv.indexOf("-a") + 1], argv[argv.indexOf("-w") + 1]);
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        if (argv[1] === "delete-generic-password") {
+          store.delete(argv[argv.indexOf("-a") + 1]);
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const deps = { fetchImpl, execImpl, env: { PATH: binDir }, platform: "darwin" as const };
+
+      // Seed the unpersisted tok-1 (verification), then start the delayed persist.
+      await getPocketCastsToken(config, { ...deps, skipTokenPersist: true });
+      const upgrading = getPocketCastsToken(config, deps); // enters gated tok-1 write
+      // 401 flow: invalidation (serialized behind the in-flight write) +
+      // forced re-login to tok-2, persisted.
+      const syncing = fetchHistoryWithSession(config, deps);
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      releaseWrite();
+      await upgrading;
+      await syncing;
+
+      // The durable record must be tok-2 — the delayed tok-1 write must not
+      // have survived past the invalidation's delete.
+      const record = JSON.parse(store.get("pocketcasts-token") ?? "{}");
+      expect(record.token).toBe("tok-2");
+      expect(counts.login).toBe(2);
+    });
+
     it("reuses a token record from the keychain across process-lifetime cache misses", async () => {
       const { execImpl, calls } = createKeychainExec({});
       const config = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
