@@ -4,12 +4,14 @@
  * episodes newly stored this run (corpus export chains inside
  * `fetchTranscript` already, when `CASTRECALL_EXPORT_DIR` is set).
  *
- * A run lock keeps two overlapping scheduler invocations from both hitting
- * the unofficial Pocket Casts API; a cooldown gate with capped exponential
- * backoff keeps a persistently failing API from being hammered on every
- * scheduler tick. Both are host-scheduler-agnostic: this module has no
- * knowledge of cron, heartbeats, or intervals — see the README's "Scheduled
- * / periodic sync" section for the actual scheduling recipes.
+ * A run lock (renewed on a heartbeat so a long-running invocation, e.g. local
+ * Whisper transcription, is never mistaken for a crashed one) keeps two
+ * overlapping scheduler invocations from both hitting the unofficial Pocket
+ * Casts API; a cooldown gate with capped exponential backoff keeps a
+ * persistently failing API from being hammered on every scheduler tick. This
+ * module has no knowledge of cron or intervals for *scheduling* runs — see
+ * the README's "Scheduled / periodic sync" section for the actual scheduling
+ * recipes.
  */
 import { type ResolvedConfig } from "./config.js";
 import { type ToolDeps } from "./tools.js";

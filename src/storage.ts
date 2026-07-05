@@ -280,6 +280,31 @@ export class Storage {
     }
   }
 
+  /**
+   * Renew a held lock's `acquiredAt` so a still-running pipeline invocation
+   * (e.g. a slow local-Whisper transcription well past `LOCK_TTL_MS`) is
+   * never reclaimed out from under it as abandoned. Only renews if `token`
+   * still matches the current holder; returns false if the lock was already
+   * stolen or released, so the caller can stop renewing.
+   */
+  async renewPipelineLock(token: string, now: () => Date = () => new Date()): Promise<boolean> {
+    try {
+      const existing = JSON.parse(await fs.readFile(this.lockPath, "utf8")) as { token?: string };
+      if (existing.token !== token) return false;
+    } catch {
+      return false;
+    }
+    const payload = { token, acquiredAt: now().toISOString() };
+    const tmpPath = `${this.lockPath}.${token}.renew.tmp`;
+    try {
+      await fs.writeFile(tmpPath, JSON.stringify(payload), "utf8");
+      await fs.rename(tmpPath, this.lockPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Release a held lock — only if `token` still matches the current holder. */
   async releasePipelineLock(token: string): Promise<void> {
     try {

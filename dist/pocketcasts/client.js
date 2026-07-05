@@ -48,7 +48,14 @@ export async function login(email, password, fetchImpl = fetch) {
     if (!response.ok) {
         throw new PocketCastsApiError(`Pocket Casts login failed with HTTP ${response.status}. The unofficial API may have changed.`, response.status);
     }
-    const body = (await response.json());
+    let body;
+    try {
+        body = (await response.json());
+    }
+    catch (error) {
+        throw new PocketCastsApiError(`Pocket Casts login returned an unparseable response (${describeNetworkError(error)}); ` +
+            "the unofficial API shape may have changed.");
+    }
     if (!body.token) {
         throw new PocketCastsApiError("Pocket Casts login succeeded but returned no token; the unofficial API shape may have changed.");
     }
@@ -76,7 +83,14 @@ export async function fetchHistory(token, fetchImpl = fetch) {
     if (!response.ok) {
         throw new PocketCastsApiError(`Pocket Casts history request failed with HTTP ${response.status}.`, response.status);
     }
-    const body = (await response.json());
+    let body;
+    try {
+        body = (await response.json());
+    }
+    catch (error) {
+        throw new PocketCastsApiError(`Pocket Casts history response was unparseable (${describeNetworkError(error)}); ` +
+            "the unofficial API shape may have changed.");
+    }
     if (!Array.isArray(body.episodes)) {
         throw new PocketCastsApiError("Pocket Casts history response had no 'episodes' array; the unofficial API shape may have changed.");
     }

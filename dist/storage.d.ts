@@ -123,6 +123,14 @@ export declare class Storage {
     } | {
         acquired: false;
     }>;
+    /**
+     * Renew a held lock's `acquiredAt` so a still-running pipeline invocation
+     * (e.g. a slow local-Whisper transcription well past `LOCK_TTL_MS`) is
+     * never reclaimed out from under it as abandoned. Only renews if `token`
+     * still matches the current holder; returns false if the lock was already
+     * stolen or released, so the caller can stop renewing.
+     */
+    renewPipelineLock(token: string, now?: () => Date): Promise<boolean>;
     /** Release a held lock — only if `token` still matches the current holder. */
     releasePipelineLock(token: string): Promise<void>;
     updateEpisode(episodeUuid: string, patch: Partial<Omit<ListenRecord, "uuid" | "podcastUuid">>, now?: () => Date): Promise<ListenRecord | undefined>;

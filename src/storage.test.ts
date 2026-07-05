@@ -356,6 +356,43 @@ describe("Storage", () => {
     expect(attempt.acquired).toBe(false);
   });
 
+  it("renewPipelineLock keeps a long-running holder from being reclaimed past LOCK_TTL_MS", async () => {
+    const start = new Date("2026-07-05T00:00:00Z");
+    const first = await storage.acquirePipelineLock(() => start);
+    expect(first.acquired).toBe(true);
+    if (!first.acquired) throw new Error("unreachable");
+
+    // Renew partway through the TTL, simulating a heartbeat during a long run.
+    const renewedAt = new Date(start.getTime() + LOCK_TTL_MS / 2);
+    const renewed = await storage.renewPipelineLock(first.token, () => renewedAt);
+    expect(renewed).toBe(true);
+
+    // Total elapsed time since the original acquire now exceeds LOCK_TTL_MS,
+    // but the renewal reset the clock, so a contender must still back off.
+    const pastOriginalTtl = new Date(start.getTime() + LOCK_TTL_MS + 60_000);
+    const contender = await storage.acquirePipelineLock(() => pastOriginalTtl);
+    expect(contender.acquired).toBe(false);
+
+    // Without a further renewal, once LOCK_TTL_MS elapses from the *renewed*
+    // timestamp the lock is reclaimable again, same as any stale lock.
+    const pastRenewedTtl = new Date(renewedAt.getTime() + LOCK_TTL_MS + 60_000);
+    const laterContender = await storage.acquirePipelineLock(() => pastRenewedTtl);
+    expect(laterContender.acquired).toBe(true);
+  });
+
+  it("renewPipelineLock is a no-op once the lock has been stolen by another holder", async () => {
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const first = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(first.acquired).toBe(true);
+    if (!first.acquired) throw new Error("unreachable");
+
+    const reclaimed = await storage.acquirePipelineLock(() => new Date());
+    expect(reclaimed.acquired).toBe(true);
+
+    const renewed = await storage.renewPipelineLock(first.token, () => new Date());
+    expect(renewed).toBe(false);
+  });
+
   it("computes strictly increasing, capped backoff across consecutive failures", async () => {
     const now = () => new Date("2026-07-05T00:00:00Z");
     const first = await storage.recordSyncFailure("boom 1", now);

@@ -1,10 +1,10 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config.js";
 import { runPipeline } from "./pipeline.js";
-import { Storage } from "./storage.js";
+import { LOCK_TTL_MS, Storage } from "./storage.js";
 
 const HISTORY_EPISODE = {
   uuid: "ep-1",
@@ -281,5 +281,111 @@ describe("runPipeline", () => {
 
     const reviews = await fs.readdir(path.join(dir, "review", "pending"));
     expect(reviews).toEqual(["ep-1.md"]);
+  });
+
+  it("resumes an episode stranded with transcriptStatus 'none' by a prior crashed run, even when this run's history has no new listens", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    // Simulate a prior run: syncHistory persisted the listen via recordListens, but the
+    // process crashed before fetchTranscript/generateReview ran for it.
+    await storage.recordListens([HISTORY_EPISODE]);
+
+    const { fetchImpl } = makeFetchImpl({ episodes: [] });
+    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+
+    expect(result.newListens).toBe(0);
+    expect(result.transcripts).toEqual({ stored: 1, failed: 0 });
+    expect(result.reviews).toEqual({ generated: 1, skipped: 0 });
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.episodes["ep-1"].transcriptStatus).toBe("stored");
+    const reviews = await fs.readdir(path.join(dir, "review", "pending"));
+    expect(reviews).toEqual(["ep-1.md"]);
+  });
+
+  it("continues processing other pending episodes after one throws mid-run, and still resolves instead of rejecting", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    // Two episodes stranded with transcriptStatus "none", as if left behind by a prior
+    // partial run. ep-2 has no matching feed entry, so its ladder ends cleanly at
+    // no-transcript; ep-1 matches the feed and stores successfully.
+    await storage.recordListens([
+      HISTORY_EPISODE,
+      {
+        ...HISTORY_EPISODE,
+        uuid: "ep-2",
+        title: "Episode Two",
+        podcastUuid: "pod-2",
+        podcastTitle: "Other Show",
+      },
+    ]);
+
+    // A regular file sitting where the export dir should be makes exportIfEnabled's mkdir
+    // throw for ep-1 after its transcript is otherwise successfully stored — a real
+    // misconfiguration, not the ladder's own handled "no-transcript" path.
+    const exportDirAsFile = path.join(dir, "export-is-a-file");
+    await fs.writeFile(exportDirAsFile, "not a directory", "utf8");
+
+    const { fetchImpl } = makeFetchImpl({ episodes: [] });
+    const result = (await runPipeline(
+      config({ CASTRECALL_EXPORT_DIR: exportDirAsFile }),
+      {},
+      { fetchImpl },
+    )) as Record<string, any>;
+
+    expect(result.transcripts.failed).toBe(2);
+    expect(result.errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ stage: "transcript", episodeUuid: "ep-1" })]),
+    );
+    expect(result.errors.some((e: any) => e.episodeUuid === "ep-2")).toBe(false);
+  });
+
+  it("renews the run lock during a long stage so a concurrent scheduler tick cannot steal it as stale", async () => {
+    // Fake only Date + the interval timers the heartbeat uses; leave setTimeout real so the
+    // test can pause on genuine wall-clock ticks for real fs writes (lock acquire/renew) to
+    // land before advancing the virtual clock past LOCK_TTL_MS.
+    vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+    try {
+      const storage = new Storage(dir);
+      await storage.init();
+
+      let resolveHistory: () => void;
+      const historyGate = new Promise<void>((resolve) => {
+        resolveHistory = resolve;
+      });
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.endsWith("/user/login")) {
+          return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+        }
+        if (url.endsWith("/user/history")) {
+          // Simulate a stage that legitimately runs past LOCK_TTL_MS (e.g. local Whisper).
+          await historyGate;
+          return new Response(JSON.stringify({ episodes: [HISTORY_EPISODE] }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      const runPromise = runPipeline(config(), {}, { fetchImpl });
+
+      // Let the real lock-acquire fs write land before advancing the virtual clock.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // Advance well past LOCK_TTL_MS while the run is still in flight; the heartbeat should
+      // renew the lock at least once in that window.
+      await vi.advanceTimersByTimeAsync(LOCK_TTL_MS + 60_000);
+
+      // Let the heartbeat's real fs renewal writes land before checking the lock file.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      const contender = await storage.acquirePipelineLock();
+      expect(contender.acquired).toBe(false);
+
+      resolveHistory!();
+      const result = (await runPromise) as Record<string, any>;
+      expect(result.newListens).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
