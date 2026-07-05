@@ -224,6 +224,28 @@ describe("Storage", () => {
     expect(read?.contentHash).toBeUndefined();
   });
 
+  it("throws instead of reporting alreadyStored when a stale partial directory blocks publish", async () => {
+    const legacyDir = storage.sourceDir("ep-1");
+    await fs.mkdir(legacyDir, { recursive: true });
+    // Simulates a directory left behind by a pre-atomic-publish writer:
+    // raw/provenance present, but transcript.txt never landed.
+    await fs.writeFile(path.join(legacyDir, "raw.txt"), "raw", "utf8");
+    await fs.writeFile(path.join(legacyDir, "provenance.json"), "{}", "utf8");
+
+    await expect(
+      storage.storeTranscript("ep-1", {
+        raw: "raw",
+        ext: "txt",
+        text: "text",
+        provenance: PROVENANCE,
+      }),
+    ).rejects.toThrow(/missing transcript\.txt/);
+
+    // The stale directory must be left untouched for manual inspection, not
+    // silently deleted along with the discarded staging directory.
+    expect(await fs.readFile(path.join(legacyDir, "raw.txt"), "utf8")).toBe("raw");
+  });
+
   it("never allows updateEpisode to change stable identifiers", async () => {
     await storage.recordListens([EPISODE]);
     const updated = await storage.updateEpisode("ep-1", {

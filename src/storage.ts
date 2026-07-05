@@ -267,7 +267,15 @@ export class Storage {
       await fs.rm(stagingDir, { recursive: true, force: true });
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOTEMPTY" || code === "EEXIST") {
-        return { rawPath, textPath, provenancePath, alreadyStored: true };
+        if (await this.hasTranscript(episodeUuid)) {
+          return { rawPath, textPath, provenancePath, alreadyStored: true };
+        }
+        throw new Error(
+          `Refusing to report alreadyStored for episode ${episodeUuid}: ` +
+            `${dir} exists but is missing transcript.txt. This is likely a partial ` +
+            `directory left behind by an older writer — inspect and repair or remove ` +
+            `it manually before retrying.`,
+        );
       }
       throw error;
     }
