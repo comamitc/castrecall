@@ -1,6 +1,8 @@
 import os from "node:os";
 import path from "node:path";
 const DEFAULT_HISTORY_LIMIT = 100;
+const DEFAULT_MIN_LISTEN_RATIO = 0.8;
+const DEFAULT_MIN_LISTEN_SECONDS = 300;
 export function envFlag(value) {
     if (value === undefined || value === "")
         return undefined;
@@ -29,6 +31,13 @@ export function resolveConfig(settings = {}, env = process.env) {
     const providerRaw = nonEmpty(env.CASTRECALL_STT_PROVIDER)?.toLowerCase() ?? settings.sttProvider ?? "assemblyai";
     const provider = providerRaw === "openai" ? "openai" : "assemblyai";
     const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
+    const envMinRatio = Number.parseFloat(env.CASTRECALL_MIN_LISTEN_RATIO ?? "");
+    const minRatio = Number.isFinite(envMinRatio) && envMinRatio > 0 && envMinRatio <= 1
+        ? envMinRatio
+        : DEFAULT_MIN_LISTEN_RATIO;
+    const envMinSeconds = Number.parseInt(env.CASTRECALL_MIN_LISTEN_SECONDS ?? "", 10);
+    const minSeconds = Number.isFinite(envMinSeconds) && envMinSeconds > 0 ? envMinSeconds : DEFAULT_MIN_LISTEN_SECONDS;
+    const recordUnknown = envFlag(env.CASTRECALL_RECORD_UNKNOWN_LISTENS) ?? false;
     return {
         dataDir,
         historyLimit,
@@ -56,6 +65,11 @@ export function resolveConfig(settings = {}, env = process.env) {
         secrets: {
             keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,
             service: nonEmpty(env.CASTRECALL_SECRET_SERVICE) ?? "castrecall",
+        },
+        listenFilter: {
+            minRatio,
+            minSeconds,
+            recordUnknown,
         },
     };
 }

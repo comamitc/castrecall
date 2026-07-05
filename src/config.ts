@@ -45,9 +45,20 @@ export type ResolvedConfig = {
     /** Service name under which OS keychain entries are stored. */
     service: string;
   };
+  /** Threshold for what counts as "meaningfully listened" before sync ingests an episode — see issue #24. */
+  listenFilter: {
+    /** Minimum playedUpTo/duration ratio to accept a partial listen. */
+    minRatio: number;
+    /** Minimum playedUpTo seconds to accept a short/no-duration listen. */
+    minSeconds: number;
+    /** Accept episodes with no usable duration/playedUpTo/playingStatus at all. */
+    recordUnknown: boolean;
+  };
 };
 
 const DEFAULT_HISTORY_LIMIT = 100;
+const DEFAULT_MIN_LISTEN_RATIO = 0.8;
+const DEFAULT_MIN_LISTEN_SECONDS = 300;
 
 export function envFlag(value: string | undefined): boolean | undefined {
   if (value === undefined || value === "") return undefined;
@@ -88,6 +99,18 @@ export function resolveConfig(
 
   const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
 
+  const envMinRatio = Number.parseFloat(env.CASTRECALL_MIN_LISTEN_RATIO ?? "");
+  const minRatio =
+    Number.isFinite(envMinRatio) && envMinRatio > 0 && envMinRatio <= 1
+      ? envMinRatio
+      : DEFAULT_MIN_LISTEN_RATIO;
+
+  const envMinSeconds = Number.parseInt(env.CASTRECALL_MIN_LISTEN_SECONDS ?? "", 10);
+  const minSeconds =
+    Number.isFinite(envMinSeconds) && envMinSeconds > 0 ? envMinSeconds : DEFAULT_MIN_LISTEN_SECONDS;
+
+  const recordUnknown = envFlag(env.CASTRECALL_RECORD_UNKNOWN_LISTENS) ?? false;
+
   return {
     dataDir,
     historyLimit,
@@ -115,6 +138,11 @@ export function resolveConfig(
     secrets: {
       keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,
       service: nonEmpty(env.CASTRECALL_SECRET_SERVICE) ?? "castrecall",
+    },
+    listenFilter: {
+      minRatio,
+      minSeconds,
+      recordUnknown,
     },
   };
 }

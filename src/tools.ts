@@ -7,6 +7,7 @@ import { createHash } from "node:crypto";
 import { CastrecallSetupError, type ResolvedConfig } from "./config.js";
 import { CorpusExporter, type ExportResult } from "./corpus-export.js";
 import type { FetchLike } from "./pocketcasts/client.js";
+import { isListenedEpisode } from "./pocketcasts/listened.js";
 import { detectSecretBackend, type ExecImpl } from "./pocketcasts/secret-store.js";
 import {
   fetchHistoryWithSession,
@@ -304,14 +305,18 @@ export async function syncHistory(
 ): Promise<unknown> {
   const history = await fetchHistoryWithSession(config, deps);
   const limit = params.limit && params.limit > 0 ? params.limit : config.historyLimit;
+  const fetched = history.slice(0, limit);
+  const eligible = fetched.filter((episode) => isListenedEpisode(episode, config.listenFilter));
   const storage = storageFor(config);
   await storage.init();
   const { added, totalSeen } = await storage.recordListens(
-    history.slice(0, limit),
+    eligible,
     deps.now ?? (() => new Date()),
   );
   return {
-    fetched: Math.min(history.length, limit),
+    fetched: fetched.length,
+    eligible: eligible.length,
+    skippedAsNotListened: fetched.length - eligible.length,
     newListens: added.map(summarizeListen),
     totalSeen,
     note:

@@ -338,6 +338,70 @@ describe("tools", () => {
     expect(recent.episodes[0].transcriptStatus).toBe("none");
   });
 
+  it("sync_history skips episodes that fail the listened threshold and reports fetched/eligible/skipped", async () => {
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.endsWith("/user/login")) {
+        return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+      }
+      if (url.endsWith("/user/history")) {
+        return new Response(
+          JSON.stringify({
+            episodes: [
+              {
+                uuid: "ep-completed",
+                title: "Completed Episode",
+                url: "https://cdn.example.com/completed.mp3",
+                podcastUuid: "pod-1",
+                podcastTitle: "Example Show",
+                playingStatus: 3,
+              },
+              {
+                uuid: "ep-low-ratio",
+                title: "Barely Started Episode",
+                url: "https://cdn.example.com/low-ratio.mp3",
+                podcastUuid: "pod-1",
+                podcastTitle: "Example Show",
+                duration: 3600,
+                playedUpTo: 60,
+              },
+            ],
+          }),
+          { status: 200 },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const cfg = config({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
+    const result = (await syncHistory(cfg, {}, { fetchImpl, env: { PATH: "" } })) as Record<
+      string,
+      any
+    >;
+    expect(result.fetched).toBe(2);
+    expect(result.eligible).toBe(1);
+    expect(result.skippedAsNotListened).toBe(1);
+    expect(result.eligible + result.skippedAsNotListened).toBe(result.fetched);
+    expect(result.newListens).toHaveLength(1);
+    expect(result.newListens[0].episodeUuid).toBe("ep-completed");
+
+    const recent = (await listRecent(cfg, {})) as Record<string, any>;
+    const uuids = recent.episodes.map((e: Record<string, any>) => e.episodeUuid);
+    expect(uuids).toContain("ep-completed");
+    expect(uuids).not.toContain("ep-low-ratio");
+
+    // Idempotent re-sync: same history yields no new listens and stable stats.
+    const second = (await syncHistory(cfg, {}, { fetchImpl, env: { PATH: "" } })) as Record<
+      string,
+      any
+    >;
+    expect(second.fetched).toBe(2);
+    expect(second.eligible).toBe(1);
+    expect(second.skippedAsNotListened).toBe(1);
+    expect(second.newListens).toHaveLength(0);
+    expect(second.totalSeen).toBe(1);
+  });
+
   describe("credential handling", () => {
     let binDir: string;
 
