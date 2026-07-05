@@ -1,5 +1,5 @@
 /**
- * Implementations behind the five CastRecall tools. Pure functions over
+ * Implementations behind the CastRecall tools. Pure functions over
  * (config, params) so they are testable without the OpenClaw runtime.
  */
 import { type ResolvedConfig } from "./config.js";
@@ -28,6 +28,17 @@ export declare function exportAndRecord(config: ResolvedConfig, storage: Storage
     error: string;
 } | undefined>;
 export declare function setupStatus(config: ResolvedConfig, deps?: ToolDeps): Promise<unknown>;
+/**
+ * Guided first-run setup: reports what's configured/missing/optional and,
+ * with { verify: true } and both credentials present, makes one read-only
+ * Pocket Casts call (login + history fetch) to confirm they work. Never
+ * constructs Storage, never writes to disk, and never returns secret values
+ * or transcript/episode content — only booleans, counts, and plain-language
+ * explanations.
+ */
+export declare function setup(config: ResolvedConfig, params?: {
+    verify?: boolean;
+}, deps?: ToolDeps): Promise<unknown>;
 export declare function syncHistory(config: ResolvedConfig, params: {
     limit?: number;
 }, deps?: ToolDeps): Promise<unknown>;

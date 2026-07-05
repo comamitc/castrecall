@@ -44,6 +44,7 @@
   "contracts": {
     "tools": [
       "castrecall_setup_status",
+      "castrecall_setup",
       "castrecall_sync_history",
       "castrecall_recent",
       "castrecall_fetch_transcript",

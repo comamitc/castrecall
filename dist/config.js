@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 const DEFAULT_HISTORY_LIMIT = 100;
-function envFlag(value) {
+export function envFlag(value) {
     if (value === undefined || value === "")
         return undefined;
     return ["1", "true", "yes", "on"].includes(value.toLowerCase());

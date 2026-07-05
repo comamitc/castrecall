@@ -38,6 +38,19 @@ export type WhisperDetection = {
     detected?: undefined;
     reason: string;
 };
+export declare const WHISPER_CPP_MODEL_MISSING_MESSAGE: string;
+/**
+ * Single source of truth for whether the local Whisper rung can actually RUN
+ * (not merely whether a binary was detected): whisper.cpp additionally needs
+ * a ggml model via CASTRECALL_WHISPER_MODEL. Status surfaces must use this,
+ * never raw detection, or they report "ready" for a rung that will throw.
+ */
+export declare function localWhisperReadiness(detection: WhisperDetection, localWhisperConfig: {
+    model?: string;
+}): {
+    ready: boolean;
+    needsModel: boolean;
+};
 export type ExecResult = {
     code: number | null;
     stdout: string;

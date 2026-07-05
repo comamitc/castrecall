@@ -20,6 +20,18 @@ const KNOWN_BINARIES = [
     { name: "whisper-ctranslate2", flavor: "whisper-ctranslate2" },
     { name: "whisper", flavor: "openai-whisper" },
 ];
+export const WHISPER_CPP_MODEL_MISSING_MESSAGE = "whisper.cpp needs a ggml model file. Set CASTRECALL_WHISPER_MODEL=/path/to/ggml-<size>.bin " +
+    "(download one with whisper.cpp's models script or from Hugging Face ggerganov/whisper.cpp).";
+/**
+ * Single source of truth for whether the local Whisper rung can actually RUN
+ * (not merely whether a binary was detected): whisper.cpp additionally needs
+ * a ggml model via CASTRECALL_WHISPER_MODEL. Status surfaces must use this,
+ * never raw detection, or they report "ready" for a rung that will throw.
+ */
+export function localWhisperReadiness(detection, localWhisperConfig) {
+    const needsModel = detection.detected?.flavor === "whisper.cpp" && !localWhisperConfig.model;
+    return { ready: Boolean(detection.detected) && !needsModel, needsModel };
+}
 export async function detectLocalWhisper(config, env = process.env) {
     if (config.localWhisper.disabled) {
         return { reason: "Local Whisper is disabled via CASTRECALL_DISABLE_LOCAL_WHISPER." };
@@ -107,8 +119,7 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
         }
         case "whisper.cpp": {
             if (!model) {
-                throw new CastrecallSetupError("whisper.cpp needs a ggml model file. Set CASTRECALL_WHISPER_MODEL=/path/to/ggml-<size>.bin " +
-                    "(download one with whisper.cpp's models script or from Hugging Face ggerganov/whisper.cpp).");
+                throw new CastrecallSetupError(WHISPER_CPP_MODEL_MISSING_MESSAGE);
             }
             const input = await ensureWav(audioPath, workDir, execImpl, env);
             const result = await execImpl([detected.command, "-m", model, "-f", input, "-np", "-nt"], { timeoutMs: TRANSCRIBE_TIMEOUT_MS });

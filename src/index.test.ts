@@ -5,9 +5,10 @@ import entry from "./index.js";
 describe("castrecall plugin entry", () => {
   const metadata = getToolPluginMetadata(entry);
 
-  it("declares the six v0 tools", () => {
+  it("declares the seven v0 tools", () => {
     expect(metadata?.tools.map((tool) => tool.name)).toEqual([
       "castrecall_setup_status",
+      "castrecall_setup",
       "castrecall_sync_history",
       "castrecall_recent",
       "castrecall_fetch_transcript",

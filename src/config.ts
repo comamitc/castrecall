@@ -43,7 +43,7 @@ export type ResolvedConfig = {
 
 const DEFAULT_HISTORY_LIMIT = 100;
 
-function envFlag(value: string | undefined): boolean | undefined {
+export function envFlag(value: string | undefined): boolean | undefined {
   if (value === undefined || value === "") return undefined;
   return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }

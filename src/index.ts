@@ -16,6 +16,7 @@ import {
   fetchTranscript,
   generateReview,
   listRecent,
+  setup,
   setupStatus,
   syncHistory,
 } from "./tools.js";
@@ -74,6 +75,24 @@ export default defineToolPlugin({
         "listens, stored transcripts, and pending reviews. Run this first.",
       parameters: Type.Object({}),
       execute: async (_params, settings: PluginSettings) => setupStatus(resolveConfig(settings)),
+    }),
+    tool({
+      name: "castrecall_setup",
+      description:
+        "Guided first-run setup: walks through Pocket Casts credentials (incl. the unofficial-API " +
+        "and Google/Apple-SSO caveats), storage location, privacy defaults, optional transcript " +
+        "providers (Taddy, local Whisper, cloud STT), and export directory (offering a detected " +
+        "gbrain inbox). Never edits openclaw.json or writes secrets to disk — it only tells you " +
+        "which env vars to set and where. Pass { verify: true } to make one read-only Pocket Casts " +
+        "call confirming configured credentials actually work.",
+      parameters: Type.Object({
+        verify: Type.Optional(
+          Type.Boolean({
+            description: "Run a read-only Pocket Casts test call to confirm credentials work.",
+          }),
+        ),
+      }),
+      execute: async (params, settings: PluginSettings) => setup(resolveConfig(settings), params),
     }),
     tool({
       name: "castrecall_sync_history",
