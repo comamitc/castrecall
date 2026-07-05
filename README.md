@@ -21,7 +21,7 @@ v0 is **Pocket Casts only** and **read-only**:
 **Pocket Casts has no official public API.** CastRecall uses the same reverse-engineered web-player endpoints as community tools such as [essoen/PocketCasts-mcp](https://github.com/essoen/PocketCasts-mcp) (prior art for this plugin). That means:
 
 - It can break or be blocked by Pocket Casts at any time, without notice.
-- It needs your account email and password (env vars, read-only requests only). Accounts created via *Sign in with Google/Apple* have no password and won't work.
+- It needs your account email and password (read-only requests only) — stored in the OS keychain when available, or env vars as a portable fallback. Accounts created via *Sign in with Google/Apple* have no password and won't work.
 - If Pocket Casts ever ships an official API or export, CastRecall will move to it.
 
 Use it with those expectations.
@@ -30,7 +30,7 @@ Use it with those expectations.
 
 - **Full transcripts are source material, not memory.** They live under CastRecall's private data dir with a `provenance.json` sidecar (`privacyClass: "private-source"`).
 - **CastRecall never writes to durable OpenClaw memory.** It generates review candidates in `review/pending/`; a human decides what graduates — ideally rephrased in your own words.
-- **Credentials are env-only** and never logged, stored, echoed in errors, or passed through plugin config.
+- **Credentials are keychain-preferred, env-var fallback**: CastRecall reads Pocket Casts email/password from the OS keychain (macOS Keychain / libsecret) when a backend is available and entries exist, otherwise from `POCKETCASTS_EMAIL`/`POCKETCASTS_PASSWORD`. Either way, credentials never pass through plugin config and are never logged or echoed in errors. The Pocket Casts session token is cached (in memory, and in the keychain when available) and reused across syncs instead of re-sending the password every time; `CASTRECALL_DISABLE_KEYCHAIN=1` disables the durable keychain sink only (the in-memory, process-lifetime token cache always applies).
 - Transcripts of published podcasts can still be copyrighted material — keeping them as private source data (rather than republishing or promoting them wholesale) is the intended use.
 
 ## CastRecall in the brain ecosystem
@@ -66,7 +66,7 @@ form above. When CastRecall is published to ClawHub, the install target will be
 
 Ask your agent to run `castrecall_setup` — it walks through everything below instead of you hand-editing config or JSON:
 
-1. **Pocket Casts credentials** — explains what to set (`POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD`), the unofficial-API caveat, and the Google/Apple-SSO limitation (those accounts have no password and can't be used). Once set, run `castrecall_setup({ verify: true })` to make one read-only Pocket Casts call confirming they actually work — the result reports success/failure and, on success, how many history entries are visible, never the credential values.
+1. **Pocket Casts credentials** — explains what to set (`POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD`), the unofficial-API caveat, and the Google/Apple-SSO limitation (those accounts have no password and can't be used). When an OS keychain backend is detected (macOS Keychain / libsecret), it also shows the exact `security`/`secret-tool` command to store credentials there instead — the safer option, with env vars remaining a fallback. Once configured, run `castrecall_setup({ verify: true })` to make one read-only Pocket Casts call confirming they actually work — the result reports success/failure and, on success, how many history entries are visible, never the credential values.
 2. **Storage location** — where transcripts and review candidates live (`CASTRECALL_DATA_DIR`, default `~/.openclaw/castrecall`).
 3. **Privacy defaults** — confirms transcripts are private source material, nothing is ever promoted into durable memory, and corpus export is off unless you opt in.
 4. **Optional providers** — Taddy, local Whisper, and cloud STT, each with what's detected and how to enable it.
@@ -79,8 +79,8 @@ Ask your agent to run `castrecall_setup` — it walks through everything below i
 | Tool | What it does |
 | --- | --- |
 | `castrecall_setup_status` | Setup/health report: configured providers, ladder availability, counts. Run first. |
-| `castrecall_setup` | Guided first-run setup: walks through credentials, storage, privacy defaults, optional providers, and export directory. `{ verify: true }` makes a read-only Pocket Casts test call. Never edits config or writes secrets. |
-| `castrecall_sync_history` | Read-only Pocket Casts history sync; records new listens idempotently. |
+| `castrecall_setup` | Guided first-run setup: walks through credentials (keychain-preferred, env-var fallback), storage, privacy defaults, optional providers, and export directory. `{ verify: true }` makes a read-only Pocket Casts test call. Never edits config or writes secrets itself. |
+| `castrecall_sync_history` | Read-only Pocket Casts history sync; records new listens idempotently. Keychain-preferred credentials with an env-var fallback; reuses the cached session token instead of logging in every sync. |
 | `castrecall_recent` | Lists synced listens with transcript status and episode UUIDs. |
 | `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |
 | `castrecall_generate_review` | Writes approval-gated review candidates for stored transcripts. |
@@ -101,7 +101,9 @@ If no rung produces a transcript, the episode is marked `failed` with the per-ru
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD` | for sync | Read-only history access (unofficial API). |
+| `POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD` | for sync, unless in the keychain | Read-only history access (unofficial API). Fallback when no OS keychain entry is found — see "Credential storage" below. |
+| `CASTRECALL_DISABLE_KEYCHAIN` | no | `1` to disable the durable OS keychain sink (credential reads and token persistence). The in-memory, process-lifetime token cache still applies. |
+| `CASTRECALL_SECRET_SERVICE` | no | Service name under which OS keychain entries are stored (default `castrecall`). |
 | `CASTRECALL_DATA_DIR` | no | Data dir (default `~/.openclaw/castrecall`). |
 | `CASTRECALL_HISTORY_LIMIT` | no | Max entries per sync (default 100). |
 | `CASTRECALL_EXPORT_DIR` | no | Enables corpus export (markdown pages) to this directory. Off by default — see "Corpus export" below. |
@@ -116,6 +118,28 @@ If no rung produces a transcript, the episode is marked `failed` with the per-ru
 | `CASTRECALL_OPENAI_STT_MODEL` | no | Default `gpt-4o-transcribe`. |
 
 Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`, `exportDir`) can also be set via the plugin's config schema; env vars win when both are set.
+
+## Credential storage
+
+Pocket Casts credentials are resolved with **OS keychain precedence over env vars**:
+
+1. **OS keychain** (macOS Keychain via `security`, or libsecret via `secret-tool` on Linux) — used when a backend is detected on `PATH` and both entries exist, under service `castrecall` (or `CASTRECALL_SECRET_SERVICE`), accounts `pocketcasts-email` / `pocketcasts-password`. `castrecall_setup` shows the exact command:
+
+   ```bash
+   # macOS
+   security add-generic-password -U -s castrecall -a pocketcasts-email -w <email>
+   security add-generic-password -U -s castrecall -a pocketcasts-password -w <password>
+
+   # Linux (libsecret)
+   secret-tool store --label "CastRecall pocketcasts-email" service castrecall account pocketcasts-email
+   secret-tool store --label "CastRecall pocketcasts-password" service castrecall account pocketcasts-password
+   ```
+
+2. **`POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD`** — the portable fallback when no keychain entry is found, or on hosts with no supported backend.
+
+The Pocket Casts session token itself is cached and reused across syncs (skipping the login call) instead of re-sending the password every time, and is invalidated and refreshed automatically on a `401`. When a keychain backend is available, the token is also persisted there so it survives a process restart; otherwise it lives only in memory for the process's lifetime and is never written to disk. Set `CASTRECALL_DISABLE_KEYCHAIN=1` to disable the durable keychain sink entirely (no keychain credential reads, no keychain token persistence) — the in-memory cache still applies. A keychain read/write failure never blocks a sync; it degrades to the env-var fallback or a fresh login.
+
+**Note (macOS):** writing the token to Keychain briefly exposes it in the process argument list (`security add-generic-password -w <value>`) — accepted for the short-lived session token; the Linux/libsecret path passes values via stdin instead, never argv. CastRecall never writes your email/password to the keychain itself — you do that yourself via the commands above.
 
 ## Corpus export (gbrain & other markdown brains)
 
@@ -241,7 +265,7 @@ alive, recover with a one-off `castrecall_run_pipeline` call passing `breakStale
 
 ## Troubleshooting
 
-- **"Pocket Casts credentials are not configured"** — set `POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD` in the environment OpenClaw runs in (not just your shell).
+- **"Pocket Casts credentials are not configured"** — set `POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD` in the environment OpenClaw runs in (not just your shell), or store them in the OS keychain (see "Credential storage" above).
 - **"Pocket Casts rejected the configured credentials"** — check them; Google/Apple-SSO accounts cannot be used (no password exists).
 - **Login worked before but fails now** — the unofficial API may have changed or rate-limited you; wait and retry, and check the repo's issues.
 - **"no-transcript" with all rungs missed/skipped** — the feed declares no transcript and no optional provider is configured. Install a local Whisper CLI (free), configure Taddy, or enable cloud STT.
@@ -257,7 +281,7 @@ alive, recover with a one-off `castrecall_run_pipeline` call passing `breakStale
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (103 tests: parsing, normalization, storage idempotency, corpus export, periodic-sync pipeline, error paths)
+npm test            # vitest (195 tests: parsing, normalization, storage idempotency, corpus export, credential storage/session handling, periodic-sync pipeline, error paths)
 npm run plugin:build     # tsc + openclaw plugins build (regenerates openclaw.plugin.json)
 npm run plugin:validate  # openclaw plugins validate
 ```

@@ -58,8 +58,16 @@ export function classifyExportDir(exportDir) {
         return { exportDir: null, mode: "off" };
     return { exportDir, mode: looksLikeGbrainInbox(exportDir) ? "gbrain-inbox" : "custom" };
 }
+/** Platform-appropriate keychain store recipe shown once a backend is detected. */
+function keychainStoreRecipe(service, secretBackend) {
+    return secretBackend.kind === "libsecret"
+        ? `secret-tool store --label "CastRecall pocketcasts-email" service ${service} account pocketcasts-email ` +
+            `&& secret-tool store --label "CastRecall pocketcasts-password" service ${service} account pocketcasts-password`
+        : `security add-generic-password -U -s ${service} -a pocketcasts-email -w <email> ` +
+            `&& security add-generic-password -U -s ${service} -a pocketcasts-password -w <password>`;
+}
 export function buildSetupPlan(config, deps) {
-    const credentialsConfigured = Boolean(config.pocketcasts.email && config.pocketcasts.password);
+    const credentialsConfigured = deps.credentials.configured;
     const taddyOk = taddyConfigured(config);
     const stt = sttAvailability(config);
     const { exportDir, mode } = classifyExportDir(config.exportDir);
@@ -72,7 +80,11 @@ export function buildSetupPlan(config, deps) {
             envVars: ["POCKETCASTS_EMAIL", "POCKETCASTS_PASSWORD"],
             explanation: "Read-only access to your Pocket Casts listening history. Set POCKETCASTS_EMAIL and " +
                 "POCKETCASTS_PASSWORD in the environment OpenClaw runs in, then verify with " +
-                "castrecall_setup({ verify: true }).",
+                "castrecall_setup({ verify: true })." +
+                (deps.secretBackend.available
+                    ? ` Safer option: store them in the OS keychain instead — ${keychainStoreRecipe(config.secrets.service, deps.secretBackend)} — env vars remain a fallback when no keychain entry is found.`
+                    : "") +
+                (deps.credentials.source === "keychain" ? " Currently sourced from the OS keychain." : ""),
             caveat: "Unofficial API: Pocket Casts has no official public API, so this may break or be blocked " +
                 "without notice, and CastRecall only ever makes read requests with it. Accounts created via " +
                 "'Sign in with Google/Apple' have no password and cannot use this integration until Pocket " +

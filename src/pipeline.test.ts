@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config.js";
 import { runPipeline } from "./pipeline.js";
+import { clearPocketCastsSessionCache } from "./pocketcasts/session.js";
 import { setupStatus } from "./tools.js";
 import { LOCK_TTL_MS, Storage } from "./storage.js";
 
@@ -77,6 +78,7 @@ describe("runPipeline", () => {
 
   beforeEach(async () => {
     dir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-pipeline-"));
+    clearPocketCastsSessionCache();
   });
 
   afterEach(async () => {
@@ -96,7 +98,7 @@ describe("runPipeline", () => {
     const result = (await runPipeline(
       config({ CASTRECALL_EXPORT_DIR: exportDir }),
       {},
-      { fetchImpl },
+      { fetchImpl, env: { PATH: "" } },
     )) as Record<string, any>;
 
     expect(result.newListens).toBe(1);
@@ -116,22 +118,23 @@ describe("runPipeline", () => {
 
   it("is a cheap no-op on a second run with nothing new", async () => {
     const { fetchImpl, calls } = makeFetchImpl();
-    await runPipeline(config(), {}, { fetchImpl });
+    await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } });
     calls.length = 0;
 
-    const second = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const second = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(second.newListens).toBe(0);
     expect(second.transcripts).toEqual({ stored: 0, failed: 0 });
     expect(second.reviews).toEqual({ generated: 0, skipped: 0 });
-    // No feed/transcript work should have happened for the already-seen episode.
-    expect(calls).toEqual(["login", "history"]);
+    // No feed/transcript work should have happened for the already-seen episode, and the
+    // second run reuses the cached session token instead of logging in again.
+    expect(calls).toEqual(["history"]);
   });
 
   it("keeps overlapping runs safe: exactly one reaches login/history, the other is a locked no-op", async () => {
     const { fetchImpl, calls } = makeFetchImpl();
     const [a, b] = await Promise.all([
-      runPipeline(config(), {}, { fetchImpl }),
-      runPipeline(config(), {}, { fetchImpl }),
+      runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } }),
+      runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } }),
     ]);
     const results = [a, b] as Record<string, any>[];
     const locked = results.filter((r) => r.skipped === "locked");
@@ -151,7 +154,7 @@ describe("runPipeline", () => {
 
   it("records an actionable failure and resolves (never throws) on a Pocket Casts API error", async () => {
     const { fetchImpl } = makeFetchImpl({ historyThrows: true });
-    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const result = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(result.ok).toBe(false);
     expect(result.stage).toBe("sync");
     expect(result.reason).toContain("HTTP 500");
@@ -164,7 +167,7 @@ describe("runPipeline", () => {
 
   it("records an actionable failure and enters cooldown on an unparseable Pocket Casts response", async () => {
     const { fetchImpl } = makeFetchImpl({ historyInvalidJson: true });
-    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const result = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(result.ok).toBe(false);
     expect(result.stage).toBe("sync");
     expect(result.reason).toContain("unparseable");
@@ -178,7 +181,7 @@ describe("runPipeline", () => {
     const result = (await runPipeline(
       config({ POCKETCASTS_EMAIL: "", POCKETCASTS_PASSWORD: "" }),
       {},
-      {},
+      { env: { PATH: "" } },
     )) as Record<string, any>;
     expect(result.ok).toBe(false);
     expect(result.stage).toBe("sync");
@@ -197,11 +200,11 @@ describe("runPipeline", () => {
     await storage.saveState(state);
 
     const { fetchImpl, calls } = makeFetchImpl();
-    const cooled = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const cooled = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(cooled.skipped).toBe("cooldown");
     expect(calls).toHaveLength(0);
 
-    const forced = (await runPipeline(config(), { force: true }, { fetchImpl })) as Record<string, any>;
+    const forced = (await runPipeline(config(), { force: true }, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(forced.newListens).toBe(1);
     expect(calls.length).toBeGreaterThan(0);
   });
@@ -292,7 +295,7 @@ describe("runPipeline", () => {
     });
 
     const { fetchImpl } = makeFetchImpl();
-    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const result = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     // ep-1 (stored this run) AND ep-existing (stranded by a prior run) both
     // get reviews; ep-reviewed is not re-reviewed.
     expect(result.reviews.generated).toBe(2);
@@ -332,7 +335,7 @@ describe("runPipeline", () => {
 
     try {
       const { fetchImpl } = makeFetchImpl({ episodes: [] });
-      const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+      const result = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
       expect(result.errors).toEqual(
         expect.arrayContaining([expect.objectContaining({ stage: "review", episodeUuid: "ep-1" })]),
       );
@@ -353,7 +356,7 @@ describe("runPipeline", () => {
     await storage.recordListens([HISTORY_EPISODE]);
 
     const { fetchImpl } = makeFetchImpl({ episodes: [] });
-    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const result = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
 
     expect(result.newListens).toBe(0);
     expect(result.transcripts).toEqual({ stored: 1, failed: 0 });
@@ -392,7 +395,7 @@ describe("runPipeline", () => {
     const result = (await runPipeline(
       config({ CASTRECALL_EXPORT_DIR: exportDirAsFile }),
       {},
-      { fetchImpl },
+      { fetchImpl, env: { PATH: "" } },
     )) as Record<string, any>;
 
     // ep-1's transcript stage SUCCEEDS (transcript stored); only its export
@@ -419,7 +422,7 @@ describe("runPipeline", () => {
     const exportDir = path.join(dir, "export");
     await fs.writeFile(exportDir, "squatter", "utf8");
     const { fetchImpl } = makeFetchImpl();
-    await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, { fetchImpl });
+    await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, { fetchImpl, env: { PATH: "" } });
     let state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
     expect(state.episodes["ep-1"].exportError).toBeTruthy();
 
@@ -428,7 +431,7 @@ describe("runPipeline", () => {
     const second = (await runPipeline(
       config({ CASTRECALL_EXPORT_DIR: exportDir }),
       {},
-      { fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl },
+      { fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl, env: { PATH: "" } },
     )) as Record<string, any>;
     expect(second.exports.exported).toBe(1);
     state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
@@ -450,7 +453,7 @@ describe("runPipeline", () => {
     const result = (await runPipeline(
       config({ CASTRECALL_EXPORT_DIR: exportDir }),
       {},
-      { fetchImpl },
+      { fetchImpl, env: { PATH: "" } },
     )) as Record<string, any>;
 
     expect(result.exports.exported).toBe(0);
@@ -472,7 +475,7 @@ describe("runPipeline", () => {
     const first = (await runPipeline(
       config({ CASTRECALL_EXPORT_DIR: exportDir }),
       {},
-      { fetchImpl },
+      { fetchImpl, env: { PATH: "" } },
     )) as Record<string, any>;
     expect(first.transcripts.stored).toBe(1);
 
@@ -481,6 +484,7 @@ describe("runPipeline", () => {
     await fs.rm(exportDir, { recursive: true, force: true });
     const second = (await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, {
       fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+      env: { PATH: "" },
     })) as Record<string, any>;
     expect(second.exports.exported).toBe(1);
 
@@ -488,12 +492,14 @@ describe("runPipeline", () => {
     const otherDir = path.join(dir, "export-elsewhere");
     const third = (await runPipeline(config({ CASTRECALL_EXPORT_DIR: otherDir }), {}, {
       fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+      env: { PATH: "" },
     })) as Record<string, any>;
     expect(third.exports.exported).toBe(1);
 
     // And an unchanged tree converges to the cheap no-op.
     const fourth = (await runPipeline(config({ CASTRECALL_EXPORT_DIR: otherDir }), {}, {
       fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+      env: { PATH: "" },
     })) as Record<string, any>;
     expect(fourth.exports.exported).toBe(0);
     expect(fourth.errors).toBeUndefined();
@@ -505,11 +511,12 @@ describe("runPipeline", () => {
     await storage.recordListens([HISTORY_EPISODE]);
     const exportDir = path.join(dir, "export");
     const { fetchImpl } = makeFetchImpl();
-    await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, { fetchImpl });
+    await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, { fetchImpl, env: { PATH: "" } });
 
     const before = await fs.readFile(path.join(dir, "state.json"), "utf8");
     const second = (await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, {
       fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+      env: { PATH: "" },
     })) as Record<string, any>;
     expect(second.exports.exported).toBe(0);
     const after = await fs.readFile(path.join(dir, "state.json"), "utf8");
@@ -526,13 +533,13 @@ describe("runPipeline", () => {
     expect(crashed.acquired).toBe(true);
 
     const { fetchImpl, calls } = makeFetchImpl();
-    const blocked = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const blocked = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(blocked.skipped).toBe("stale-lock");
     expect(blocked.staleLockAgeMs).toBeGreaterThan(LOCK_TTL_MS);
     expect(blocked.note).toContain("breakStaleLock");
     expect(calls.filter((c) => c === "login")).toHaveLength(0); // fail-closed: no Pocket Casts traffic
 
-    const recovered = (await runPipeline(config(), { breakStaleLock: true }, { fetchImpl })) as Record<
+    const recovered = (await runPipeline(config(), { breakStaleLock: true }, { fetchImpl, env: { PATH: "" } })) as Record<
       string,
       any
     >;
@@ -549,20 +556,20 @@ describe("runPipeline", () => {
     await fs.writeFile(mutexPath, new Date().toISOString(), "utf8");
 
     const { fetchImpl, calls } = makeFetchImpl();
-    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const result = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(result.skipped).toBe("recovery-blocked");
     expect(result.note).toContain("pipeline.lock.recovery");
     expect(calls.filter((c) => c === "login")).toHaveLength(0);
 
     // setup_status diagnoses it too, with the manual remediation.
-    const status = (await setupStatus(config())) as Record<string, any>;
+    const status = (await setupStatus(config(), { env: { PATH: "" } })) as Record<string, any>;
     expect(status.pipelineLock.held).toBe(false);
     expect(status.pipelineLock.recoveryMutex.path).toBe(mutexPath);
     expect(status.pipelineLock.recoveryMutex.note).toContain("remove the file manually");
 
     // Removing the mutex restores normal scheduling.
     await fs.rm(mutexPath);
-    const after = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const after = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(after.skipped).toBeUndefined();
   });
 
@@ -593,7 +600,7 @@ describe("runPipeline", () => {
     await storage.writeReviewCandidate("ep-1", "# Review from crashed run\n");
 
     const { fetchImpl } = makeFetchImpl({ episodes: [] });
-    const first = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    const first = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<string, any>;
     expect(first.reviews).toEqual({ generated: 0, skipped: 1 });
 
     const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
@@ -602,6 +609,7 @@ describe("runPipeline", () => {
     // Converged: the next run has no review targets at all.
     const second = (await runPipeline(config(), {}, {
       fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+      env: { PATH: "" },
     })) as Record<string, any>;
     expect(second.reviews).toEqual({ generated: 0, skipped: 0 });
   });
@@ -632,7 +640,7 @@ describe("runPipeline", () => {
         throw new Error(`unexpected fetch: ${url}`);
       }) as typeof fetch;
 
-      const runPromise = runPipeline(config(), {}, { fetchImpl });
+      const runPromise = runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } });
 
       // Let the real lock-acquire fs write land before advancing the virtual clock.
       await new Promise((resolve) => setTimeout(resolve, 20));

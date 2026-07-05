@@ -162,3 +162,21 @@ function describeNetworkError(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
 }
+
+/**
+ * Decode a JWT's `exp` claim (seconds since epoch) into milliseconds.
+ * Returns undefined for anything that isn't a well-formed JWT with a numeric
+ * `exp` — callers fall back to a conservative default TTL in that case.
+ */
+export function parseTokenExpiry(token: string): number | undefined {
+  const parts = token.split(".");
+  if (parts.length !== 3) return undefined;
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as {
+      exp?: unknown;
+    };
+    return typeof payload.exp === "number" ? payload.exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
