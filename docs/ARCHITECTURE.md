@@ -55,6 +55,75 @@ sources/<uuid>/{raw.<ext>, transcript.txt, provenance.json}   ← private source
 review/pending/<uuid>.md   ← approval gate; human promotes (or deletes) manually
 ```
 
+## Data dir: versioned machine-readable interface
+
+The data dir (`~/.openclaw/castrecall` by default) is the integration surface
+for downstream consumers (corpus exporters, brain pipelines), not just
+CastRecall's own state. Its layout is:
+
+```
+state.json
+sources/<episodeUuid>/
+  raw.<ext>
+  transcript.txt
+  provenance.json
+review/pending/<episodeUuid>.md
+.staging/          # reserved: in-flight atomic writes — consumers must ignore it
+```
+
+`.staging/` is CastRecall's private scratch namespace: transcript artifacts are
+assembled there and published into `sources/` with a single atomic rename, so
+directories CastRecall publishes appear all-at-once, never half-written.
+Downstream scans must skip `.staging/` (and any future dot-prefixed top-level
+entry).
+
+**Completeness marker:** consumers must treat `transcript.txt` as the marker
+that a `sources/<episodeUuid>/` entry is complete. An entry lacking it (for
+example, one left behind by a pre-v0.1.0 writer, or external tampering) is
+incomplete: skip it. CastRecall itself refuses to treat such directories as
+stored — `storeTranscript` surfaces them with an error naming the path so they
+can be repaired or removed manually; it never deletes them silently.
+
+### `provenance.json` fields
+
+| Field | Notes |
+| --- | --- |
+| `platform` | Always `"pocketcasts"` in v0. |
+| `podcastTitle`, `episodeTitle` | Display strings, not identifiers. |
+| `podcastUuid`, `episodeUuid` | Stable identifiers — see below. |
+| `episodeUrl`, `audioUrl`, `feedUrl` | Optional source URLs. |
+| `listenTimestamp` | When the episode was first seen synced, if known. |
+| `transcriptSource` | `"rss" \| "taddy" \| "local-whisper" \| "stt"`. |
+| `transcriptSourceUrl`, `provider` | Optional rung-specific detail. |
+| `format` | Raw transcript format (`vtt`, `srt`, `json`, `txt`, ...). |
+| `fetchedAt` | ISO timestamp of the fetch that produced this sidecar. |
+| `privacyClass` | Always `"private-source"`. |
+| `contentHash` | sha256 (hex) of the exact bytes written to `transcript.txt` — the normalized transcript text. Computed once, at first write, so it is stable across re-runs; downstream consumers can key idempotency off it. |
+| `schemaVersion` | Data-dir contract version (currently `1`). |
+
+### `state.json` fields
+
+`version` is CastRecall's internal state-format guard (unrelated to the
+external contract); `schemaVersion` is the data-dir contract version and is
+the field downstream consumers should check. `episodes` maps episode UUID to
+a `ListenRecord` (sync/transcript status); `lastSyncAt` is the last successful
+sync timestamp.
+
+### Stability guarantees
+
+- **Episode UUID and podcast UUID never change** for a stored item, once
+  recorded. `Storage.updateEpisode` enforces this at the storage boundary: it
+  re-pins both fields after applying any patch, so no caller — however it
+  constructs the patch — can mutate them.
+- **Provenance sidecars are write-once.** `storeTranscript` never overwrites
+  an existing `provenance.json`/`transcript.txt` pair; `contentHash` is
+  therefore permanent for a given episode UUID once first stored.
+- **Evolution is additive-only within a major version.** New fields may be
+  added to `provenance.json` or `state.json` without bumping `schemaVersion`;
+  readers must tolerate missing fields (sidecars written before a field
+  existed simply omit it). A breaking change (removing or repurposing a
+  field) requires a `schemaVersion` bump.
+
 ## Episode resolution
 
 Pocket Casts history gives `podcastUuid` + episode audio URL/title, not the RSS

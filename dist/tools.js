@@ -122,6 +122,7 @@ export async function fetchTranscript(config, params, deps = {}) {
     const provenance = {
         platform: "pocketcasts",
         podcastTitle: record.podcastTitle,
+        podcastUuid: record.podcastUuid,
         episodeTitle: record.title,
         episodeUuid: record.uuid,
         episodeUrl: result.feedItem?.itemLink,

@@ -12,6 +12,12 @@
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
+/**
+ * Version of the on-disk data-dir contract (provenance.json / state.json
+ * shape). Bump only for breaking changes; new fields are additive within a
+ * major version — see docs/ARCHITECTURE.md.
+ */
+export declare const SCHEMA_VERSION = 1;
 export type TranscriptStatus = "none" | "stored" | "failed";
 export type ListenRecord = {
     uuid: string;
@@ -33,12 +39,15 @@ export type ListenRecord = {
 };
 export type CastrecallState = {
     version: 1;
+    /** External data-dir contract version — see SCHEMA_VERSION. */
+    schemaVersion: number;
     lastSyncAt?: string;
     episodes: Record<string, ListenRecord>;
 };
 export type Provenance = {
     platform: "pocketcasts";
     podcastTitle: string;
+    podcastUuid: string;
     episodeTitle: string;
     episodeUuid: string;
     episodeUrl?: string;
@@ -51,6 +60,15 @@ export type Provenance = {
     provider?: string;
     fetchedAt: string;
     privacyClass: "private-source";
+};
+/**
+ * The shape actually persisted to provenance.json: a Provenance plus the
+ * fields storage stamps on write (schema version, content hash). Sidecars
+ * written before v1 may lack these two fields.
+ */
+export type StoredProvenance = Provenance & {
+    schemaVersion: number;
+    contentHash: string;
 };
 export type StoredTranscript = {
     rawPath: string;
@@ -72,13 +90,22 @@ export declare class Storage {
         added: ListenRecord[];
         totalSeen: number;
     }>;
-    updateEpisode(episodeUuid: string, patch: Partial<ListenRecord>, now?: () => Date): Promise<ListenRecord | undefined>;
+    updateEpisode(episodeUuid: string, patch: Partial<Omit<ListenRecord, "uuid" | "podcastUuid">>, now?: () => Date): Promise<ListenRecord | undefined>;
     hasTranscript(episodeUuid: string): Promise<boolean>;
     readTranscript(episodeUuid: string): Promise<string | undefined>;
-    readProvenance(episodeUuid: string): Promise<Provenance | undefined>;
+    readProvenance(episodeUuid: string): Promise<StoredProvenance | undefined>;
     /**
      * Store a transcript with its provenance sidecar. Idempotent: if a
-     * transcript already exists for the episode, nothing is overwritten.
+     * transcript already exists for the episode, nothing is overwritten — the
+     * content hash is computed once, at first write, and is stable thereafter.
+     *
+     * Atomic across concurrent same-episode stores: the artifact triad is
+     * assembled in a private staging directory and published with a single
+     * `rename`, which POSIX guarantees fails (ENOTEMPTY/EEXIST) rather than
+     * merges when the destination is already a populated directory. So a
+     * racing writer can never land only some of its files — either its whole
+     * staged set becomes `dir`, or none of it does and it falls back to
+     * `alreadyStored`.
      */
     storeTranscript(episodeUuid: string, artifact: {
         raw: string;

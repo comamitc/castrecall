@@ -11,9 +11,16 @@
  *
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-const EMPTY_STATE = { version: 1, episodes: {} };
+/**
+ * Version of the on-disk data-dir contract (provenance.json / state.json
+ * shape). Bump only for breaking changes; new fields are additive within a
+ * major version — see docs/ARCHITECTURE.md.
+ */
+export const SCHEMA_VERSION = 1;
+const EMPTY_STATE = { version: 1, schemaVersion: SCHEMA_VERSION, episodes: {} };
 export class Storage {
     dataDir;
     constructor(dataDir) {
@@ -38,7 +45,13 @@ export class Storage {
             const parsed = JSON.parse(raw);
             if (parsed.version !== 1 || typeof parsed.episodes !== "object")
                 return { ...EMPTY_STATE };
-            return parsed;
+            // schemaVersion is additive: legacy state.json predating it still loads.
+            return {
+                version: 1,
+                lastSyncAt: parsed.lastSyncAt,
+                episodes: parsed.episodes,
+                schemaVersion: parsed.schemaVersion ?? SCHEMA_VERSION,
+            };
         }
         catch {
             return { ...EMPTY_STATE, episodes: {} };
@@ -47,7 +60,8 @@ export class Storage {
     async saveState(state) {
         await this.init();
         const tmpPath = `${this.statePath}.tmp`;
-        await fs.writeFile(tmpPath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+        const stamped = { ...state, version: 1, schemaVersion: SCHEMA_VERSION };
+        await fs.writeFile(tmpPath, `${JSON.stringify(stamped, null, 2)}\n`, "utf8");
         await fs.rename(tmpPath, this.statePath);
     }
     /** Record listens idempotently by episode UUID. Returns only newly seen episodes. */
@@ -85,7 +99,15 @@ export class Storage {
         const existing = state.episodes[episodeUuid];
         if (!existing)
             return undefined;
-        const updated = { ...existing, ...patch, updatedAt: now().toISOString() };
+        // uuid/podcastUuid are stable identifiers: re-pin them post-merge so even
+        // an `as any` smuggle can't mutate them.
+        const updated = {
+            ...existing,
+            ...patch,
+            uuid: existing.uuid,
+            podcastUuid: existing.podcastUuid,
+            updatedAt: now().toISOString(),
+        };
         state.episodes[episodeUuid] = updated;
         await this.saveState(state);
         return updated;
@@ -110,6 +132,8 @@ export class Storage {
     async readProvenance(episodeUuid) {
         try {
             const raw = await fs.readFile(path.join(this.sourceDir(episodeUuid), "provenance.json"), "utf8");
+            // Tolerant cast: sidecars written before schemaVersion/contentHash
+            // existed may lack them; no downstream reader depends on their presence.
             return JSON.parse(raw);
         }
         catch {
@@ -118,7 +142,16 @@ export class Storage {
     }
     /**
      * Store a transcript with its provenance sidecar. Idempotent: if a
-     * transcript already exists for the episode, nothing is overwritten.
+     * transcript already exists for the episode, nothing is overwritten — the
+     * content hash is computed once, at first write, and is stable thereafter.
+     *
+     * Atomic across concurrent same-episode stores: the artifact triad is
+     * assembled in a private staging directory and published with a single
+     * `rename`, which POSIX guarantees fails (ENOTEMPTY/EEXIST) rather than
+     * merges when the destination is already a populated directory. So a
+     * racing writer can never land only some of its files — either its whole
+     * staged set becomes `dir`, or none of it does and it falls back to
+     * `alreadyStored`.
      */
     async storeTranscript(episodeUuid, artifact) {
         const dir = this.sourceDir(episodeUuid);
@@ -128,12 +161,39 @@ export class Storage {
         if (await this.hasTranscript(episodeUuid)) {
             return { rawPath, textPath, provenancePath, alreadyStored: true };
         }
-        await fs.mkdir(dir, { recursive: true });
-        await fs.writeFile(rawPath, artifact.raw, "utf8");
-        await fs.writeFile(provenancePath, `${JSON.stringify(artifact.provenance, null, 2)}\n`, "utf8");
-        // transcript.txt last: it is the existence marker for idempotency.
-        await fs.writeFile(textPath, artifact.text, "utf8");
-        return { rawPath, textPath, provenancePath, alreadyStored: false };
+        const contentHash = createHash("sha256").update(artifact.text, "utf8").digest("hex");
+        const provenance = {
+            ...artifact.provenance,
+            schemaVersion: SCHEMA_VERSION,
+            contentHash,
+        };
+        // Stage under the reserved `.staging/` namespace — never inside `sources/`,
+        // which is a public contract surface: downstream scans must never see
+        // half-written entries there.
+        const stagingDir = path.join(this.dataDir, ".staging", `${safeName(episodeUuid)}-${randomUUID()}`);
+        await fs.mkdir(stagingDir, { recursive: true });
+        await fs.mkdir(path.dirname(dir), { recursive: true });
+        try {
+            await fs.writeFile(path.join(stagingDir, path.basename(rawPath)), artifact.raw, "utf8");
+            await fs.writeFile(path.join(stagingDir, "provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`, "utf8");
+            await fs.writeFile(path.join(stagingDir, "transcript.txt"), artifact.text, "utf8");
+            await fs.rename(stagingDir, dir);
+            return { rawPath, textPath, provenancePath, alreadyStored: false };
+        }
+        catch (error) {
+            await fs.rm(stagingDir, { recursive: true, force: true });
+            const code = error.code;
+            if (code === "ENOTEMPTY" || code === "EEXIST") {
+                if (await this.hasTranscript(episodeUuid)) {
+                    return { rawPath, textPath, provenancePath, alreadyStored: true };
+                }
+                throw new Error(`Refusing to report alreadyStored for episode ${episodeUuid}: ` +
+                    `${dir} exists but is missing transcript.txt. This is likely a partial ` +
+                    `directory left behind by an older writer — inspect and repair or remove ` +
+                    `it manually before retrying.`);
+            }
+            throw error;
+        }
     }
     reviewCandidatePath(episodeUuid) {
         return path.join(this.reviewPendingDir(), `${safeName(episodeUuid)}.md`);
