@@ -28,7 +28,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 
 ### v0.3.0 — robustness
 - [x] #7 credentials — PR #26 squash-merged, issue closed. OS keychain (macOS/libsecret) for credentials + session-token records; three review rounds hardened token-cache concurrency (captured entries, flight-joiner persistence upgrade, serialized durable writes). 201 tests green.
-- [ ] #6 retry/backoff · [ ] #24 listened-episode filter · [ ] release v0.3.0
+- [x] #6 retry/backoff — PR #27 squash-merged in one clean pipeline run (0 pre-merge blocks), issue closed.
+- [ ] #24 listened-episode filter · [ ] release v0.3.0
 
 ### v0.4.0–v0.9.0 — ladder breadth & distribution
 - [ ] #13, #12 → v0.4.0 · [ ] #10 → v0.5.0 · [ ] #9 → v0.6.0 · [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
