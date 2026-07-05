@@ -108,6 +108,14 @@ describe("tools", () => {
       expect(result.verify).toBeUndefined();
     });
 
+    it("passes CASTRECALL_GBRAIN_INSTALLED through to the export step's gbrain suggestion", async () => {
+      const result = (await setup(config(), {}, {
+        env: { PATH: "", CASTRECALL_GBRAIN_INSTALLED: "1" },
+      })) as Record<string, any>;
+      const exportStep = result.steps.find((s: any) => s.id === "export");
+      expect(exportStep.explanation).toContain(path.join(os.homedir(), ".gbrain", "inbox"));
+    });
+
     it("verify:true with no credentials makes zero fetch calls and reports missing", async () => {
       let calls = 0;
       const fetchImpl = (async () => {

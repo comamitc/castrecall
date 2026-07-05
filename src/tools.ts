@@ -230,7 +230,7 @@ export async function setup(
   deps: ToolDeps = {},
 ): Promise<unknown> {
   const whisper = await detectLocalWhisper(config, deps.env);
-  const gbrain = await detectGbrain();
+  const gbrain = await detectGbrain({ env: deps.env });
   const steps = buildSetupPlan(config, { whisper, gbrain });
 
   let verify: { ok: boolean; detail?: string; sampleCount?: number } | undefined;

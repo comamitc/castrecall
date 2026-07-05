@@ -7,18 +7,19 @@
  *
  * gbrain detection limitation: a CastRecall tool plugin has no reliable,
  * in-process way to enumerate sibling OpenClaw plugin installs. detectGbrain
- * therefore only checks for a `~/.gbrain/` directory on disk (the one signal
- * that's actually testable) — it is a heuristic, not proof the gbrain plugin
- * is installed.
+ * checks for a `~/.gbrain/` directory on disk (the one signal that's actually
+ * testable), plus CASTRECALL_GBRAIN_INSTALLED as an explicit escape hatch an
+ * agent-driven wrapper can set once it has confirmed the plugin install via
+ * OpenClaw's own plugin inventory — a signal this process cannot see itself.
  */
 
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { type ResolvedConfig } from "./config.js";
+import { envFlag, type ResolvedConfig } from "./config.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { sttAvailability } from "./transcripts/stt.js";
-import type { WhisperDetection } from "./transcripts/local-whisper.js";
+import { WHISPER_CPP_MODEL_MISSING_MESSAGE, type WhisperDetection } from "./transcripts/local-whisper.js";
 
 export type SetupStepStatus = "configured" | "missing" | "optional-off";
 
@@ -50,11 +51,16 @@ export async function detectGbrain(
   deps: {
     homedir?: () => string;
     access?: (targetPath: string) => Promise<void>;
+    env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<GbrainDetection> {
   const homedir = deps.homedir ?? os.homedir;
   const access = deps.access ?? ((targetPath: string) => fs.access(targetPath));
+  const env = deps.env ?? process.env;
   const gbrainDir = path.join(homedir(), ".gbrain");
+  if (envFlag(env.CASTRECALL_GBRAIN_INSTALLED)) {
+    return { detected: true, suggestedExportDir: path.join(gbrainDir, "inbox") };
+  }
   try {
     await access(gbrainDir);
     return { detected: true, suggestedExportDir: path.join(gbrainDir, "inbox") };
@@ -63,8 +69,9 @@ export async function detectGbrain(
       detected: false,
       reason:
         `No ~/.gbrain directory found at ${gbrainDir}. If you use gbrain (or another markdown brain), ` +
-        "point CASTRECALL_EXPORT_DIR at its inbox or sources/ tree yourself — CastRecall cannot " +
-        "otherwise detect a sibling plugin install.",
+        "point CASTRECALL_EXPORT_DIR at its inbox or sources/ tree yourself. CastRecall cannot " +
+        "otherwise detect a sibling plugin install — if an agent-driven wrapper has already " +
+        "confirmed one via OpenClaw's plugin inventory, set CASTRECALL_GBRAIN_INSTALLED=1.",
     };
   }
 }
@@ -93,6 +100,9 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
   const taddyOk = taddyConfigured(config);
   const stt = sttAvailability(config);
   const { exportDir, mode } = classifyExportDir(config.exportDir);
+  const whisperNeedsModel =
+    deps.whisper.detected?.flavor === "whisper.cpp" && !config.localWhisper.model;
+  const whisperReady = Boolean(deps.whisper.detected) && !whisperNeedsModel;
 
   const steps: SetupStep[] = [
     {
@@ -142,12 +152,14 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
     {
       id: "providers.localWhisper",
       title: "Local Whisper (optional, free & fully private)",
-      status: deps.whisper.detected ? "configured" : "optional-off",
+      status: whisperReady ? "configured" : "optional-off",
       envVars: ["CASTRECALL_WHISPER_MODEL", "CASTRECALL_WHISPER_COMMAND", "CASTRECALL_DISABLE_LOCAL_WHISPER"],
-      explanation: deps.whisper.detected
-        ? `Detected ${deps.whisper.detected.flavor} on PATH — transcribes locally at no cost and ` +
+      explanation: whisperReady
+        ? `Detected ${deps.whisper.detected!.flavor} on PATH — transcribes locally at no cost and ` +
           "nothing leaves your machine."
-        : deps.whisper.reason,
+        : whisperNeedsModel
+          ? `Detected whisper.cpp on PATH, but it's not ready yet: ${WHISPER_CPP_MODEL_MISSING_MESSAGE}`
+          : deps.whisper.reason!,
     },
     {
       id: "providers.stt",

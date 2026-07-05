@@ -36,6 +36,10 @@ export type WhisperDetection =
   | { detected: DetectedWhisper; reason?: undefined }
   | { detected?: undefined; reason: string };
 
+export const WHISPER_CPP_MODEL_MISSING_MESSAGE =
+  "whisper.cpp needs a ggml model file. Set CASTRECALL_WHISPER_MODEL=/path/to/ggml-<size>.bin " +
+  "(download one with whisper.cpp's models script or from Hugging Face ggerganov/whisper.cpp).";
+
 export type ExecResult = { code: number | null; stdout: string; stderr: string };
 export type ExecImpl = (argv: string[], options: { timeoutMs: number }) => Promise<ExecResult>;
 
@@ -145,10 +149,7 @@ async function runWhisper(
     }
     case "whisper.cpp": {
       if (!model) {
-        throw new CastrecallSetupError(
-          "whisper.cpp needs a ggml model file. Set CASTRECALL_WHISPER_MODEL=/path/to/ggml-<size>.bin " +
-            "(download one with whisper.cpp's models script or from Hugging Face ggerganov/whisper.cpp).",
-        );
+        throw new CastrecallSetupError(WHISPER_CPP_MODEL_MISSING_MESSAGE);
       }
       const input = await ensureWav(audioPath, workDir, execImpl, env);
       const result = await execImpl(

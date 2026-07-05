@@ -70,7 +70,7 @@ Ask your agent to run `castrecall_setup` — it walks through everything below i
 2. **Storage location** — where transcripts and review candidates live (`CASTRECALL_DATA_DIR`, default `~/.openclaw/castrecall`).
 3. **Privacy defaults** — confirms transcripts are private source material, nothing is ever promoted into durable memory, and corpus export is off unless you opt in.
 4. **Optional providers** — Taddy, local Whisper, and cloud STT, each with what's detected and how to enable it.
-5. **Export directory** — off by default; if a gbrain install is detected (`~/.gbrain/`), `castrecall_setup` suggests its inbox as `CASTRECALL_EXPORT_DIR`.
+5. **Export directory** — off by default; if a gbrain install is detected (`~/.gbrain/`, or `CASTRECALL_GBRAIN_INSTALLED=1` set by an agent-driven wrapper that has confirmed the plugin via OpenClaw's own plugin inventory), `castrecall_setup` suggests its inbox as `CASTRECALL_EXPORT_DIR`.
 
 `castrecall_setup` **never** modifies `openclaw.json` and **never** writes secrets to disk — it only tells you which environment variables to set and where (see `.env.example` for every variable). Re-run `castrecall_setup_status` any time afterward for a compact health report of the same state.
 

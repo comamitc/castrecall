@@ -5,6 +5,9 @@ import type { WhisperDetection } from "./transcripts/local-whisper.js";
 
 const NO_WHISPER: WhisperDetection = { reason: "No local Whisper CLI detected on PATH." };
 const WITH_WHISPER: WhisperDetection = {
+  detected: { flavor: "openai-whisper", command: "/usr/local/bin/whisper" },
+};
+const WITH_WHISPER_CPP_NO_MODEL: WhisperDetection = {
   detected: { flavor: "whisper.cpp", command: "/usr/local/bin/whisper-cli" },
 };
 const NO_GBRAIN = { detected: false as const, reason: "No ~/.gbrain directory found." };
@@ -37,6 +40,29 @@ describe("detectGbrain", () => {
     expect(result.detected).toBe(false);
     expect(result.suggestedExportDir).toBeUndefined();
     expect(result.reason).toContain("~/.gbrain");
+  });
+
+  it("detects gbrain via CASTRECALL_GBRAIN_INSTALLED even when ~/.gbrain is absent", async () => {
+    const result = await detectGbrain({
+      homedir: () => "/home/user",
+      access: async () => {
+        throw new Error("ENOENT");
+      },
+      env: { CASTRECALL_GBRAIN_INSTALLED: "1" },
+    });
+    expect(result.detected).toBe(true);
+    expect(result.suggestedExportDir).toBe("/home/user/.gbrain/inbox");
+  });
+
+  it("ignores a falsy CASTRECALL_GBRAIN_INSTALLED and falls back to the directory check", async () => {
+    const result = await detectGbrain({
+      homedir: () => "/home/user",
+      access: async () => {
+        throw new Error("ENOENT");
+      },
+      env: { CASTRECALL_GBRAIN_INSTALLED: "0" },
+    });
+    expect(result.detected).toBe(false);
   });
 
   it("defaults to the real filesystem and homedir when no deps are injected", async () => {
@@ -113,10 +139,28 @@ describe("buildSetupPlan", () => {
     const detected = buildSetupPlan(config({}), { whisper: WITH_WHISPER, gbrain: NO_GBRAIN });
     const step = detected.find((s) => s.id === "providers.localWhisper")!;
     expect(step.status).toBe("configured");
-    expect(step.explanation).toContain("whisper.cpp");
+    expect(step.explanation).toContain("openai-whisper");
 
     const missing = buildSetupPlan(config({}), { whisper: NO_WHISPER, gbrain: NO_GBRAIN });
     expect(missing.find((s) => s.id === "providers.localWhisper")!.status).toBe("optional-off");
+  });
+
+  it("does not mark whisper.cpp ready until CASTRECALL_WHISPER_MODEL is set", () => {
+    const noModel = buildSetupPlan(config({}), {
+      whisper: WITH_WHISPER_CPP_NO_MODEL,
+      gbrain: NO_GBRAIN,
+    });
+    const noModelStep = noModel.find((s) => s.id === "providers.localWhisper")!;
+    expect(noModelStep.status).toBe("optional-off");
+    expect(noModelStep.explanation).toContain("CASTRECALL_WHISPER_MODEL");
+
+    const withModel = buildSetupPlan(config({ CASTRECALL_WHISPER_MODEL: "/models/ggml-base.bin" }), {
+      whisper: WITH_WHISPER_CPP_NO_MODEL,
+      gbrain: NO_GBRAIN,
+    });
+    const withModelStep = withModel.find((s) => s.id === "providers.localWhisper")!;
+    expect(withModelStep.status).toBe("configured");
+    expect(withModelStep.explanation).toContain("whisper.cpp");
   });
 
   it("flips the stt step to configured only once enabled and a provider key is set", () => {
