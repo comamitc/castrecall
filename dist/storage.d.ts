@@ -144,6 +144,18 @@ export declare class Storage {
         staleLockAgeMs?: number;
     }>;
     /**
+     * Exclusive acquisition that PARTICIPATES in the recovery mutex: it fails
+     * closed while a recovery is in progress, and re-checks after creating —
+     * an acquirer that raced past the pre-check while the mutex was being
+     * created releases its own lock and backs off. This closes the window
+     * where a recovery that already re-verified a stale lock could otherwise
+     * remove a fresh lock created by a scheduled tick in that gap: no
+     * scheduled acquirer can ever HOLD a lock while the mutex exists.
+     */
+    private tryAcquireExclusive;
+    private recoveryMutexExists;
+    private get recoveryMutexPath();
+    /**
      * Explicit recovery from a crashed run's leftover lock. Serialized behind
      * an UNSTEALABLE recovery mutex (exclusive-create, no TTL, no takeover):
      * two concurrent recoveries cannot both proceed, so the re-checked stale
@@ -188,7 +200,7 @@ export declare class Storage {
      * that races a reclaim touches the NEW holder's live lock, which merely
      * refreshes an already-live lock and can never produce two holders.
      */
-    renewPipelineLock(token: string, now?: () => Date): Promise<boolean>;
+    renewPipelineLock(token: string, now?: () => Date): Promise<"renewed" | "lost" | "transient-error">;
     /** Release a held lock — only if `token` still matches the current holder. */
     releasePipelineLock(token: string): Promise<void>;
     updateEpisode(episodeUuid: string, patch: Partial<Omit<ListenRecord, "uuid" | "podcastUuid">>, now?: () => Date): Promise<ListenRecord | undefined>;

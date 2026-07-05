@@ -358,6 +358,35 @@ describe("Storage", () => {
     await expect(fs.stat(recoveryMutex)).rejects.toThrow();
   });
 
+  it("scheduled acquirers fail closed while a recovery is in progress (mutex participation)", async () => {
+    // Round-7 interleaving: recovery verified a stale lock; the old lock then
+    // vanishes (e.g. the suspended holder's own release); a scheduled tick
+    // must NOT be able to acquire in that window — otherwise the recovery's
+    // subsequent removal would delete a fresh live lock.
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(crashed.acquired).toBe(true);
+    if (!crashed.acquired) throw new Error("unreachable");
+
+    // Recovery in progress (mutex held by another process).
+    const recoveryMutex = path.join(dir, ".staging", "pipeline.lock.recovery");
+    await fs.writeFile(recoveryMutex, new Date().toISOString(), "utf8");
+
+    // Old holder releases (lock path now empty) — the dangerous window.
+    await storage.releasePipelineLock(crashed.token);
+
+    // Scheduled ticks fail closed while the mutex exists, even with no lock.
+    const tick = await storage.acquirePipelineLock(() => new Date());
+    expect(tick.acquired).toBe(false);
+    // And no lock file was left behind by the refused acquirer.
+    await expect(fs.stat(path.join(dir, ".staging", "pipeline.lock"))).rejects.toThrow();
+
+    // Once the recovery finishes (mutex gone), scheduling proceeds normally.
+    await fs.rm(recoveryMutex);
+    const after = await storage.acquirePipelineLock(() => new Date());
+    expect(after.acquired).toBe(true);
+  });
+
   it("inspectPipelineLock reports held/stale without touching the lock", async () => {
     expect(await storage.inspectPipelineLock()).toEqual({ held: false });
 
@@ -390,7 +419,7 @@ describe("Storage", () => {
 
     // Renew partway through the TTL, simulating a heartbeat during a long run.
     const renewedAt = new Date(start.getTime() + LOCK_TTL_MS / 2);
-    expect(await storage.renewPipelineLock(first.token, () => renewedAt)).toBe(true);
+    expect(await storage.renewPipelineLock(first.token, () => renewedAt)).toBe("renewed");
 
     // Past the ORIGINAL TTL the lock is still fresh (renewal reset the clock):
     // not acquirable, and not reported stale.
@@ -407,20 +436,20 @@ describe("Storage", () => {
     expect((later as { staleLockAgeMs?: number }).staleLockAgeMs).toBeGreaterThan(LOCK_TTL_MS);
   });
 
-  it("renewPipelineLock returns false once the lock is released or replaced", async () => {
+  it("renewPipelineLock reports definitive loss once the lock is released or replaced", async () => {
     const first = await storage.acquirePipelineLock();
     expect(first.acquired).toBe(true);
     if (!first.acquired) throw new Error("unreachable");
     await storage.releasePipelineLock(first.token);
-    expect(await storage.renewPipelineLock(first.token)).toBe(false);
+    expect(await storage.renewPipelineLock(first.token)).toBe("lost");
 
     // A new holder's lock must not be renewable with the old token, and the
     // failed renewal must not touch it (its own renewal still works).
     const second = await storage.acquirePipelineLock();
     expect(second.acquired).toBe(true);
     if (!second.acquired) throw new Error("unreachable");
-    expect(await storage.renewPipelineLock(first.token)).toBe(false);
-    expect(await storage.renewPipelineLock(second.token)).toBe(true);
+    expect(await storage.renewPipelineLock(first.token)).toBe("lost");
+    expect(await storage.renewPipelineLock(second.token)).toBe("renewed");
   });
 
 

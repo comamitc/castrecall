@@ -85,8 +85,11 @@ export async function runPipeline(
   let lockLost = false;
   const heldToken = lock.token;
   const heartbeat = setInterval(() => {
-    void storage.renewPipelineLock(heldToken, now).then((renewed) => {
-      if (!renewed) lockLost = true;
+    void storage.renewPipelineLock(heldToken, now).then((outcome) => {
+      // Only a DEFINITIVE loss (lock gone or re-tokened) aborts the run; a
+      // transient filesystem error must not — we still own the lock, and the
+      // token-checked release in `finally` stays responsible for cleanup.
+      if (outcome === "lost") lockLost = true;
     });
   }, LOCK_HEARTBEAT_INTERVAL_MS);
   heartbeat.unref?.();
@@ -228,6 +231,9 @@ export async function runPipeline(
     };
   } finally {
     clearInterval(heartbeat);
-    if (!lockLost) await storage.releasePipelineLock(lock.token);
+    // Always attempt release: it is token-checked, so if the lock was truly
+    // lost/replaced this is a no-op, and if a heartbeat only failed
+    // transiently this prevents stranding a lock we still own.
+    await storage.releasePipelineLock(lock.token);
   }
 }

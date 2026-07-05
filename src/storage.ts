@@ -247,7 +247,7 @@ export class Storage {
   > {
     await fs.mkdir(path.join(this.dataDir, ".staging"), { recursive: true });
     const token = randomUUID();
-    if (await this.createLockExclusive(token, now)) {
+    if (await this.tryAcquireExclusive(token, now)) {
       return { acquired: true, token };
     }
     let mtimeMs: number | undefined;
@@ -256,7 +256,7 @@ export class Storage {
     } catch {
       // Lock vanished between the failed exclusive create and the stat (the
       // holder released). One more exclusive attempt, then back off.
-      if (await this.createLockExclusive(token, now)) {
+      if (await this.tryAcquireExclusive(token, now)) {
         return { acquired: true, token };
       }
       return { acquired: false };
@@ -266,6 +266,38 @@ export class Storage {
       return { acquired: false, staleLockAgeMs: age };
     }
     return { acquired: false };
+  }
+
+  /**
+   * Exclusive acquisition that PARTICIPATES in the recovery mutex: it fails
+   * closed while a recovery is in progress, and re-checks after creating —
+   * an acquirer that raced past the pre-check while the mutex was being
+   * created releases its own lock and backs off. This closes the window
+   * where a recovery that already re-verified a stale lock could otherwise
+   * remove a fresh lock created by a scheduled tick in that gap: no
+   * scheduled acquirer can ever HOLD a lock while the mutex exists.
+   */
+  private async tryAcquireExclusive(token: string, now: () => Date): Promise<boolean> {
+    if (await this.recoveryMutexExists()) return false;
+    if (!(await this.createLockExclusive(token, now))) return false;
+    if (await this.recoveryMutexExists()) {
+      await this.releasePipelineLock(token);
+      return false;
+    }
+    return true;
+  }
+
+  private async recoveryMutexExists(): Promise<boolean> {
+    try {
+      await fs.stat(this.recoveryMutexPath);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private get recoveryMutexPath(): string {
+    return `${this.lockPath}.recovery`;
   }
 
   /**
@@ -282,36 +314,41 @@ export class Storage {
   async breakStaleLock(now: () => Date = () => new Date()): Promise<
     { acquired: true; token: string } | { acquired: false; staleLockAgeMs?: number }
   > {
-    const recoveryMutexPath = `${this.lockPath}.recovery`;
+    await fs.mkdir(path.join(this.dataDir, ".staging"), { recursive: true });
     try {
-      await fs.writeFile(recoveryMutexPath, new Date().toISOString(), {
+      await fs.writeFile(this.recoveryMutexPath, new Date().toISOString(), {
         encoding: "utf8",
         flag: "wx",
       });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       throw new CastrecallSetupError(
-        `Stale-lock recovery is blocked: ${recoveryMutexPath} exists, which means another ` +
+        `Stale-lock recovery is blocked: ${this.recoveryMutexPath} exists, which means another ` +
           "recovery is in progress or a previous recovery was hard-killed. After confirming no " +
           "recovery is running, remove that file manually and retry.",
       );
     }
     try {
+      // Scheduled acquirers fail closed while the mutex exists AND self-release
+      // if they raced past the pre-check (see tryAcquireExclusive), so from
+      // here on no scheduled tick can hold a lock: what we re-verify below is
+      // what we remove.
       try {
         const age = now().getTime() - (await fs.stat(this.lockPath)).mtimeMs;
         if (age <= LOCK_TTL_MS) return { acquired: false }; // live again — refuse
-        // Under the mutex this removal cannot race another recovery, and
-        // ordinary acquirers never replace an existing lock, so what we
-        // re-checked is what we remove.
         await fs.rm(this.lockPath, { force: true });
       } catch {
-        // Lock already gone — fall through to a normal acquire.
+        // Lock already gone — fall through to the exclusive create.
       }
-      // Plain exclusive acquire: if a scheduled run slips in first, we lose
-      // cleanly (single-holder invariant holds either way).
-      return await this.acquirePipelineLock(now);
+      // Direct exclusive create (NOT acquirePipelineLock — that would fail
+      // closed on our own mutex). A raced create losing here is a clean back-off.
+      const token = randomUUID();
+      if (await this.createLockExclusive(token, now)) {
+        return { acquired: true, token };
+      }
+      return { acquired: false };
     } finally {
-      await fs.rm(recoveryMutexPath, { force: true });
+      await fs.rm(this.recoveryMutexPath, { force: true });
     }
   }
 
@@ -357,14 +394,31 @@ export class Storage {
    * that races a reclaim touches the NEW holder's live lock, which merely
    * refreshes an already-live lock and can never produce two holders.
    */
-  async renewPipelineLock(token: string, now: () => Date = () => new Date()): Promise<boolean> {
+  async renewPipelineLock(
+    token: string,
+    now: () => Date = () => new Date(),
+  ): Promise<"renewed" | "lost" | "transient-error"> {
+    let raw: string;
     try {
-      const existing = JSON.parse(await fs.readFile(this.lockPath, "utf8")) as { token?: string };
-      if (existing.token !== token) return false;
-      await fs.utimes(this.lockPath, now(), now());
-      return true;
+      raw = await fs.readFile(this.lockPath, "utf8");
+    } catch (error) {
+      // File gone = the lock was released or explicitly broken: definitive.
+      // Any other read failure is a transient filesystem problem — the caller
+      // must NOT treat it as loss (that would strand a lock we still own).
+      return (error as NodeJS.ErrnoException).code === "ENOENT" ? "lost" : "transient-error";
+    }
+    let parsedToken: string | undefined;
+    try {
+      parsedToken = (JSON.parse(raw) as { token?: string }).token;
     } catch {
-      return false;
+      return "transient-error";
+    }
+    if (parsedToken !== token) return "lost";
+    try {
+      await fs.utimes(this.lockPath, now(), now());
+      return "renewed";
+    } catch {
+      return "transient-error";
     }
   }
 
