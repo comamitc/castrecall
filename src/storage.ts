@@ -243,12 +243,21 @@ export class Storage {
    *     explicit, human-triggered `breakStaleLock` — never scheduled.
    */
   async acquirePipelineLock(now: () => Date = () => new Date()): Promise<
-    { acquired: true; token: string } | { acquired: false; staleLockAgeMs?: number }
+    | { acquired: true; token: string }
+    | { acquired: false; staleLockAgeMs?: number; recoveryBlocked?: boolean }
   > {
     await fs.mkdir(path.join(this.dataDir, ".staging"), { recursive: true });
+    // Distinguish recovery blockage explicitly: an orphaned recovery mutex
+    // (hard-killed recovery) must be diagnosable, not a generic "locked".
+    if (await this.recoveryMutexExists()) {
+      return { acquired: false, recoveryBlocked: true };
+    }
     const token = randomUUID();
     if (await this.tryAcquireExclusive(token, now)) {
       return { acquired: true, token };
+    }
+    if (await this.recoveryMutexExists()) {
+      return { acquired: false, recoveryBlocked: true };
     }
     let mtimeMs: number | undefined;
     try {
@@ -358,13 +367,18 @@ export class Storage {
    * ago — a hard-killed run).
    */
   async inspectPipelineLock(now: () => Date = () => new Date()): Promise<
-    { held: false } | { held: true; ageMs: number; stale: boolean }
+    ({ held: false } | { held: true; ageMs: number; stale: boolean }) & {
+      recoveryMutex?: { path: string };
+    }
   > {
+    const recovery = (await this.recoveryMutexExists())
+      ? { recoveryMutex: { path: this.recoveryMutexPath } }
+      : {};
     try {
       const ageMs = now().getTime() - (await fs.stat(this.lockPath)).mtimeMs;
-      return { held: true, ageMs, stale: ageMs > LOCK_TTL_MS };
+      return { held: true, ageMs, stale: ageMs > LOCK_TTL_MS, ...recovery };
     } catch {
-      return { held: false };
+      return { held: false, ...recovery };
     }
   }
 

@@ -142,6 +142,7 @@ export declare class Storage {
     } | {
         acquired: false;
         staleLockAgeMs?: number;
+        recoveryBlocked?: boolean;
     }>;
     /**
      * Exclusive acquisition that PARTICIPATES in the recovery mutex: it fails
@@ -178,12 +179,16 @@ export declare class Storage {
      * its age, and whether it reads as stale (heartbeat stopped > LOCK_TTL_MS
      * ago — a hard-killed run).
      */
-    inspectPipelineLock(now?: () => Date): Promise<{
+    inspectPipelineLock(now?: () => Date): Promise<({
         held: false;
     } | {
         held: true;
         ageMs: number;
         stale: boolean;
+    }) & {
+        recoveryMutex?: {
+            path: string;
+        };
     }>;
     /**
      * Exclusive-create the lock file and stamp its mtime from the caller's

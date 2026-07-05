@@ -64,6 +64,16 @@ export async function runPipeline(
     }
   }
   if (!lock.acquired) {
+    if (lock.recoveryBlocked) {
+      return {
+        skipped: "recovery-blocked",
+        note:
+          "A stale-lock recovery is in progress — or a recovery was hard-killed and left its " +
+          "mutex behind (<dataDir>/.staging/pipeline.lock.recovery). If castrecall_setup_status " +
+          "shows the recovery mutex with no live recovery running, remove that file manually; " +
+          "scheduled runs resume on the next tick.",
+      };
+    }
     if (lock.staleLockAgeMs !== undefined) {
       return {
         skipped: "stale-lock",

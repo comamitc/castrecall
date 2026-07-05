@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config.js";
 import { runPipeline } from "./pipeline.js";
+import { setupStatus } from "./tools.js";
 import { LOCK_TTL_MS, Storage } from "./storage.js";
 
 const HISTORY_EPISODE = {
@@ -537,6 +538,32 @@ describe("runPipeline", () => {
     >;
     expect(recovered.skipped).toBeUndefined();
     expect(recovered.newListens).toBe(1);
+  });
+
+  it("an orphaned recovery mutex is surfaced as recovery-blocked, not a generic lock no-op", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    // Hard-killed recovery: mutex left behind, NO pipeline lock at all.
+    await fs.mkdir(path.join(dir, ".staging"), { recursive: true });
+    const mutexPath = path.join(dir, ".staging", "pipeline.lock.recovery");
+    await fs.writeFile(mutexPath, new Date().toISOString(), "utf8");
+
+    const { fetchImpl, calls } = makeFetchImpl();
+    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(result.skipped).toBe("recovery-blocked");
+    expect(result.note).toContain("pipeline.lock.recovery");
+    expect(calls.filter((c) => c === "login")).toHaveLength(0);
+
+    // setup_status diagnoses it too, with the manual remediation.
+    const status = (await setupStatus(config())) as Record<string, any>;
+    expect(status.pipelineLock.held).toBe(false);
+    expect(status.pipelineLock.recoveryMutex.path).toBe(mutexPath);
+    expect(status.pipelineLock.recoveryMutex.note).toContain("remove the file manually");
+
+    // Removing the mutex restores normal scheduling.
+    await fs.rm(mutexPath);
+    const after = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(after.skipped).toBeUndefined();
   });
 
   it("reconciles a pending review file left by a crash so scheduled runs converge", async () => {
