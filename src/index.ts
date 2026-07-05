@@ -47,7 +47,8 @@ const configSchema = Type.Object(
       Type.String({
         description:
           "Opt-in: also write section-split, frontmattered markdown pages here on transcript " +
-          "store (e.g. a gbrain inbox or sources/podcasts/ tree). Off by default. The " +
+          "store (e.g. a gbrain inbox or a brain's sources/ root — the exporter always appends " +
+          "podcasts/<show-slug>, so don't point this at sources/podcasts). Off by default. The " +
           "CASTRECALL_EXPORT_DIR env var overrides this.",
       }),
     ),
