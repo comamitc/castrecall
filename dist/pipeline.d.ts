@@ -19,5 +19,11 @@ export type PipelineParams = {
     limit?: number;
     /** Bypass the cooldown gate for a manual recovery run. Never use from a scheduler recipe. */
     force?: boolean;
+    /**
+     * Break a STALE run lock (one whose heartbeat stopped > LOCK_TTL_MS ago,
+     * i.e. a hard-killed run) after a human confirmed no run is alive. Never
+     * breaks a live lock. Never use from a scheduler recipe.
+     */
+    breakStaleLock?: boolean;
 };
 export declare function runPipeline(config: ResolvedConfig, params?: PipelineParams, deps?: ToolDeps): Promise<unknown>;

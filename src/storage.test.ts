@@ -311,52 +311,45 @@ describe("Storage", () => {
     expect(reacquired.acquired).toBe(true);
   });
 
-  it("reclaims a stale lock past LOCK_TTL_MS, and the original holder's release cannot delete it", async () => {
+  it("never auto-reclaims a stale lock; reports its age instead (fail-closed)", async () => {
     const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
-    const first = await storage.acquirePipelineLock(() => staleAcquiredAt);
-    expect(first.acquired).toBe(true);
-    if (!first.acquired) throw new Error("unreachable");
+    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(crashed.acquired).toBe(true);
 
-    // A fresh run, well past the TTL, reclaims the stale lock.
-    const reclaimed = await storage.acquirePipelineLock(() => new Date());
-    expect(reclaimed.acquired).toBe(true);
-    if (!reclaimed.acquired) throw new Error("unreachable");
-    expect(reclaimed.token).not.toBe(first.token);
-
-    // The original (crashed) holder's release must not delete the new holder's lock.
-    await storage.releasePipelineLock(first.token);
-    const stillHeld = await storage.acquirePipelineLock();
-    expect(stillHeld.acquired).toBe(false);
-
-    // The real holder's release does work.
-    await storage.releasePipelineLock(reclaimed.token);
-    const afterRelease = await storage.acquirePipelineLock();
-    expect(afterRelease.acquired).toBe(true);
-  });
-
-  it("lets only one concurrent contender reclaim a stale lock", async () => {
-    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
-    const first = await storage.acquirePipelineLock(() => staleAcquiredAt);
-    expect(first.acquired).toBe(true);
-
-    // Many concurrent contenders race to reclaim the same stale lock.
+    // No contender may ever steal it — the scheduled path fails closed and
+    // reports the staleness so the operator can decide.
     const results = await Promise.all(
       Array.from({ length: 8 }, () => storage.acquirePipelineLock(() => new Date())),
     );
-    const winners = results.filter((r) => r.acquired);
-    expect(winners).toHaveLength(1);
+    expect(results.every((r) => !r.acquired)).toBe(true);
+    const withAge = results as Array<{ acquired: false; staleLockAgeMs?: number }>;
+    expect(withAge.every((r) => (r.staleLockAgeMs ?? 0) > LOCK_TTL_MS)).toBe(true);
   });
 
-  it("does not reclaim a lock younger than LOCK_TTL_MS", async () => {
+  it("breakStaleLock recovers from a crashed run's lock, but refuses a live one", async () => {
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(crashed.acquired).toBe(true);
+
+    const broken = await storage.breakStaleLock(() => new Date());
+    expect(broken.acquired).toBe(true);
+
+    // A LIVE lock is refused outright — breakStaleLock is not a bypass.
+    const refused = await storage.breakStaleLock(() => new Date());
+    expect(refused.acquired).toBe(false);
+  });
+
+  it("does not report a lock younger than LOCK_TTL_MS as stale", async () => {
     const recentAcquiredAt = new Date(Date.now() - (LOCK_TTL_MS - 1_000));
     const first = await storage.acquirePipelineLock(() => recentAcquiredAt);
     expect(first.acquired).toBe(true);
 
     const attempt = await storage.acquirePipelineLock(() => new Date());
     expect(attempt.acquired).toBe(false);
+    expect((attempt as { staleLockAgeMs?: number }).staleLockAgeMs).toBeUndefined();
   });
 
-  it("renewPipelineLock keeps a long-running holder from being reclaimed past LOCK_TTL_MS", async () => {
+  it("renewPipelineLock keeps a long-running holder from ever looking stale", async () => {
     const start = new Date("2026-07-05T00:00:00Z");
     const first = await storage.acquirePipelineLock(() => start);
     expect(first.acquired).toBe(true);
@@ -364,159 +357,39 @@ describe("Storage", () => {
 
     // Renew partway through the TTL, simulating a heartbeat during a long run.
     const renewedAt = new Date(start.getTime() + LOCK_TTL_MS / 2);
-    const renewed = await storage.renewPipelineLock(first.token, () => renewedAt);
-    expect(renewed).toBe(true);
+    expect(await storage.renewPipelineLock(first.token, () => renewedAt)).toBe(true);
 
-    // Total elapsed time since the original acquire now exceeds LOCK_TTL_MS,
-    // but the renewal reset the clock, so a contender must still back off.
+    // Past the ORIGINAL TTL the lock is still fresh (renewal reset the clock):
+    // not acquirable, and not reported stale.
     const pastOriginalTtl = new Date(start.getTime() + LOCK_TTL_MS + 60_000);
     const contender = await storage.acquirePipelineLock(() => pastOriginalTtl);
     expect(contender.acquired).toBe(false);
+    expect((contender as { staleLockAgeMs?: number }).staleLockAgeMs).toBeUndefined();
 
-    // Without a further renewal, once LOCK_TTL_MS elapses from the *renewed*
-    // timestamp the lock is reclaimable again, same as any stale lock.
+    // Without further renewal it eventually reads as stale — but is still
+    // only REPORTED, never taken.
     const pastRenewedTtl = new Date(renewedAt.getTime() + LOCK_TTL_MS + 60_000);
-    const laterContender = await storage.acquirePipelineLock(() => pastRenewedTtl);
-    expect(laterContender.acquired).toBe(true);
+    const later = await storage.acquirePipelineLock(() => pastRenewedTtl);
+    expect(later.acquired).toBe(false);
+    expect((later as { staleLockAgeMs?: number }).staleLockAgeMs).toBeGreaterThan(LOCK_TTL_MS);
   });
 
-  it("three-contender reclaim interleaving admits exactly one holder (A/B/C race)", async () => {
-    // The round-3 review scenario: A and B both observe a stale lock; A
-    // reclaims and creates a fresh lock; B's delayed reclaim must NOT steal
-    // A's fresh lock, and no window may let C in while a holder is live.
-    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
-    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
-    expect(crashed.acquired).toBe(true);
-
-    // A reclaims fully.
-    const a = await storage.acquirePipelineLock(() => new Date());
-    expect(a.acquired).toBe(true);
-
-    // B's reclaim was delayed past A's: inside the mutex it must re-verify
-    // and observe A's FRESH lock, then back off without touching it.
-    let bSawMutex = false;
-    storage.lockTestHooks = {
-      insideReclaimMutex: async () => {
-        bSawMutex = true;
-      },
-    };
-    // Force B down the reclaim path by making it believe the lock is stale
-    // at the pre-check (clock far in the future), then verify the in-mutex
-    // re-check with the REAL clock... which would also see it stale. Use a
-    // two-phase clock instead: stale at pre-check, fresh at re-check.
-    const clocks = [
-      new Date(), // createLockExclusive payload (wx fails; utimes not reached)
-      new Date(Date.now() + LOCK_TTL_MS + 60_000), // pre-check: looks stale
-      new Date(), // in-mutex re-check: fresh — must back off
-    ];
-    const b = await storage.acquirePipelineLock(() => clocks.shift() ?? new Date());
-    storage.lockTestHooks = undefined;
-    expect(bSawMutex).toBe(true);
-    expect(b.acquired).toBe(false);
-
-    // A still owns the lock (its token still renews), and C is excluded.
-    if (!a.acquired) throw new Error("unreachable");
-    expect(await storage.renewPipelineLock(a.token, () => new Date())).toBe(true);
-    const c = await storage.acquirePipelineLock(() => new Date());
-    expect(c.acquired).toBe(false);
-  });
-
-  it("an acquirer slipping into the evict window wins cleanly; the reclaimer backs off", async () => {
-    // Inside the reclaim mutex, between evicting the stale lock and creating
-    // its own, the lock path is briefly empty. A plain acquirer (C) that
-    // slips in via exclusive create must win; the reclaimer (A) must lose
-    // WITHOUT restoring/overwriting anything — single-holder invariant.
-    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
-    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
-    expect(crashed.acquired).toBe(true);
-
-    let cResult: { acquired: boolean; token?: string } = { acquired: false };
-    storage.lockTestHooks = {
-      afterEvict: async () => {
-        cResult = await storage.acquirePipelineLock(() => new Date());
-      },
-    };
-    const a = await storage.acquirePipelineLock(() => new Date());
-    storage.lockTestHooks = undefined;
-
-    expect(cResult.acquired).toBe(true);
-    expect(a.acquired).toBe(false);
-    // C's lock survives and excludes everyone else.
-    if (!cResult.acquired || !cResult.token) throw new Error("unreachable");
-    expect(await storage.renewPipelineLock(cResult.token, () => new Date())).toBe(true);
-    expect((await storage.acquirePipelineLock(() => new Date())).acquired).toBe(false);
-  });
-
-  it("an expired reclaim-mutex owner cannot mutate the lock after losing the mutex", async () => {
-    // Round-4 review scenario: a reclaimer stalls inside its critical
-    // section past RECLAIM_MUTEX_TTL_MS; a thief takes the mutex and a fresh
-    // lock appears. The resumed owner's fence check must abort every lock
-    // mutation and must NOT delete the thief's mutex on the way out.
-    const lockPath = path.join(dir, ".staging", "pipeline.lock");
-    const mutexPath = `${lockPath}.reclaim`;
-    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
-    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
-    expect(crashed.acquired).toBe(true);
-
-    let thiefToken: string | undefined;
-    storage.lockTestHooks = {
-      insideReclaimMutex: async () => {
-        // Simulate the stall + theft: the thief overwrites the mutex with its
-        // own token, clears the stale lock, and acquires a fresh one.
-        await fs.writeFile(mutexPath, "thief-token", "utf8");
-        await fs.rm(lockPath, { force: true });
-        const thief = await storage.acquirePipelineLock(() => new Date());
-        expect(thief.acquired).toBe(true);
-        if (thief.acquired) thiefToken = thief.token;
-      },
-    };
-    const owner = await storage.acquirePipelineLock(() => new Date());
-    storage.lockTestHooks = undefined;
-
-    // The expired owner aborted: no acquisition, thief's lock untouched,
-    // thief's mutex not deleted by the owner's finally block.
-    expect(owner.acquired).toBe(false);
-    expect(thiefToken).toBeTruthy();
-    expect(await storage.renewPipelineLock(thiefToken!, () => new Date())).toBe(true);
-    expect(await fs.readFile(mutexPath, "utf8")).toBe("thief-token");
-    await fs.rm(mutexPath, { force: true });
-  });
-
-  it("a stale-reclaimed lock is never clobbered by the old holder's renewal (renew-vs-reclaim)", async () => {
-    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
-    const first = await storage.acquirePipelineLock(() => staleAcquiredAt);
+  it("renewPipelineLock returns false once the lock is released or replaced", async () => {
+    const first = await storage.acquirePipelineLock();
     expect(first.acquired).toBe(true);
     if (!first.acquired) throw new Error("unreachable");
+    await storage.releasePipelineLock(first.token);
+    expect(await storage.renewPipelineLock(first.token)).toBe(false);
 
-    // Reclaimer steals the stale lock.
-    const reclaimed = await storage.acquirePipelineLock(() => new Date());
-    expect(reclaimed.acquired).toBe(true);
-    if (!reclaimed.acquired) throw new Error("unreachable");
-
-    // The suspended old holder's heartbeat fires late: it must observe the
-    // loss (false) and — because renewal is a pure touch, never a write or
-    // rename — the reclaimer's lock file must remain intact and owned.
-    const renewed = await storage.renewPipelineLock(first.token, () => new Date());
-    expect(renewed).toBe(false);
-    expect(await storage.renewPipelineLock(reclaimed.token, () => new Date())).toBe(true);
-
-    // The reclaimer's live lock still excludes contenders.
-    const contender = await storage.acquirePipelineLock(() => new Date());
-    expect(contender.acquired).toBe(false);
+    // A new holder's lock must not be renewable with the old token, and the
+    // failed renewal must not touch it (its own renewal still works).
+    const second = await storage.acquirePipelineLock();
+    expect(second.acquired).toBe(true);
+    if (!second.acquired) throw new Error("unreachable");
+    expect(await storage.renewPipelineLock(first.token)).toBe(false);
+    expect(await storage.renewPipelineLock(second.token)).toBe(true);
   });
 
-  it("renewPipelineLock is a no-op once the lock has been stolen by another holder", async () => {
-    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
-    const first = await storage.acquirePipelineLock(() => staleAcquiredAt);
-    expect(first.acquired).toBe(true);
-    if (!first.acquired) throw new Error("unreachable");
-
-    const reclaimed = await storage.acquirePipelineLock(() => new Date());
-    expect(reclaimed.acquired).toBe(true);
-
-    const renewed = await storage.renewPipelineLock(first.token, () => new Date());
-    expect(renewed).toBe(false);
-  });
 
   it("computes strictly increasing, capped backoff across consecutive failures", async () => {
     const now = () => new Date("2026-07-05T00:00:00Z");

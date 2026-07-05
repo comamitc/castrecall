@@ -104,6 +104,11 @@ export default defineToolPlugin({
                     description: "Bypass the failure-cooldown gate for a manual recovery run. Never set this in a " +
                         "scheduler recipe — it defeats the no-hammer protection.",
                 })),
+                breakStaleLock: Type.Optional(Type.Boolean({
+                    description: "Recover from a hard-killed run's leftover lock (reported by skipped: 'stale-lock'). " +
+                        "Only breaks a lock whose heartbeat stopped; refuses live locks. Requires human " +
+                        "confirmation that no run is alive — never set this in a scheduler recipe.",
+                })),
             }),
             execute: async (params, settings) => runPipeline(resolveConfig(settings), params),
         }),

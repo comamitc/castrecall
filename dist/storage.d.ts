@@ -24,8 +24,6 @@ export declare const BACKOFF_BASE_MS: number;
 export declare const BACKOFF_CAP_MS: number;
 /** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
 export declare const LOCK_TTL_MS: number;
-/** The reclaim mutex guards a fast local critical section; anything older is a crashed reclaimer. */
-export declare const RECLAIM_MUTEX_TTL_MS = 30000;
 export type SyncHealth = {
     consecutiveFailures: number;
     lastError?: string;
@@ -122,34 +120,44 @@ export declare class Storage {
     private get lockPath();
     /**
      * Exclusive-create a run lock so overlapping scheduler invocations never
-     * both hit the unofficial Pocket Casts API concurrently. A lock older than
-     * `LOCK_TTL_MS` is presumed abandoned by a crashed run and is reclaimed.
+     * both hit the unofficial Pocket Casts API concurrently.
+     *
+     * FAIL-CLOSED DESIGN — there is deliberately NO automatic stale-lock
+     * reclaim. Plain POSIX filesystem operations have no compare-and-swap, so
+     * every check-then-steal scheme has a stall window in which a delayed
+     * reclaimer can evict a fresh holder's live lock (proven repeatedly in
+     * review). Instead:
+     *   - the scheduled path only ever exclusive-creates (`wx`) and touches
+     *     its OWN lock — it can never delete or replace anyone else's;
+     *   - a live holder renews the lock's mtime on a heartbeat, so a lock
+     *     whose mtime is older than `LOCK_TTL_MS` can only belong to a
+     *     hard-killed run (SIGKILL/power loss — normal errors release in
+     *     `finally`);
+     *   - such a stale lock is REPORTED (`staleLockAgeMs`) and recovery is an
+     *     explicit, human-triggered `breakStaleLock` — never scheduled.
      */
     acquirePipelineLock(now?: () => Date): Promise<{
         acquired: true;
         token: string;
     } | {
         acquired: false;
+        staleLockAgeMs?: number;
     }>;
-    /** The reclaim mutex file contains its owner's token; ownership = content match. */
-    private ownsReclaimMutex;
-    private get reclaimMutexPath();
     /**
-     * Test-only seam for orchestrating reclaim interleavings; never set in
-     * production code.
+     * Explicit recovery from a crashed run's leftover lock. Removes the lock
+     * ONLY if it is still stale at call time, then attempts a normal exclusive
+     * acquire. This is a manual override for a human (or a human-approved
+     * agent step) after confirming no run is alive — it must never be called
+     * from a scheduler, because remove-then-create is not atomic and two
+     * concurrent breakers could race. The scheduled path stays fail-closed.
      */
-    lockTestHooks?: {
-        insideReclaimMutex?: () => Promise<void>;
-        afterEvict?: () => Promise<void>;
-    };
-    /**
-     * Exclusive-create the short-lived reclaim mutex. The mutex guards a
-     * fast, purely local critical section, so a mutex older than
-     * `RECLAIM_MUTEX_TTL_MS` can only belong to a crashed reclaimer; it is
-     * stolen with an exclusive rename (only one thief can win) before
-     * re-creating.
-     */
-    private acquireReclaimMutex;
+    breakStaleLock(now?: () => Date): Promise<{
+        acquired: true;
+        token: string;
+    } | {
+        acquired: false;
+        staleLockAgeMs?: number;
+    }>;
     /**
      * Exclusive-create the lock file and stamp its mtime from the caller's
      * clock (mtime is the staleness authority; the payload is informational).

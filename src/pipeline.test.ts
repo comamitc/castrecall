@@ -498,6 +498,47 @@ describe("runPipeline", () => {
     expect(fourth.errors).toBeUndefined();
   });
 
+  it("a clean tick with unchanged exports leaves state.json byte-identical (cheap no-op)", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([HISTORY_EPISODE]);
+    const exportDir = path.join(dir, "export");
+    const { fetchImpl } = makeFetchImpl();
+    await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, { fetchImpl });
+
+    const before = await fs.readFile(path.join(dir, "state.json"), "utf8");
+    const second = (await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, {
+      fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+    })) as Record<string, any>;
+    expect(second.exports.exported).toBe(0);
+    const after = await fs.readFile(path.join(dir, "state.json"), "utf8");
+    // Only lastSyncAt may move; per-episode records must be untouched.
+    expect(JSON.parse(after).episodes).toEqual(JSON.parse(before).episodes);
+  });
+
+  it("surfaces a stale lock without breaking it, and recovers only with breakStaleLock", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    // A hard-killed run's leftover lock (older than the TTL).
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(crashed.acquired).toBe(true);
+
+    const { fetchImpl, calls } = makeFetchImpl();
+    const blocked = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(blocked.skipped).toBe("stale-lock");
+    expect(blocked.staleLockAgeMs).toBeGreaterThan(LOCK_TTL_MS);
+    expect(blocked.note).toContain("breakStaleLock");
+    expect(calls.filter((c) => c === "login")).toHaveLength(0); // fail-closed: no Pocket Casts traffic
+
+    const recovered = (await runPipeline(config(), { breakStaleLock: true }, { fetchImpl })) as Record<
+      string,
+      any
+    >;
+    expect(recovered.skipped).toBeUndefined();
+    expect(recovered.newListens).toBe(1);
+  });
+
   it("reconciles a pending review file left by a crash so scheduled runs converge", async () => {
     const storage = new Storage(dir);
     await storage.init();

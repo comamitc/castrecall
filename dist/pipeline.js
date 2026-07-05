@@ -25,8 +25,22 @@ export async function runPipeline(config, params = {}, deps = {}) {
     const now = deps.now ?? (() => new Date());
     const storage = new Storage(config.dataDir);
     await storage.init();
-    const lock = await storage.acquirePipelineLock(now);
+    let lock = await storage.acquirePipelineLock(now);
+    if (!lock.acquired && lock.staleLockAgeMs !== undefined && params.breakStaleLock) {
+        // Explicit human-approved recovery only — never from a scheduler.
+        lock = await storage.breakStaleLock(now);
+    }
     if (!lock.acquired) {
+        if (lock.staleLockAgeMs !== undefined) {
+            return {
+                skipped: "stale-lock",
+                staleLockAgeMs: lock.staleLockAgeMs,
+                note: `The run lock has not been renewed for ${Math.round(lock.staleLockAgeMs / 60_000)} minutes — ` +
+                    "almost certainly a hard-killed run (normal failures release the lock). CastRecall never " +
+                    "breaks a lock automatically. After confirming no run is alive, re-run with " +
+                    "breakStaleLock: true to recover.",
+            };
+        }
         return { skipped: "locked", note: "Another pipeline run holds the lock; this run is a no-op." };
     }
     const heartbeat = setInterval(() => {

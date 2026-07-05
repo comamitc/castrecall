@@ -61,6 +61,12 @@ export async function exportAndRecord(
       await storage.updateEpisode(record.uuid, { exportError: message }, now);
       return { error: message };
     }
+    // A clean content-hash skip on an episode with no outstanding error is a
+    // pure no-op: rewriting state here would make every scheduled tick mutate
+    // state.json once per stored episode for nothing.
+    if (result.skipped && !record.exportError) {
+      return result;
+    }
     await storage.updateEpisode(
       record.uuid,
       { exportedAt: now().toISOString(), exportError: undefined },

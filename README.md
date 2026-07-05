@@ -229,6 +229,14 @@ that exists specifically to avoid hammering the unofficial Pocket Casts API — 
 *manual recovery run* only, invoked by a human who has just fixed the underlying problem (e.g.
 rotated credentials).
 
+**Crashed-run recovery is explicit, never automatic.** The run lock is heartbeat-renewed, so it
+only ever looks stale after a hard kill (SIGKILL, power loss — normal failures release it). A
+scheduled run that encounters a stale lock reports `skipped: "stale-lock"` with the lock's age
+and does nothing — CastRecall never breaks a lock automatically, because no filesystem primitive
+can do that without a window where two runs could both proceed. After confirming no run is
+alive, recover with a one-off `castrecall_run_pipeline` call passing `breakStaleLock: true`
+(refuses live locks; never set it in a scheduler recipe).
+
 ## Troubleshooting
 
 - **"Pocket Casts credentials are not configured"** — set `POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD` in the environment OpenClaw runs in (not just your shell).

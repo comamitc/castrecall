@@ -34,6 +34,12 @@ export type PipelineParams = {
   limit?: number;
   /** Bypass the cooldown gate for a manual recovery run. Never use from a scheduler recipe. */
   force?: boolean;
+  /**
+   * Break a STALE run lock (one whose heartbeat stopped > LOCK_TTL_MS ago,
+   * i.e. a hard-killed run) after a human confirmed no run is alive. Never
+   * breaks a live lock. Never use from a scheduler recipe.
+   */
+  breakStaleLock?: boolean;
 };
 
 export async function runPipeline(
@@ -45,8 +51,23 @@ export async function runPipeline(
   const storage = new Storage(config.dataDir);
   await storage.init();
 
-  const lock = await storage.acquirePipelineLock(now);
+  let lock = await storage.acquirePipelineLock(now);
+  if (!lock.acquired && lock.staleLockAgeMs !== undefined && params.breakStaleLock) {
+    // Explicit human-approved recovery only — never from a scheduler.
+    lock = await storage.breakStaleLock(now);
+  }
   if (!lock.acquired) {
+    if (lock.staleLockAgeMs !== undefined) {
+      return {
+        skipped: "stale-lock",
+        staleLockAgeMs: lock.staleLockAgeMs,
+        note:
+          `The run lock has not been renewed for ${Math.round(lock.staleLockAgeMs / 60_000)} minutes — ` +
+          "almost certainly a hard-killed run (normal failures release the lock). CastRecall never " +
+          "breaks a lock automatically. After confirming no run is alive, re-run with " +
+          "breakStaleLock: true to recover.",
+      };
+    }
     return { skipped: "locked", note: "Another pipeline run holds the lock; this run is a no-op." };
   }
 
