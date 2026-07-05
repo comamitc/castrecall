@@ -27,7 +27,7 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] release v0.2.0 — PR #25 merged, version 0.1.0→0.2.0, tag pushed, GitHub release published, milestone closed.
 
 ### v0.3.0 — robustness
-- [ ] #7 credentials · [ ] #6 retry/backoff · [ ] release v0.3.0
+- [ ] #7 credentials (in pipeline) · [ ] #6 retry/backoff · [ ] #24 listened-episode filter (added to goal 2026-07-05) · [ ] release v0.3.0
 
 ### v0.4.0–v0.9.0 — ladder breadth & distribution
 - [ ] #13, #12 → v0.4.0 · [ ] #10 → v0.5.0 · [ ] #9 → v0.6.0 · [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
