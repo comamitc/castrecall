@@ -18,8 +18,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 ### v0.1.0 — corpus feed
 - [x] #15 contract hardening — PR #18 squash-merged (4593d02), issue closed. Two pre-merge review rounds: staging moved to `.staging/` namespace + dist rebuilt with CI freshness guard (1cdce18); completeness-contract wording + untracked-dist check (fb0138e). 60 tests green.
 - [x] #14 corpus-export mode — PR #19 squash-merged, issue closed. One transient plan-review timeout (retried). 89 tests green on main.
-- [ ] #16 README positioning — pipeline → merge
-- [ ] release v0.1.0 → tag, close milestone
+- [x] #16 README positioning — PR #20 squash-merged (0 review findings), issue closed.
+- [x] release v0.1.0 — PR #21 merged, tag v0.1.0 pushed, GitHub release published, milestone closed. NOTE: `pipeline release` is agent-pipeline-repo-specific (expects core/package.json + plugin/ mirror); used equivalent gated flow (release PR → CI → merge → tag → gh release → close milestone). Also found launcher bug: injected --profile is rejected by the release subcommand's flag allowlist.
 
 ### v0.2.0 — freshness & onboarding
 - [ ] #3 periodic sync · [ ] #2 setup flow · [ ] release v0.2.0
