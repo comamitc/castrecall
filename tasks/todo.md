@@ -22,7 +22,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] release v0.1.0 — PR #21 merged, tag v0.1.0 pushed, GitHub release published, milestone closed. NOTE: `pipeline release` is agent-pipeline-repo-specific (expects core/package.json + plugin/ mirror); used equivalent gated flow (release PR → CI → merge → tag → gh release → close milestone). Also found launcher bug: injected --profile is rejected by the release subcommand's flag allowlist.
 
 ### v0.2.0 — freshness & onboarding
-- [ ] #3 periodic sync · [ ] #2 setup flow · [ ] release v0.2.0
+- [x] #3 periodic sync — `castrecall_run_pipeline` tool (chains sync → transcript → review; corpus export chains inside `fetchTranscript` already) plus README OpenClaw-cron/OS-cron recipes. Concurrency-safe via `.staging/pipeline.lock` (TTL stale-reclaim, token-checked release); no-hammer via a capped exponential backoff cooldown in `state.sync`, surfaced through `castrecall_setup_status`. 103 tests green.
+- [ ] #2 setup flow · [ ] release v0.2.0
 
 ### v0.3.0 — robustness
 - [ ] #7 credentials · [ ] #6 retry/backoff · [ ] release v0.3.0

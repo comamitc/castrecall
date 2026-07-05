@@ -1,0 +1,21 @@
+/**
+ * Chained pipeline for scheduled/background runs: sync history → fetch
+ * transcripts for newly seen listens → generate review candidates for
+ * episodes newly stored this run (corpus export chains inside
+ * `fetchTranscript` already, when `CASTRECALL_EXPORT_DIR` is set).
+ *
+ * A run lock keeps two overlapping scheduler invocations from both hitting
+ * the unofficial Pocket Casts API; a cooldown gate with capped exponential
+ * backoff keeps a persistently failing API from being hammered on every
+ * scheduler tick. Both are host-scheduler-agnostic: this module has no
+ * knowledge of cron, heartbeats, or intervals — see the README's "Scheduled
+ * / periodic sync" section for the actual scheduling recipes.
+ */
+import { type ResolvedConfig } from "./config.js";
+import { type ToolDeps } from "./tools.js";
+export type PipelineParams = {
+    limit?: number;
+    /** Bypass the cooldown gate for a manual recovery run. Never use from a scheduler recipe. */
+    force?: boolean;
+};
+export declare function runPipeline(config: ResolvedConfig, params?: PipelineParams, deps?: ToolDeps): Promise<unknown>;

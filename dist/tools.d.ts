@@ -9,7 +9,7 @@ export type ToolDeps = {
     now?: () => Date;
     env?: NodeJS.ProcessEnv;
 };
-export declare function setupStatus(config: ResolvedConfig): Promise<unknown>;
+export declare function setupStatus(config: ResolvedConfig, deps?: ToolDeps): Promise<unknown>;
 export declare function syncHistory(config: ResolvedConfig, params: {
     limit?: number;
 }, deps?: ToolDeps): Promise<unknown>;

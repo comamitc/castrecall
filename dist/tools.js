@@ -32,13 +32,15 @@ async function exportIfEnabled(config, storage, record) {
     const exporter = new CorpusExporter(config.exportDir);
     return exporter.exportEpisode({ record, provenance, text, contentHash });
 }
-export async function setupStatus(config) {
+export async function setupStatus(config, deps = {}) {
     const storage = storageFor(config);
     const state = await storage.loadState();
     const episodes = Object.values(state.episodes);
     const pendingReviews = await storage.listPendingReviews();
     const stt = sttAvailability(config);
     const whisper = await detectLocalWhisper(config);
+    const now = deps.now ?? (() => new Date());
+    const nextEligibleAt = state.sync?.nextEligibleAt;
     return {
         dataDir: config.dataDir,
         pocketcasts: {
@@ -60,6 +62,13 @@ export async function setupStatus(config) {
             pendingReviews: pendingReviews.length,
         },
         lastSyncAt: state.lastSyncAt ?? null,
+        sync: {
+            lastError: state.sync?.lastError ?? null,
+            lastErrorAt: state.sync?.lastErrorAt ?? null,
+            consecutiveFailures: state.sync?.consecutiveFailures ?? 0,
+            nextEligibleAt: nextEligibleAt ?? null,
+            inCooldown: Boolean(nextEligibleAt && now() < new Date(nextEligibleAt)),
+        },
         privacyModel: "Full transcripts are stored privately under the data dir and are never " +
             "promoted into durable memory by CastRecall. Review candidates in " +
             "review/pending/ require explicit human approval.",

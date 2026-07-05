@@ -4,7 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
-import { Storage, type Provenance, type StoredProvenance } from "./storage.js";
+import {
+  BACKOFF_BASE_MS,
+  BACKOFF_CAP_MS,
+  LOCK_TTL_MS,
+  Storage,
+  type Provenance,
+  type StoredProvenance,
+} from "./storage.js";
 
 const EPISODE: PocketCastsEpisode = {
   uuid: "ep-1",
@@ -289,5 +296,77 @@ describe("Storage", () => {
     expect(updated?.uuid).toBe("ep-1");
     expect(updated?.podcastUuid).toBe("pod-1");
     expect(updated?.transcriptStatus).toBe("stored");
+  });
+
+  it("acquires, contends, releases, and re-acquires the pipeline lock", async () => {
+    const first = await storage.acquirePipelineLock();
+    expect(first.acquired).toBe(true);
+    if (!first.acquired) throw new Error("unreachable");
+
+    const contended = await storage.acquirePipelineLock();
+    expect(contended.acquired).toBe(false);
+
+    await storage.releasePipelineLock(first.token);
+    const reacquired = await storage.acquirePipelineLock();
+    expect(reacquired.acquired).toBe(true);
+  });
+
+  it("reclaims a stale lock past LOCK_TTL_MS, and the original holder's release cannot delete it", async () => {
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const first = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(first.acquired).toBe(true);
+    if (!first.acquired) throw new Error("unreachable");
+
+    // A fresh run, well past the TTL, reclaims the stale lock.
+    const reclaimed = await storage.acquirePipelineLock(() => new Date());
+    expect(reclaimed.acquired).toBe(true);
+    if (!reclaimed.acquired) throw new Error("unreachable");
+    expect(reclaimed.token).not.toBe(first.token);
+
+    // The original (crashed) holder's release must not delete the new holder's lock.
+    await storage.releasePipelineLock(first.token);
+    const stillHeld = await storage.acquirePipelineLock();
+    expect(stillHeld.acquired).toBe(false);
+
+    // The real holder's release does work.
+    await storage.releasePipelineLock(reclaimed.token);
+    const afterRelease = await storage.acquirePipelineLock();
+    expect(afterRelease.acquired).toBe(true);
+  });
+
+  it("does not reclaim a lock younger than LOCK_TTL_MS", async () => {
+    const recentAcquiredAt = new Date(Date.now() - (LOCK_TTL_MS - 1_000));
+    const first = await storage.acquirePipelineLock(() => recentAcquiredAt);
+    expect(first.acquired).toBe(true);
+
+    const attempt = await storage.acquirePipelineLock(() => new Date());
+    expect(attempt.acquired).toBe(false);
+  });
+
+  it("computes strictly increasing, capped backoff across consecutive failures", async () => {
+    const now = () => new Date("2026-07-05T00:00:00Z");
+    const first = await storage.recordSyncFailure("boom 1", now);
+    expect(first.consecutiveFailures).toBe(1);
+    const firstDelay = new Date(first.nextEligibleAt!).getTime() - now().getTime();
+    expect(firstDelay).toBe(BACKOFF_BASE_MS);
+
+    const second = await storage.recordSyncFailure("boom 2", now);
+    expect(second.consecutiveFailures).toBe(2);
+    const secondDelay = new Date(second.nextEligibleAt!).getTime() - now().getTime();
+    expect(secondDelay).toBeGreaterThan(firstDelay);
+
+    const third = await storage.recordSyncFailure("boom 3", now);
+    expect(third.consecutiveFailures).toBe(3);
+    const thirdDelay = new Date(third.nextEligibleAt!).getTime() - now().getTime();
+    expect(thirdDelay).toBeGreaterThan(secondDelay);
+    expect(thirdDelay).toBeLessThanOrEqual(BACKOFF_CAP_MS);
+  });
+
+  it("clears failure state on recordSyncSuccess", async () => {
+    await storage.recordSyncFailure("boom", () => new Date());
+    await storage.recordSyncSuccess(() => new Date("2026-07-05T00:00:00Z"));
+    const state = await storage.loadState();
+    expect(state.sync).toEqual({ consecutiveFailures: 0 });
+    expect(state.lastSyncAt).toBe("2026-07-05T00:00:00.000Z");
   });
 });

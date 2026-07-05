@@ -82,6 +82,7 @@ form above. When CastRecall is published to ClawHub, the install target will be
 | `castrecall_recent` | Lists synced listens with transcript status and episode UUIDs. |
 | `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |
 | `castrecall_generate_review` | Writes approval-gated review candidates for stored transcripts. |
+| `castrecall_run_pipeline` | Chains sync → fetch transcripts (new listens only) → generate reviews (episodes newly stored this run) → corpus export. The tool a scheduler recipe should call — see "Scheduled / periodic sync" below. |
 
 ## The transcript ladder
 
@@ -185,6 +186,49 @@ change; sidecars are write-once).
 >
 > **You:** read the candidates, keep one durable idea in your own words, delete the rest.
 
+## Scheduled / periodic sync
+
+v0 sync is on-demand only unless you wire up a scheduler. `castrecall_run_pipeline` is the one
+tool a scheduler recipe should call: it chains sync → fetch transcripts (new listens only) →
+generate review candidates (episodes newly stored this run) → corpus export (when
+`CASTRECALL_EXPORT_DIR` is set), with no human input, and is safe to invoke on an interval:
+
+- **Concurrency-safe.** Overlapping runs use a lock (`.staging/pipeline.lock` under the data
+  dir); a run that can't acquire it is a cheap no-op (`{ skipped: "locked" }`).
+- **No API hammering.** Failures (missing/rejected credentials, the unofficial API being down)
+  are recorded with a capped exponential backoff cooldown. A scheduled run inside the cooldown
+  window is a cheap no-op (`{ skipped: "cooldown" }`) that makes **zero** Pocket Casts calls.
+  Check `castrecall_setup_status`'s `sync` block for the current failure/cooldown state.
+- **Cheap no-op when nothing's new.** A run that finds no new listens does no
+  transcript/review/export work.
+
+### OpenClaw cron recipe
+
+If your OpenClaw host supports scheduled/cron tool invocations, point it at
+`castrecall_run_pipeline` with no arguments, e.g. every 30 minutes:
+
+```yaml
+# openclaw cron/heartbeat config (host-specific — adapt to your runtime)
+- schedule: "*/30 * * * *"
+  tool: castrecall_run_pipeline
+  params: {}
+```
+
+### OS cron recipe
+
+If your OpenClaw runtime doesn't own scheduling in your setup, drive it from OS cron via
+whatever CLI/script can invoke a tool against your running agent:
+
+```cron
+# crontab -e — runs every 30 minutes
+*/30 * * * * /path/to/your/openclaw-agent-invoker castrecall_run_pipeline >> /var/log/castrecall-pipeline.log 2>&1
+```
+
+**Never pass `force: true` from a scheduler recipe.** `force` bypasses the failure-cooldown gate
+that exists specifically to avoid hammering the unofficial Pocket Casts API — it's for a one-off
+*manual recovery run* only, invoked by a human who has just fixed the underlying problem (e.g.
+rotated credentials).
+
 ## Troubleshooting
 
 - **"Pocket Casts credentials are not configured"** — set `POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD` in the environment OpenClaw runs in (not just your shell).
@@ -203,7 +247,7 @@ change; sidecars are write-once).
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (86 tests: parsing, normalization, storage idempotency, corpus export, error paths)
+npm test            # vitest (103 tests: parsing, normalization, storage idempotency, corpus export, periodic-sync pipeline, error paths)
 npm run plugin:build     # tsc + openclaw plugins build (regenerates openclaw.plugin.json)
 npm run plugin:validate  # openclaw plugins validate
 ```

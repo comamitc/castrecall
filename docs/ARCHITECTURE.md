@@ -16,10 +16,11 @@ Three invariants shape everything:
 
 ```
 src/
-├── index.ts               # OpenClaw plugin entry: defineToolPlugin + 5 tools
+├── index.ts               # OpenClaw plugin entry: defineToolPlugin + 6 tools
 ├── tools.ts               # Tool implementations, pure over (config, params, deps)
+├── pipeline.ts            # castrecall_run_pipeline: sync → transcript → review, locked + cooldown-gated
 ├── config.ts              # Env-first config resolution; secrets never in plugin config
-├── storage.ts             # Data dir layout, state.json, idempotent writes
+├── storage.ts             # Data dir layout, state.json, idempotent writes, pipeline lock + sync backoff
 ├── review.ts              # Review-candidate markdown generation (heuristic excerpts)
 ├── corpus-export.ts       # Opt-in export: section-split, frontmattered markdown pages (gbrain, etc.)
 ├── resolver.ts            # Pocket Casts listen → RSS feed URL → feed item + transcript links
@@ -66,6 +67,37 @@ sources/<uuid>/{transcript.txt, provenance.json}
 <export-dir>/podcasts/<show-slug>/<episode-slug>/*.md   ← markdown pages (gbrain, etc. — see README)
 ```
 
+### Periodic sync: `castrecall_run_pipeline`
+
+`pipeline.ts` composes the same three tools above (`syncHistory` →
+`fetchTranscript` → `generateReview`) into one chained call so a host
+scheduler (OpenClaw cron/heartbeat, or OS cron — see README "Scheduled /
+periodic sync") can drive the whole loop with no human input. Two properties
+make that safe to run on an interval:
+
+- **Lock.** `acquirePipelineLock`/`releasePipelineLock` exclusive-create
+  `.staging/pipeline.lock` (same idiom as `storeTranscript`'s staging
+  directory below) so two overlapping invocations never both call the
+  unofficial Pocket Casts API; a run that can't acquire it returns
+  `{ skipped: "locked" }`. A lock older than `LOCK_TTL_MS` is presumed
+  abandoned by a crashed run and is reclaimed.
+- **Cooldown.** A login/history failure is recorded via
+  `recordSyncFailure` with a capped exponential backoff
+  (`BACKOFF_BASE_MS` × 2^(failures−1), capped at `BACKOFF_CAP_MS`) stored in
+  `state.sync`. A scheduled run inside that window returns
+  `{ skipped: "cooldown" }` making zero Pocket Casts calls — the mechanism
+  that keeps a scheduler from hammering a down/broken unofficial API. A
+  successful login+history resets it immediately via `recordSyncSuccess`,
+  before any per-episode transcript work, so a later transcript-ladder
+  failure never re-dirties sync health. `force: true` bypasses the cooldown
+  (never the lock) for a manual recovery run — see the README warning
+  against using it in a scheduler recipe.
+
+Only episodes newly recorded this run get `fetchTranscript`, and only
+episodes newly stored this run get `generateReview` — a pre-existing
+stored-without-review episode is left for an explicit
+`castrecall_generate_review` call, not swept in by the scheduler.
+
 ### Corpus export is a projection, not a relocation
 
 `corpus-export.ts` reads only `sources/<uuid>/{transcript.txt, provenance.json}`
@@ -92,14 +124,15 @@ sources/<episodeUuid>/
   transcript.txt
   provenance.json
 review/pending/<episodeUuid>.md
-.staging/          # reserved: in-flight atomic writes — consumers must ignore it
+.staging/          # reserved: in-flight atomic writes + pipeline.lock — consumers must ignore it
 ```
 
 `.staging/` is CastRecall's private scratch namespace: transcript artifacts are
 assembled there and published into `sources/` with a single atomic rename, so
-directories CastRecall publishes appear all-at-once, never half-written.
-Downstream scans must skip `.staging/` (and any future dot-prefixed top-level
-entry).
+directories CastRecall publishes appear all-at-once, never half-written. The
+periodic-sync run lock (`pipeline.lock`) also lives here, exclusive-created
+for the same reason. Downstream scans must skip `.staging/` (and any future
+dot-prefixed top-level entry).
 
 **Completeness marker:** consumers must treat `transcript.txt` as the marker
 that a `sources/<episodeUuid>/` entry is complete. An entry lacking it (for
@@ -132,6 +165,13 @@ external contract); `schemaVersion` is the data-dir contract version and is
 the field downstream consumers should check. `episodes` maps episode UUID to
 a `ListenRecord` (sync/transcript status); `lastSyncAt` is the last successful
 sync timestamp.
+
+`sync` (optional, additive) is periodic-sync health, written by
+`castrecall_run_pipeline`/`castrecall_sync_history`'s internal cooldown gate:
+`consecutiveFailures`, `lastError`/`lastErrorAt` (the most recent login/history
+failure reason and when), and `nextEligibleAt` (set only while backing off;
+cleared on the next success). `castrecall_setup_status` surfaces this as a
+`sync` block, including a derived `inCooldown` boolean — never with secrets.
 
 ### Stability guarantees
 
@@ -171,6 +211,8 @@ normalized title.
 | STT cost surprises | Free local Whisper is preferred whenever a CLI is detected; cloud STT is off by default and requires explicit `CASTRECALL_ENABLE_STT=true` plus a provider key; every skip says why. |
 | Local Whisper subprocess safety | Only auto-runs binaries found on PATH by known name with fixed arguments; `CASTRECALL_WHISPER_COMMAND` is user-supplied and runs with the user's own privileges (same trust model as their shell); audio paths are shell-quoted; temp dirs cleaned up. |
 | Path traversal via hostile UUIDs | `safeName()` sanitizes all path components (tested). |
+| Scheduler hammers a down/broken Pocket Casts API | `castrecall_run_pipeline`'s cooldown gate: capped exponential backoff after login/history failures, cleared on the next success; a run inside the window makes zero Pocket Casts calls. Documented in README; never bypass via `force: true` in a recipe. |
+| Overlapping scheduled runs | `.staging/pipeline.lock` (exclusive-create, TTL-based stale reclaim, token-checked release) ensures at most one run reaches the Pocket Casts API at a time; the underlying storage writes (`recordListens`, `storeTranscript`, `writeReviewCandidate`) are independently idempotent, so even a bypassed lock cannot corrupt state. |
 
 ## Rung 3: local Whisper design notes
 

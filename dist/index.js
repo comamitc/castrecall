@@ -10,6 +10,7 @@
 import { Type } from "typebox";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { resolveConfig } from "./config.js";
+import { runPipeline } from "./pipeline.js";
 import { fetchTranscript, generateReview, listRecent, setupStatus, syncHistory, } from "./tools.js";
 const configSchema = Type.Object({
     dataDir: Type.Optional(Type.String({
@@ -88,6 +89,23 @@ export default defineToolPlugin({
                 episodeUuid: Type.Optional(Type.String({ description: "Generate for one specific episode only." })),
             }),
             execute: async (params, settings) => generateReview(resolveConfig(settings), params),
+        }),
+        tool({
+            name: "castrecall_run_pipeline",
+            description: "Chained pipeline for scheduled/background runs: sync history → fetch transcripts for " +
+                "newly seen listens → generate review candidates for episodes newly stored this run → " +
+                "corpus export (when CASTRECALL_EXPORT_DIR is set). Safe under overlapping/concurrent " +
+                "invocations (lock) and stays quiet on failure with a bounded, backed-off retry (no " +
+                "hammering the unofficial Pocket Casts API). This is the tool a scheduler recipe should " +
+                "call — see README 'Scheduled / periodic sync'.",
+            parameters: Type.Object({
+                limit: Type.Optional(Type.Number({ description: "Max history entries to ingest this run (default 100)." })),
+                force: Type.Optional(Type.Boolean({
+                    description: "Bypass the failure-cooldown gate for a manual recovery run. Never set this in a " +
+                        "scheduler recipe — it defeats the no-hammer protection.",
+                })),
+            }),
+            execute: async (params, settings) => runPipeline(resolveConfig(settings), params),
         }),
     ],
 });

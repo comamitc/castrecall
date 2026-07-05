@@ -1,0 +1,268 @@
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { resolveConfig } from "./config.js";
+import { runPipeline } from "./pipeline.js";
+import { Storage } from "./storage.js";
+
+const HISTORY_EPISODE = {
+  uuid: "ep-1",
+  title: "Episode One",
+  url: "https://cdn.example.com/ep1.mp3",
+  podcastUuid: "pod-1",
+  podcastTitle: "Example Show",
+  playingStatus: 3,
+};
+
+const FEED_XML = `<?xml version="1.0"?>
+  <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+    <channel>
+      <item>
+        <title>Episode One</title>
+        <guid>ep-1</guid>
+        <enclosure url="https://cdn.example.com/ep1.mp3" />
+        <podcast:transcript url="https://cdn.example.com/ep1.vtt" type="text/vtt" />
+      </item>
+    </channel>
+  </rss>`;
+
+const VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript body for review generation.";
+
+/** A counting fetch stub covering login, history, feed resolution, feed XML, and transcript VTT. */
+function makeFetchImpl(opts: { historyThrows?: boolean; episodes?: unknown[] } = {}) {
+  const calls: string[] = [];
+  const fetchImpl = (async (input: any) => {
+    const url = String(input);
+    if (url.endsWith("/user/login")) {
+      calls.push("login");
+      return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+    }
+    if (url.endsWith("/user/history")) {
+      calls.push("history");
+      if (opts.historyThrows) {
+        return new Response("boom", { status: 500 });
+      }
+      return new Response(JSON.stringify({ episodes: opts.episodes ?? [HISTORY_EPISODE] }), {
+        status: 200,
+      });
+    }
+    if (url.includes("export_feed_urls")) {
+      calls.push("feed-lookup");
+      return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+        status: 200,
+      });
+    }
+    if (url === "https://example.com/feed.xml") {
+      calls.push("feed-xml");
+      return new Response(FEED_XML, { status: 200 });
+    }
+    if (url === "https://cdn.example.com/ep1.vtt") {
+      calls.push("vtt");
+      return new Response(VTT, { status: 200, headers: { "content-type": "text/vtt" } });
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  }) as typeof fetch;
+  return { fetchImpl, calls };
+}
+
+describe("runPipeline", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-pipeline-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  function config(env: NodeJS.ProcessEnv = {}) {
+    return resolveConfig(
+      {},
+      { CASTRECALL_DATA_DIR: dir, POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw", ...env },
+    );
+  }
+
+  it("chains sync → transcript → review → export with no human input", async () => {
+    const exportDir = path.join(dir, "export");
+    const { fetchImpl } = makeFetchImpl();
+    const result = (await runPipeline(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      {},
+      { fetchImpl },
+    )) as Record<string, any>;
+
+    expect(result.newListens).toBe(1);
+    expect(result.transcripts).toEqual({ stored: 1, failed: 0 });
+    expect(result.reviews).toEqual({ generated: 1, skipped: 0 });
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.episodes["ep-1"].transcriptStatus).toBe("stored");
+    await expect(
+      fs.access(path.join(dir, "sources", "ep-1", "transcript.txt")),
+    ).resolves.toBeUndefined();
+    await expect(fs.access(path.join(dir, "review", "pending", "ep-1.md"))).resolves.toBeUndefined();
+    const episodeExportDir = path.join(exportDir, "podcasts", "example-show", "episode-one-25422834");
+    const files = await fs.readdir(episodeExportDir);
+    expect(files).toContain("index.md");
+  });
+
+  it("is a cheap no-op on a second run with nothing new", async () => {
+    const { fetchImpl, calls } = makeFetchImpl();
+    await runPipeline(config(), {}, { fetchImpl });
+    calls.length = 0;
+
+    const second = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(second.newListens).toBe(0);
+    expect(second.transcripts).toEqual({ stored: 0, failed: 0 });
+    expect(second.reviews).toEqual({ generated: 0, skipped: 0 });
+    // No feed/transcript work should have happened for the already-seen episode.
+    expect(calls).toEqual(["login", "history"]);
+  });
+
+  it("keeps overlapping runs safe: exactly one reaches login/history, the other is a locked no-op", async () => {
+    const { fetchImpl, calls } = makeFetchImpl();
+    const [a, b] = await Promise.all([
+      runPipeline(config(), {}, { fetchImpl }),
+      runPipeline(config(), {}, { fetchImpl }),
+    ]);
+    const results = [a, b] as Record<string, any>[];
+    const locked = results.filter((r) => r.skipped === "locked");
+    const ran = results.filter((r) => r.skipped !== "locked");
+    expect(locked).toHaveLength(1);
+    expect(ran).toHaveLength(1);
+    expect(ran[0].newListens).toBe(1);
+
+    expect(calls.filter((c) => c === "login")).toHaveLength(1);
+    expect(calls.filter((c) => c === "history")).toHaveLength(1);
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(Object.keys(state.episodes)).toEqual(["ep-1"]);
+    const reviews = await fs.readdir(path.join(dir, "review", "pending"));
+    expect(reviews).toEqual(["ep-1.md"]);
+  });
+
+  it("records an actionable failure and resolves (never throws) on a Pocket Casts API error", async () => {
+    const { fetchImpl } = makeFetchImpl({ historyThrows: true });
+    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(result.ok).toBe(false);
+    expect(result.stage).toBe("sync");
+    expect(result.reason).toContain("HTTP 500");
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.sync.consecutiveFailures).toBe(1);
+    expect(state.sync.lastError).toContain("HTTP 500");
+    expect(new Date(state.sync.nextEligibleAt).getTime()).toBeGreaterThan(Date.now() - 1000);
+  });
+
+  it("records an actionable failure when Pocket Casts credentials are missing", async () => {
+    const result = (await runPipeline(
+      config({ POCKETCASTS_EMAIL: "", POCKETCASTS_PASSWORD: "" }),
+      {},
+      {},
+    )) as Record<string, any>;
+    expect(result.ok).toBe(false);
+    expect(result.stage).toBe("sync");
+    expect(result.reason).toContain("POCKETCASTS_EMAIL");
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.sync.consecutiveFailures).toBe(1);
+  });
+
+  it("stays quiet during cooldown (zero Pocket Casts calls) and only retries with force: true", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    const future = new Date(Date.now() + 60_000);
+    const state = await storage.loadState();
+    state.sync = { consecutiveFailures: 1, lastError: "boom", nextEligibleAt: future.toISOString() };
+    await storage.saveState(state);
+
+    const { fetchImpl, calls } = makeFetchImpl();
+    const cooled = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(cooled.skipped).toBe("cooldown");
+    expect(calls).toHaveLength(0);
+
+    const forced = (await runPipeline(config(), { force: true }, { fetchImpl })) as Record<string, any>;
+    expect(forced.newListens).toBe(1);
+    expect(calls.length).toBeGreaterThan(0);
+  });
+
+  it("resets consecutiveFailures on a successful sync even if the new episode's transcript fails", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    // Pre-seed an already-elapsed cooldown from an earlier failure so this run isn't gated by it.
+    const seeded = await storage.loadState();
+    seeded.sync = {
+      consecutiveFailures: 2,
+      lastError: "earlier failure",
+      lastErrorAt: new Date(Date.now() - 60_000).toISOString(),
+      nextEligibleAt: new Date(Date.now() - 1_000).toISOString(),
+    };
+    await storage.saveState(seeded);
+
+    // Every non-history call 404s, so the transcript ladder exhausts and the episode ends failed.
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+      if (url.endsWith("/user/history")) {
+        return new Response(JSON.stringify({ episodes: [HISTORY_EPISODE] }), { status: 200 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const result = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" } })) as Record<
+      string,
+      any
+    >;
+    expect(result.transcripts).toEqual({ stored: 0, failed: 1 });
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.sync.consecutiveFailures).toBe(0);
+    expect(state.sync.nextEligibleAt).toBeUndefined();
+    expect(state.episodes["ep-1"].transcriptStatus).toBe("failed");
+  });
+
+  it("generates reviews only for episodes newly stored this run, not pre-existing stored ones", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    const longText = Array.from(
+      { length: 6 },
+      (_, i) =>
+        `Paragraph ${i} of a pre-existing episode's conversation covering a substantial idea in enough detail to be a real review candidate.`,
+    ).join("\n\n");
+    await storage.recordListens([
+      {
+        uuid: "ep-existing",
+        title: "Existing Episode",
+        url: "https://cdn.example.com/existing.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    await storage.storeTranscript("ep-existing", {
+      raw: longText,
+      ext: "txt",
+      text: longText,
+      provenance: {
+        platform: "pocketcasts",
+        podcastTitle: "Example Show",
+        podcastUuid: "pod-1",
+        episodeTitle: "Existing Episode",
+        episodeUuid: "ep-existing",
+        transcriptSource: "rss",
+        format: "txt",
+        fetchedAt: "2026-07-01T00:00:00Z",
+        privacyClass: "private-source",
+      },
+    });
+    await storage.updateEpisode("ep-existing", { transcriptStatus: "stored" });
+
+    const { fetchImpl } = makeFetchImpl();
+    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(result.reviews.generated).toBe(1);
+
+    const reviews = await fs.readdir(path.join(dir, "review", "pending"));
+    expect(reviews).toEqual(["ep-1.md"]);
+  });
+});

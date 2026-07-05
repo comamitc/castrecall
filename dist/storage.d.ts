@@ -19,6 +19,18 @@ import type { PocketCastsEpisode } from "./pocketcasts/client.js";
  */
 export declare const SCHEMA_VERSION = 1;
 export type TranscriptStatus = "none" | "stored" | "failed";
+/** Capped exponential backoff for the periodic-sync cooldown gate. */
+export declare const BACKOFF_BASE_MS: number;
+export declare const BACKOFF_CAP_MS: number;
+/** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
+export declare const LOCK_TTL_MS: number;
+export type SyncHealth = {
+    consecutiveFailures: number;
+    lastError?: string;
+    lastErrorAt?: string;
+    /** Set only while backing off; cleared on the next success. */
+    nextEligibleAt?: string;
+};
 export type ListenRecord = {
     uuid: string;
     title: string;
@@ -43,6 +55,7 @@ export type CastrecallState = {
     schemaVersion: number;
     lastSyncAt?: string;
     episodes: Record<string, ListenRecord>;
+    sync?: SyncHealth;
 };
 export type Provenance = {
     platform: "pocketcasts";
@@ -90,6 +103,28 @@ export declare class Storage {
         added: ListenRecord[];
         totalSeen: number;
     }>;
+    /** Clear backoff state after a successful login + history fetch. */
+    recordSyncSuccess(now?: () => Date): Promise<void>;
+    /**
+     * Record a sync failure and compute the next eligible retry time via
+     * capped exponential backoff, so a scheduler never hammers the unofficial
+     * Pocket Casts API.
+     */
+    recordSyncFailure(message: string, now?: () => Date): Promise<SyncHealth>;
+    private get lockPath();
+    /**
+     * Exclusive-create a run lock so overlapping scheduler invocations never
+     * both hit the unofficial Pocket Casts API concurrently. A lock older than
+     * `LOCK_TTL_MS` is presumed abandoned by a crashed run and is reclaimed.
+     */
+    acquirePipelineLock(now?: () => Date): Promise<{
+        acquired: true;
+        token: string;
+    } | {
+        acquired: false;
+    }>;
+    /** Release a held lock — only if `token` still matches the current holder. */
+    releasePipelineLock(token: string): Promise<void>;
     updateEpisode(episodeUuid: string, patch: Partial<Omit<ListenRecord, "uuid" | "podcastUuid">>, now?: () => Date): Promise<ListenRecord | undefined>;
     hasTranscript(episodeUuid: string): Promise<boolean>;
     readTranscript(episodeUuid: string): Promise<string | undefined>;

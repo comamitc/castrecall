@@ -20,6 +20,11 @@ import path from "node:path";
  * major version — see docs/ARCHITECTURE.md.
  */
 export const SCHEMA_VERSION = 1;
+/** Capped exponential backoff for the periodic-sync cooldown gate. */
+export const BACKOFF_BASE_MS = 5 * 60_000;
+export const BACKOFF_CAP_MS = 60 * 60_000;
+/** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
+export const LOCK_TTL_MS = 10 * 60_000;
 const EMPTY_STATE = { version: 1, schemaVersion: SCHEMA_VERSION, episodes: {} };
 export class Storage {
     dataDir;
@@ -45,12 +50,13 @@ export class Storage {
             const parsed = JSON.parse(raw);
             if (parsed.version !== 1 || typeof parsed.episodes !== "object")
                 return { ...EMPTY_STATE };
-            // schemaVersion is additive: legacy state.json predating it still loads.
+            // schemaVersion/sync are additive: legacy state.json predating them still loads.
             return {
                 version: 1,
                 lastSyncAt: parsed.lastSyncAt,
                 episodes: parsed.episodes,
                 schemaVersion: parsed.schemaVersion ?? SCHEMA_VERSION,
+                sync: parsed.sync,
             };
         }
         catch {
@@ -93,6 +99,89 @@ export class Storage {
         state.lastSyncAt = timestamp;
         await this.saveState(state);
         return { added, totalSeen: Object.keys(state.episodes).length };
+    }
+    /** Clear backoff state after a successful login + history fetch. */
+    async recordSyncSuccess(now = () => new Date()) {
+        const state = await this.loadState();
+        state.sync = { consecutiveFailures: 0 };
+        state.lastSyncAt = now().toISOString();
+        await this.saveState(state);
+    }
+    /**
+     * Record a sync failure and compute the next eligible retry time via
+     * capped exponential backoff, so a scheduler never hammers the unofficial
+     * Pocket Casts API.
+     */
+    async recordSyncFailure(message, now = () => new Date()) {
+        const state = await this.loadState();
+        const consecutiveFailures = (state.sync?.consecutiveFailures ?? 0) + 1;
+        const delay = Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_CAP_MS);
+        const nowDate = now();
+        const sync = {
+            consecutiveFailures,
+            lastError: message,
+            lastErrorAt: nowDate.toISOString(),
+            nextEligibleAt: new Date(nowDate.getTime() + delay).toISOString(),
+        };
+        state.sync = sync;
+        await this.saveState(state);
+        return sync;
+    }
+    get lockPath() {
+        return path.join(this.dataDir, ".staging", "pipeline.lock");
+    }
+    /**
+     * Exclusive-create a run lock so overlapping scheduler invocations never
+     * both hit the unofficial Pocket Casts API concurrently. A lock older than
+     * `LOCK_TTL_MS` is presumed abandoned by a crashed run and is reclaimed.
+     */
+    async acquirePipelineLock(now = () => new Date()) {
+        await fs.mkdir(path.join(this.dataDir, ".staging"), { recursive: true });
+        const token = randomUUID();
+        const payload = { token, acquiredAt: now().toISOString() };
+        try {
+            await fs.writeFile(this.lockPath, JSON.stringify(payload), { encoding: "utf8", flag: "wx" });
+            return { acquired: true, token };
+        }
+        catch (error) {
+            if (error.code !== "EEXIST")
+                throw error;
+        }
+        // Someone holds the lock — reclaim only if it is stale.
+        let existing;
+        try {
+            existing = JSON.parse(await fs.readFile(this.lockPath, "utf8"));
+        }
+        catch {
+            existing = undefined;
+        }
+        const age = existing?.acquiredAt ? now().getTime() - new Date(existing.acquiredAt).getTime() : Infinity;
+        if (age <= LOCK_TTL_MS)
+            return { acquired: false };
+        try {
+            // Reclaim atomically: rename our fresh lock over the stale one. If a
+            // concurrent reclaimer wins this race, `rename` still succeeds (POSIX
+            // rename onto an existing file is atomic), so at most one token survives.
+            const tmpPath = `${this.lockPath}.${token}.tmp`;
+            await fs.writeFile(tmpPath, JSON.stringify(payload), "utf8");
+            await fs.rename(tmpPath, this.lockPath);
+            return { acquired: true, token };
+        }
+        catch {
+            return { acquired: false };
+        }
+    }
+    /** Release a held lock — only if `token` still matches the current holder. */
+    async releasePipelineLock(token) {
+        try {
+            const existing = JSON.parse(await fs.readFile(this.lockPath, "utf8"));
+            if (existing.token !== token)
+                return;
+            await fs.rm(this.lockPath, { force: true });
+        }
+        catch {
+            // Lock already gone — nothing to do.
+        }
     }
     async updateEpisode(episodeUuid, patch, now = () => new Date()) {
         const state = await this.loadState();
