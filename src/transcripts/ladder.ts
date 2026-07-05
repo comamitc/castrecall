@@ -2,7 +2,8 @@
  * The transcript ladder, cheapest and most-open first:
  *   1. RSS `<podcast:transcript>` links (open standard, free)
  *   2. Taddy API (optional, needs TADDY_API_KEY + TADDY_USER_ID)
- *   3. Speech-to-text (optional, costs money, must be explicitly enabled)
+ *   3. Local Whisper (free and private; auto-detected CLI, skipped when absent)
+ *   4. Cloud speech-to-text (optional, costs money, must be explicitly enabled)
  *
  * Each rung reports why it was skipped or failed so the outcome is explainable.
  */
@@ -13,9 +14,10 @@ import { resolveFeedItem, resolveFeedUrl, type ResolvedFeedItem } from "../resol
 import type { ListenRecord } from "../storage.js";
 import { fetchRssTranscript } from "./rss.js";
 import { fetchTaddyTranscript, taddyConfigured } from "./taddy.js";
+import { detectLocalWhisper, transcribeWithLocalWhisper } from "./local-whisper.js";
 import { sttAvailability, transcribeAudio } from "./stt.js";
 
-export type LadderRung = "rss" | "taddy" | "stt";
+export type LadderRung = "rss" | "taddy" | "local-whisper" | "stt";
 
 export type RungOutcome = {
   rung: LadderRung;
@@ -39,9 +41,10 @@ export type LadderResult = {
 export async function runTranscriptLadder(
   config: ResolvedConfig,
   record: ListenRecord,
-  options: { fetchImpl?: FetchLike } = {},
+  options: { fetchImpl?: FetchLike; env?: NodeJS.ProcessEnv } = {},
 ): Promise<LadderResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
+  const env = options.env ?? process.env;
   const rungs: RungOutcome[] = [];
   let feedItem: ResolvedFeedItem | undefined;
 
@@ -149,7 +152,35 @@ export async function runTranscriptLadder(
     }
   }
 
-  // Rung 3: speech-to-text (explicitly enabled only — costs money)
+  // Rung 3: local Whisper (free, private; used whenever a CLI is detected)
+  const whisper = await detectLocalWhisper(config, env);
+  if (!whisper.detected) {
+    rungs.push({ rung: "local-whisper", outcome: "skipped", detail: whisper.reason });
+  } else {
+    try {
+      const result = await transcribeWithLocalWhisper(config, record.audioUrl, { fetchImpl, env });
+      rungs.push({
+        rung: "local-whisper",
+        outcome: "hit",
+        detail: `Audio transcribed locally with ${result.provider}.`,
+      });
+      return {
+        transcript: {
+          source: "local-whisper",
+          format: "txt",
+          raw: result.text,
+          text: result.text,
+          provider: result.provider,
+        },
+        feedItem,
+        rungs,
+      };
+    } catch (error) {
+      rungs.push({ rung: "local-whisper", outcome: "failed", detail: describeError(error) });
+    }
+  }
+
+  // Rung 4: cloud speech-to-text (explicitly enabled only — costs money)
   const stt = sttAvailability(config);
   if (!stt.ok) {
     rungs.push({ rung: "stt", outcome: "skipped", detail: stt.reason ?? "STT unavailable." });

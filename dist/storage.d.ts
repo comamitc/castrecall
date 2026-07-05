@@ -45,7 +45,7 @@ export type Provenance = {
     audioUrl?: string;
     feedUrl?: string;
     listenTimestamp?: string;
-    transcriptSource: "rss" | "taddy" | "stt";
+    transcriptSource: "rss" | "taddy" | "local-whisper" | "stt";
     transcriptSourceUrl?: string;
     format: string;
     provider?: string;

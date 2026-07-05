@@ -22,6 +22,13 @@ export type ResolvedConfig = {
     apiKey?: string;
     userId?: string;
   };
+  localWhisper: {
+    disabled: boolean;
+    /** Custom command template with an {input} placeholder; transcript expected on stdout. */
+    command?: string;
+    /** Model path (whisper.cpp) or model name (openai-whisper/mlx/ctranslate2). */
+    model?: string;
+  };
   stt: {
     enabled: boolean;
     provider: SttProvider;
@@ -80,6 +87,11 @@ export function resolveConfig(
     taddy: {
       apiKey: nonEmpty(env.TADDY_API_KEY),
       userId: nonEmpty(env.TADDY_USER_ID),
+    },
+    localWhisper: {
+      disabled: envFlag(env.CASTRECALL_DISABLE_LOCAL_WHISPER) ?? false,
+      command: nonEmpty(env.CASTRECALL_WHISPER_COMMAND),
+      model: nonEmpty(env.CASTRECALL_WHISPER_MODEL),
     },
     stt: {
       enabled: sttEnabled,

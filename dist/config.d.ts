@@ -17,6 +17,13 @@ export type ResolvedConfig = {
         apiKey?: string;
         userId?: string;
     };
+    localWhisper: {
+        disabled: boolean;
+        /** Custom command template with an {input} placeholder; transcript expected on stdout. */
+        command?: string;
+        /** Model path (whisper.cpp) or model name (openai-whisper/mlx/ctranslate2). */
+        model?: string;
+    };
     stt: {
         enabled: boolean;
         provider: SttProvider;

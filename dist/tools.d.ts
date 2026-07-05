@@ -7,6 +7,7 @@ import { type FetchLike } from "./pocketcasts/client.js";
 export type ToolDeps = {
     fetchImpl?: FetchLike;
     now?: () => Date;
+    env?: NodeJS.ProcessEnv;
 };
 export declare function setupStatus(config: ResolvedConfig): Promise<unknown>;
 export declare function syncHistory(config: ResolvedConfig, params: {

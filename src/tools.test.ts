@@ -106,11 +106,18 @@ describe("tools", () => {
     ]);
     // Every network call fails: feed resolution misses, so the RSS rung fails.
     const fetchImpl = (async () => new Response("nope", { status: 404 })) as typeof fetch;
-    const result = (await fetchTranscript(config(), { episodeUuid: "ep-1" }, { fetchImpl })) as any;
+    // Empty PATH so local Whisper detection is deterministic regardless of the host machine.
+    const result = (await fetchTranscript(
+      config(),
+      { episodeUuid: "ep-1" },
+      { fetchImpl, env: { PATH: "" } },
+    )) as any;
     expect(result.status).toBe("no-transcript");
     const rungs = Object.fromEntries(result.ladder.map((r: any) => [r.rung, r]));
     expect(rungs.taddy.outcome).toBe("skipped");
     expect(rungs.taddy.detail).toContain("TADDY_API_KEY");
+    expect(rungs["local-whisper"].outcome).toBe("skipped");
+    expect(rungs["local-whisper"].detail).toContain("No local Whisper CLI detected");
     expect(rungs.stt.outcome).toBe("skipped");
     expect(rungs.stt.detail).toContain("CASTRECALL_ENABLE_STT");
   });

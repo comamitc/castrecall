@@ -25,10 +25,11 @@ src/
 ├── pocketcasts/
 │   └── client.ts          # Read-only unofficial API adapter (login + history)
 └── transcripts/
-    ├── ladder.ts          # Orchestrates the three rungs, collects outcomes
+    ├── ladder.ts          # Orchestrates the four rungs, collects outcomes
     ├── rss.ts             # Rung 1: <podcast:transcript> fetch, format preference
     ├── taddy.ts           # Rung 2: Taddy GraphQL (optional)
-    ├── stt.ts             # Rung 3: AssemblyAI / OpenAI (optional, gated, paid)
+    ├── local-whisper.ts   # Rung 3: detected local Whisper CLI (free, private)
+    ├── stt.ts             # Rung 4: AssemblyAI / OpenAI (optional, gated, paid)
     └── normalize.ts       # VTT/SRT/JSON/HTML/plain → normalized text + segments
 ```
 
@@ -45,7 +46,7 @@ Pocket Casts history (unofficial API, read-only)
 state.json (seen episode UUIDs, timestamps, transcript status)
         │  castrecall_fetch_transcript
         ▼
-Transcript ladder: RSS <podcast:transcript> → Taddy → STT (explicitly enabled)
+Transcript ladder: RSS <podcast:transcript> → Taddy → local Whisper (detected) → cloud STT (explicitly enabled)
         │
         ▼
 sources/<uuid>/{raw.<ext>, transcript.txt, provenance.json}   ← private source lane
@@ -74,12 +75,23 @@ normalized title.
 | Credential exposure | Env-only, never logged or included in errors; `setup_status` reports booleans only. |
 | Copyrighted transcripts | Stored as `privacyClass: private-source`; excerpt-only review candidates; README documents intended private use. |
 | Noisy over-ingestion | Approval gate; review candidates are write-once; excerpts are capped (5 × 600 chars). |
-| STT cost surprises | Off by default; requires explicit `CASTRECALL_ENABLE_STT=true` plus a provider key; every skip says why. |
+| STT cost surprises | Free local Whisper is preferred whenever a CLI is detected; cloud STT is off by default and requires explicit `CASTRECALL_ENABLE_STT=true` plus a provider key; every skip says why. |
+| Local Whisper subprocess safety | Only auto-runs binaries found on PATH by known name with fixed arguments; `CASTRECALL_WHISPER_COMMAND` is user-supplied and runs with the user's own privileges (same trust model as their shell); audio paths are shell-quoted; temp dirs cleaned up. |
 | Path traversal via hostile UUIDs | `safeName()` sanitizes all path components (tested). |
+
+## Rung 3: local Whisper design notes
+
+Nothing is bundled — the rung auto-detects a Whisper CLI the user already has
+(`whisper-cli`/`whisper-cpp`, `mlx_whisper`, `whisper-ctranslate2`, `whisper`)
+and is skipped with install hints when absent. This keeps the plugin install
+weightless for strangers while making the free, private option the default
+generated-transcription path for anyone who has one installed. whisper.cpp
+needs a ggml model (`CASTRECALL_WHISPER_MODEL`) and ffmpeg for non-WAV audio;
+the Python CLIs decode audio themselves. `CASTRECALL_WHISPER_COMMAND` accepts
+any custom command with an `{input}` placeholder (stdout = transcript).
 
 ## Future rungs / ideas (not in v0)
 
-- Local speech-to-text (whisper.cpp / faster-whisper) as a free, private STT rung.
 - Podcast Index API as an additional feed/transcript resolver.
 - More platforms (Spotify, Apple Podcasts) behind the same `ListenRecord` model.
 - An approval tool that moves a reviewed candidate into a user-designated notes

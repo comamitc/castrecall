@@ -11,6 +11,7 @@ import {
 import { fetchHistory, login, type FetchLike } from "./pocketcasts/client.js";
 import { buildReviewCandidate } from "./review.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
+import { detectLocalWhisper } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { Storage, type ListenRecord, type Provenance } from "./storage.js";
@@ -18,6 +19,7 @@ import { Storage, type ListenRecord, type Provenance } from "./storage.js";
 export type ToolDeps = {
   fetchImpl?: FetchLike;
   now?: () => Date;
+  env?: NodeJS.ProcessEnv;
 };
 
 function storageFor(config: ResolvedConfig): Storage {
@@ -30,6 +32,7 @@ export async function setupStatus(config: ResolvedConfig): Promise<unknown> {
   const episodes = Object.values(state.episodes);
   const pendingReviews = await storage.listPendingReviews();
   const stt = sttAvailability(config);
+  const whisper = await detectLocalWhisper(config);
   return {
     dataDir: config.dataDir,
     pocketcasts: {
@@ -39,6 +42,9 @@ export async function setupStatus(config: ResolvedConfig): Promise<unknown> {
     transcriptLadder: {
       rss: "always on (open <podcast:transcript> standard)",
       taddy: taddyConfigured(config) ? "configured" : "not configured (TADDY_API_KEY, TADDY_USER_ID)",
+      localWhisper: whisper.detected
+        ? `detected (${whisper.detected.flavor}) — free, private transcription`
+        : `unavailable — ${whisper.reason}`,
       stt: stt.ok ? `enabled (${config.stt.provider})` : `off — ${stt.reason}`,
     },
     counts: {
@@ -138,7 +144,10 @@ export async function fetchTranscript(
   }
 
   const now = deps.now ?? (() => new Date());
-  const result = await runTranscriptLadder(config, record, { fetchImpl: deps.fetchImpl });
+  const result = await runTranscriptLadder(config, record, {
+    fetchImpl: deps.fetchImpl,
+    env: deps.env,
+  });
   if (!result.transcript) {
     await storage.updateEpisode(
       record.uuid,

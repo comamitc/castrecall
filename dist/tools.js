@@ -6,6 +6,7 @@ import { CastrecallSetupError, requirePocketCastsCredentials, } from "./config.j
 import { fetchHistory, login } from "./pocketcasts/client.js";
 import { buildReviewCandidate } from "./review.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
+import { detectLocalWhisper } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { Storage } from "./storage.js";
@@ -18,6 +19,7 @@ export async function setupStatus(config) {
     const episodes = Object.values(state.episodes);
     const pendingReviews = await storage.listPendingReviews();
     const stt = sttAvailability(config);
+    const whisper = await detectLocalWhisper(config);
     return {
         dataDir: config.dataDir,
         pocketcasts: {
@@ -27,6 +29,9 @@ export async function setupStatus(config) {
         transcriptLadder: {
             rss: "always on (open <podcast:transcript> standard)",
             taddy: taddyConfigured(config) ? "configured" : "not configured (TADDY_API_KEY, TADDY_USER_ID)",
+            localWhisper: whisper.detected
+                ? `detected (${whisper.detected.flavor}) — free, private transcription`
+                : `unavailable — ${whisper.reason}`,
             stt: stt.ok ? `enabled (${config.stt.provider})` : `off — ${stt.reason}`,
         },
         counts: {
@@ -98,7 +103,10 @@ export async function fetchTranscript(config, params, deps = {}) {
         };
     }
     const now = deps.now ?? (() => new Date());
-    const result = await runTranscriptLadder(config, record, { fetchImpl: deps.fetchImpl });
+    const result = await runTranscriptLadder(config, record, {
+        fetchImpl: deps.fetchImpl,
+        env: deps.env,
+    });
     if (!result.transcript) {
         await storage.updateEpisode(record.uuid, {
             transcriptStatus: "failed",

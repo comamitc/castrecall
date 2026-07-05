@@ -79,7 +79,8 @@ Cheapest and most open first; every rung reports why it hit, missed, or was skip
 
 1. **RSS `<podcast:transcript>`** (always on, free) — the open [podcast namespace](https://podcastindex.org/namespace/1.0) standard. Supports plain text, HTML, VTT, SRT, and JSON transcripts, normalized to clean text with speaker labels where available.
 2. **Taddy** (optional) — set `TADDY_API_KEY` + `TADDY_USER_ID` ([free signup](https://taddy.org/developers); podcast-provided transcripts may be available to free accounts, while generated/on-demand transcripts use Taddy plan credits).
-3. **Speech-to-text** (optional, **costs money**, disabled by default) — enable explicitly with `CASTRECALL_ENABLE_STT=true`. Providers: **AssemblyAI** (default; transcribes straight from the audio URL) or **OpenAI** (`gpt-4o-transcribe`; requires downloading and uploading the audio, 25 MB API limit).
+3. **Local Whisper** (free, fully private, auto-detected) — if a Whisper CLI is installed, CastRecall transcribes the audio on your machine at no cost. Detected binaries, in order: `whisper-cli`/`whisper-cpp` ([whisper.cpp](https://github.com/ggerganov/whisper.cpp), e.g. `brew install whisper-cpp`, needs a ggml model via `CASTRECALL_WHISPER_MODEL` and ffmpeg for non-WAV audio), `mlx_whisper` (Apple Silicon, `pip install mlx-whisper`), `whisper-ctranslate2`, `whisper` (openai-whisper). Or supply any command via `CASTRECALL_WHISPER_COMMAND="your-tool {input}"` (transcript on stdout). Nothing is bundled — when no CLI is found the rung is skipped with install hints.
+4. **Cloud speech-to-text** (optional, **costs money**, disabled by default) — enable explicitly with `CASTRECALL_ENABLE_STT=true`. Providers: **AssemblyAI** (default; transcribes straight from the audio URL) or **OpenAI** (`gpt-4o-transcribe`; requires downloading and uploading the audio, 25 MB API limit).
 
 If no rung produces a transcript, the episode is marked `failed` with the per-rung reasons — no fake output, ever.
 
@@ -91,6 +92,9 @@ If no rung produces a transcript, the episode is marked `failed` with the per-ru
 | `CASTRECALL_DATA_DIR` | no | Data dir (default `~/.openclaw/castrecall`). |
 | `CASTRECALL_HISTORY_LIMIT` | no | Max entries per sync (default 100). |
 | `TADDY_API_KEY` / `TADDY_USER_ID` | no | Enables the Taddy ladder rung. |
+| `CASTRECALL_WHISPER_MODEL` | for whisper.cpp | ggml model path (whisper.cpp) or model name (other Whisper CLIs). |
+| `CASTRECALL_WHISPER_COMMAND` | no | Custom local transcription command with an `{input}` placeholder; stdout = transcript. |
+| `CASTRECALL_DISABLE_LOCAL_WHISPER` | no | `true` to skip the local Whisper rung even when a CLI is installed. |
 | `CASTRECALL_ENABLE_STT` | no | `true` to allow paid STT fallback. |
 | `CASTRECALL_STT_PROVIDER` | no | `assemblyai` (default) or `openai`. |
 | `ASSEMBLYAI_API_KEY` | with STT | AssemblyAI transcription. |
@@ -124,8 +128,11 @@ Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`) can
 - **"Pocket Casts credentials are not configured"** — set `POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD` in the environment OpenClaw runs in (not just your shell).
 - **"Pocket Casts rejected the configured credentials"** — check them; Google/Apple-SSO accounts cannot be used (no password exists).
 - **Login worked before but fails now** — the unofficial API may have changed or rate-limited you; wait and retry, and check the repo's issues.
-- **"no-transcript" with all rungs missed/skipped** — the feed declares no transcript and no optional provider is configured. Configure Taddy, or enable STT for that episode's fetch.
-- **STT skipped even with a key set** — STT must be explicitly enabled (`CASTRECALL_ENABLE_STT=true`); it costs money per episode.
+- **"no-transcript" with all rungs missed/skipped** — the feed declares no transcript and no optional provider is configured. Install a local Whisper CLI (free), configure Taddy, or enable cloud STT.
+- **Local Whisper skipped despite being installed** — the binary must be on the `PATH` of the environment OpenClaw runs in; check `castrecall_setup_status`, or point `CASTRECALL_WHISPER_COMMAND` at it directly.
+- **"whisper.cpp needs a ggml model file"** — set `CASTRECALL_WHISPER_MODEL=/path/to/ggml-base.en.bin` (download via whisper.cpp's `models/download-ggml-model.sh` or Hugging Face `ggerganov/whisper.cpp`).
+- **"whisper.cpp needs 16 kHz WAV input"** — install ffmpeg (`brew install ffmpeg`) so CastRecall can convert the episode audio, or use `mlx_whisper`/openai-whisper which decode audio themselves.
+- **STT skipped even with a key set** — cloud STT must be explicitly enabled (`CASTRECALL_ENABLE_STT=true`); it costs money per episode.
 - **OpenAI STT fails on long episodes** — the 25 MB upload limit; use `CASTRECALL_STT_PROVIDER=assemblyai`.
 - **Where did my data go?** — `castrecall_setup_status` prints the data dir.
 
