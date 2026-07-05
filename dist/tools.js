@@ -222,7 +222,7 @@ export async function setup(config, params = {}, deps = {}) {
         }
         else {
             try {
-                const history = await fetchHistoryWithSession(config, deps);
+                const history = await fetchHistoryWithSession(config, { ...deps, skipTokenPersist: true });
                 verify = { ok: true, sampleCount: history.length };
             }
             catch (error) {

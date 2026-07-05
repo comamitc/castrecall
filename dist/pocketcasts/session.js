@@ -112,13 +112,18 @@ async function loginAndCache(config, deps, email, password, hash, nowMs) {
     const token = await login(email, password, deps.fetchImpl);
     const expiresAt = parseTokenExpiry(token) ?? nowMs + DEFAULT_TOKEN_TTL_MS;
     cache = { service: config.secrets.service, credentialHash: hash, token, expiresAt };
-    await persistTokenToKeychain(config, deps, hash, token, expiresAt);
+    if (!deps.skipTokenPersist) {
+        await persistTokenToKeychain(config, deps, hash, token, expiresAt);
+    }
     return token;
 }
 /**
  * Resolve credentials and return a valid session token, reusing the
  * in-memory cache or a durable keychain token record before logging in
- * fresh. Concurrent callers share one in-flight login (single-flight).
+ * fresh. Concurrent callers for the same service + credentialHash share one
+ * in-flight login (single-flight); a different service or rotated
+ * credentials starts a separate login rather than reusing another
+ * context's in-flight promise.
  * `forceLogin` skips both cache lookups — used only by fetchHistoryWithSession's
  * post-401 retry, so a stale keychain record can never absorb that retry.
  */
@@ -144,12 +149,16 @@ export async function getPocketCastsToken(config, deps = {}, forceLogin = false)
         if (fromKeychain)
             return fromKeychain;
     }
-    if (!inFlightLogin) {
-        inFlightLogin = loginAndCache(config, deps, email, password, hash, nowMs).finally(() => {
-            inFlightLogin = undefined;
+    if (!inFlightLogin ||
+        inFlightLogin.service !== config.secrets.service ||
+        inFlightLogin.credentialHash !== hash) {
+        const promise = loginAndCache(config, deps, email, password, hash, nowMs).finally(() => {
+            if (inFlightLogin?.promise === promise)
+                inFlightLogin = undefined;
         });
+        inFlightLogin = { service: config.secrets.service, credentialHash: hash, promise };
     }
-    return inFlightLogin;
+    return inFlightLogin.promise;
 }
 /**
  * Whether a durable token record currently exists in the keychain — a cheap,

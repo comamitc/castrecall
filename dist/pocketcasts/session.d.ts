@@ -25,6 +25,8 @@ export type SessionDeps = {
     env?: NodeJS.ProcessEnv;
     platform?: NodeJS.Platform;
     now?: () => Date;
+    /** Skip the durable keychain write on login — the token still lives in the in-memory cache. */
+    skipTokenPersist?: boolean;
 };
 export type CredentialSource = "keychain" | "env" | "none";
 export type ResolvedCredentials = {
@@ -45,7 +47,10 @@ export declare function resolvePocketCastsCredentials(config: ResolvedConfig, de
 /**
  * Resolve credentials and return a valid session token, reusing the
  * in-memory cache or a durable keychain token record before logging in
- * fresh. Concurrent callers share one in-flight login (single-flight).
+ * fresh. Concurrent callers for the same service + credentialHash share one
+ * in-flight login (single-flight); a different service or rotated
+ * credentials starts a separate login rather than reusing another
+ * context's in-flight promise.
  * `forceLogin` skips both cache lookups — used only by fetchHistoryWithSession's
  * post-401 retry, so a stale keychain record can never absorb that retry.
  */
