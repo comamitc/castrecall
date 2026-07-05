@@ -30,7 +30,9 @@ const FEED_XML = `<?xml version="1.0"?>
 const VTT = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript body for review generation.";
 
 /** A counting fetch stub covering login, history, feed resolution, feed XML, and transcript VTT. */
-function makeFetchImpl(opts: { historyThrows?: boolean; episodes?: unknown[] } = {}) {
+function makeFetchImpl(
+  opts: { historyThrows?: boolean; historyInvalidJson?: boolean; episodes?: unknown[] } = {},
+) {
   const calls: string[] = [];
   const fetchImpl = (async (input: any) => {
     const url = String(input);
@@ -42,6 +44,9 @@ function makeFetchImpl(opts: { historyThrows?: boolean; episodes?: unknown[] } =
       calls.push("history");
       if (opts.historyThrows) {
         return new Response("boom", { status: 500 });
+      }
+      if (opts.historyInvalidJson) {
+        return new Response("not json", { status: 200 });
       }
       return new Response(JSON.stringify({ episodes: opts.episodes ?? [HISTORY_EPISODE] }), {
         status: 200,
@@ -154,6 +159,18 @@ describe("runPipeline", () => {
     expect(state.sync.consecutiveFailures).toBe(1);
     expect(state.sync.lastError).toContain("HTTP 500");
     expect(new Date(state.sync.nextEligibleAt).getTime()).toBeGreaterThan(Date.now() - 1000);
+  });
+
+  it("records an actionable failure and enters cooldown on an unparseable Pocket Casts response", async () => {
+    const { fetchImpl } = makeFetchImpl({ historyInvalidJson: true });
+    const result = (await runPipeline(config(), {}, { fetchImpl })) as Record<string, any>;
+    expect(result.ok).toBe(false);
+    expect(result.stage).toBe("sync");
+    expect(result.reason).toContain("unparseable");
+
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.sync.consecutiveFailures).toBe(1);
+    expect(state.sync.nextEligibleAt).toBeDefined();
   });
 
   it("records an actionable failure when Pocket Casts credentials are missing", async () => {

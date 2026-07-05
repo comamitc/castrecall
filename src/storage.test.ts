@@ -334,6 +334,19 @@ describe("Storage", () => {
     expect(afterRelease.acquired).toBe(true);
   });
 
+  it("lets only one concurrent contender reclaim a stale lock", async () => {
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const first = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(first.acquired).toBe(true);
+
+    // Many concurrent contenders race to reclaim the same stale lock.
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => storage.acquirePipelineLock(() => new Date())),
+    );
+    const winners = results.filter((r) => r.acquired);
+    expect(winners).toHaveLength(1);
+  });
+
   it("does not reclaim a lock younger than LOCK_TTL_MS", async () => {
     const recentAcquiredAt = new Date(Date.now() - (LOCK_TTL_MS - 1_000));
     const first = await storage.acquirePipelineLock(() => recentAcquiredAt);

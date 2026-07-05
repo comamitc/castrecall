@@ -243,13 +243,37 @@ export class Storage {
     }
     const age = existing?.acquiredAt ? now().getTime() - new Date(existing.acquiredAt).getTime() : Infinity;
     if (age <= LOCK_TTL_MS) return { acquired: false };
+    // Reclaim exclusively: rename steals whatever currently sits at
+    // lockPath. Only one contender's rename can ever succeed for a given
+    // file — once it moves, every other contender's rename fails with
+    // ENOENT — so the "read stale, then reclaim" gap above can't let two
+    // contenders both proceed. The winner then re-verifies staleness
+    // against what it actually grabbed: if a faster reclaimer already
+    // replaced the lock with a fresh one in that gap, this contender would
+    // otherwise steal a live lock, so it puts the fresh one back and backs
+    // off instead of overwriting it.
+    const evictedPath = `${this.lockPath}.evicted.${token}`;
     try {
-      // Reclaim atomically: rename our fresh lock over the stale one. If a
-      // concurrent reclaimer wins this race, `rename` still succeeds (POSIX
-      // rename onto an existing file is atomic), so at most one token survives.
-      const tmpPath = `${this.lockPath}.${token}.tmp`;
-      await fs.writeFile(tmpPath, JSON.stringify(payload), "utf8");
-      await fs.rename(tmpPath, this.lockPath);
+      await fs.rename(this.lockPath, evictedPath);
+    } catch {
+      return { acquired: false };
+    }
+    let grabbed: { acquiredAt?: string } | undefined;
+    try {
+      grabbed = JSON.parse(await fs.readFile(evictedPath, "utf8"));
+    } catch {
+      grabbed = undefined;
+    }
+    const grabbedAge = grabbed?.acquiredAt
+      ? now().getTime() - new Date(grabbed.acquiredAt).getTime()
+      : Infinity;
+    if (grabbedAge <= LOCK_TTL_MS) {
+      await fs.rename(evictedPath, this.lockPath).catch(() => {});
+      return { acquired: false };
+    }
+    await fs.rm(evictedPath, { force: true });
+    try {
+      await fs.writeFile(this.lockPath, JSON.stringify(payload), { encoding: "utf8", flag: "wx" });
       return { acquired: true, token };
     } catch {
       return { acquired: false };
