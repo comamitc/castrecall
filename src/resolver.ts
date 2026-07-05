@@ -5,6 +5,7 @@
 
 import { XMLParser } from "fast-xml-parser";
 import type { FetchLike, PocketCastsEpisode } from "./pocketcasts/client.js";
+import { fetchWithRetry, type RetryOptions } from "./retry.js";
 
 export type TranscriptLink = {
   url: string;
@@ -34,22 +35,29 @@ export async function resolveFeedUrl(
   podcastUuid: string,
   podcastTitle: string,
   fetchImpl: FetchLike = fetch,
+  retry: RetryOptions = {},
 ): Promise<string | undefined> {
-  const fromPocketCasts = await feedUrlFromPocketCasts(podcastUuid, fetchImpl);
+  const fromPocketCasts = await feedUrlFromPocketCasts(podcastUuid, fetchImpl, retry);
   if (fromPocketCasts) return fromPocketCasts;
-  return feedUrlFromItunes(podcastTitle, fetchImpl);
+  return feedUrlFromItunes(podcastTitle, fetchImpl, retry);
 }
 
 async function feedUrlFromPocketCasts(
   podcastUuid: string,
   fetchImpl: FetchLike,
+  retry: RetryOptions,
 ): Promise<string | undefined> {
   try {
-    const response = await fetchImpl("https://refresh.pocketcasts.com/import/export_feed_urls", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ uuids: [podcastUuid] }),
-    });
+    const response = await fetchWithRetry(
+      fetchImpl,
+      "https://refresh.pocketcasts.com/import/export_feed_urls",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ uuids: [podcastUuid] }),
+      },
+      retry,
+    );
     if (!response.ok) return undefined;
     const body = (await response.json()) as { result?: Record<string, string> };
     const url = body.result?.[podcastUuid];
@@ -62,11 +70,17 @@ async function feedUrlFromPocketCasts(
 async function feedUrlFromItunes(
   podcastTitle: string,
   fetchImpl: FetchLike,
+  retry: RetryOptions,
 ): Promise<string | undefined> {
   if (!podcastTitle) return undefined;
   try {
     const query = new URLSearchParams({ media: "podcast", term: podcastTitle, limit: "5" });
-    const response = await fetchImpl(`https://itunes.apple.com/search?${query}`);
+    const response = await fetchWithRetry(
+      fetchImpl,
+      `https://itunes.apple.com/search?${query}`,
+      undefined,
+      retry,
+    );
     if (!response.ok) return undefined;
     const body = (await response.json()) as {
       results?: Array<{ collectionName?: string; feedUrl?: string }>;
@@ -89,10 +103,14 @@ export async function resolveFeedItem(
   feedUrl: string,
   episode: Pick<PocketCastsEpisode, "title" | "url" | "uuid">,
   fetchImpl: FetchLike = fetch,
+  retry: RetryOptions = {},
 ): Promise<ResolvedFeedItem | undefined> {
-  const response = await fetchImpl(feedUrl, {
-    headers: { accept: "application/rss+xml, application/xml, text/xml, */*" },
-  });
+  const response = await fetchWithRetry(
+    fetchImpl,
+    feedUrl,
+    { headers: { accept: "application/rss+xml, application/xml, text/xml, */*" } },
+    retry,
+  );
   if (!response.ok) {
     throw new Error(`Feed fetch failed with HTTP ${response.status} for ${feedUrl}`);
   }

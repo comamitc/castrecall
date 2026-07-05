@@ -24,6 +24,7 @@ src/
 ├── review.ts              # Review-candidate markdown generation (heuristic excerpts)
 ├── corpus-export.ts       # Opt-in export: section-split, frontmattered markdown pages (gbrain, etc.)
 ├── resolver.ts            # Pocket Casts listen → RSS feed URL → feed item + transcript links
+├── retry.ts               # Per-request retry: capped exponential backoff for transient fetch failures
 ├── pocketcasts/
 │   ├── client.ts          # Read-only unofficial API adapter (login + history)
 │   ├── secret-store.ts    # OS keychain backend (macOS `security` / libsecret `secret-tool`)
@@ -94,6 +95,19 @@ make that safe to run on an interval:
   failure never re-dirties sync health. `force: true` bypasses the cooldown
   (never the lock) for a manual recovery run — see the README warning
   against using it in a scheduler recipe.
+
+This cooldown is one of two independent backoff layers, deliberately at
+different scales. `retry.ts`'s `fetchWithRetry` retries a *single* request
+(login, history, feed-export, RSS/Taddy transcript fetch) in-process on a
+network error or a 429/5xx, at request scale (`RETRY_BASE_MS`/`RETRY_CAP_MS`,
+~250ms–2s, ~750ms worst case for the default 3 attempts) — it never retries
+401/403, which every caller's existing auth-error branch still handles on
+the first response. If a sync still fails after those in-request retries
+exhaust, the cooldown above backs off the *next scheduled run* at the much
+larger `BACKOFF_BASE_MS`/`BACKOFF_CAP_MS` (minutes–hours) scale. The two are
+intentionally not shared: reusing the cooldown's minute-scale constants
+per-request would stall an in-progress sync for minutes on a single
+transient blip.
 
 Only episodes newly recorded this run get `fetchTranscript`, and only
 episodes newly stored this run get `generateReview` — a pre-existing

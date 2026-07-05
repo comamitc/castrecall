@@ -3,6 +3,7 @@
  * so the transcript ladder can start from the open `<podcast:transcript>` standard.
  */
 import type { FetchLike, PocketCastsEpisode } from "./pocketcasts/client.js";
+import { type RetryOptions } from "./retry.js";
 export type TranscriptLink = {
     url: string;
     /** MIME type as declared in the feed, e.g. "text/vtt". */
@@ -25,12 +26,12 @@ export type ResolvedFeedItem = {
  * used by community export tools. Fallback: the official iTunes Search API,
  * matched by podcast title.
  */
-export declare function resolveFeedUrl(podcastUuid: string, podcastTitle: string, fetchImpl?: FetchLike): Promise<string | undefined>;
+export declare function resolveFeedUrl(podcastUuid: string, podcastTitle: string, fetchImpl?: FetchLike, retry?: RetryOptions): Promise<string | undefined>;
 /**
  * Fetch the feed and find the item matching the listened episode.
  * Matching order: enclosure URL, then GUID, then normalized title.
  */
-export declare function resolveFeedItem(feedUrl: string, episode: Pick<PocketCastsEpisode, "title" | "url" | "uuid">, fetchImpl?: FetchLike): Promise<ResolvedFeedItem | undefined>;
+export declare function resolveFeedItem(feedUrl: string, episode: Pick<PocketCastsEpisode, "title" | "url" | "uuid">, fetchImpl?: FetchLike, retry?: RetryOptions): Promise<ResolvedFeedItem | undefined>;
 /** Pure feed-XML matcher; exported for tests. */
 export declare function findFeedItem(feedXml: string, episode: Pick<PocketCastsEpisode, "title" | "url" | "uuid">, feedUrl: string): ResolvedFeedItem | undefined;
 /** Extract podcast-namespace transcript links from a parsed feed item. */

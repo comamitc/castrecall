@@ -6,6 +6,7 @@
 
 import { CastrecallSetupError, type ResolvedConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
+import { fetchWithRetry, type RetryOptions } from "../retry.js";
 
 const TADDY_ENDPOINT = "https://api.taddy.org";
 
@@ -26,6 +27,7 @@ export async function fetchTaddyTranscript(
   config: ResolvedConfig,
   episode: { guid?: string; title: string },
   fetchImpl: FetchLike = fetch,
+  retry: RetryOptions = {},
 ): Promise<TaddyTranscript | undefined> {
   if (!taddyConfigured(config)) {
     throw new CastrecallSetupError(
@@ -48,7 +50,7 @@ export async function fetchTaddyTranscript(
         transcript
       }
     }`;
-    const result = await taddyRequest(config, query, { value: variables[argName] }, fetchImpl);
+    const result = await taddyRequest(config, query, { value: variables[argName] }, fetchImpl, retry);
     const episodeData = result?.getPodcastEpisode as
       | { uuid?: string; transcript?: string[] | string | null }
       | null
@@ -72,18 +74,24 @@ async function taddyRequest(
   query: string,
   variables: Record<string, string>,
   fetchImpl: FetchLike,
+  retry: RetryOptions = {},
 ): Promise<Record<string, unknown> | undefined> {
   let response: Response;
   try {
-    response = await fetchImpl(TADDY_ENDPOINT, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-user-id": config.taddy.userId ?? "",
-        "x-api-key": config.taddy.apiKey ?? "",
+    response = await fetchWithRetry(
+      fetchImpl,
+      TADDY_ENDPOINT,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-user-id": config.taddy.userId ?? "",
+          "x-api-key": config.taddy.apiKey ?? "",
+        },
+        body: JSON.stringify({ query, variables }),
       },
-      body: JSON.stringify({ query, variables }),
-    });
+      retry,
+    );
   } catch (error) {
     throw new Error(
       `Could not reach the Taddy API (${error instanceof Error ? error.message : String(error)}).`,

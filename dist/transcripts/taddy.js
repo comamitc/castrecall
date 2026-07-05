@@ -4,6 +4,7 @@
  * Transcript access requires a paid Taddy plan; free keys return no transcript.
  */
 import { CastrecallSetupError } from "../config.js";
+import { fetchWithRetry } from "../retry.js";
 const TADDY_ENDPOINT = "https://api.taddy.org";
 export function taddyConfigured(config) {
     return Boolean(config.taddy.apiKey && config.taddy.userId);
@@ -12,7 +13,7 @@ export function taddyConfigured(config) {
  * Look an episode up by RSS GUID first (exact), then by name, and return its transcript.
  * Returns undefined when Taddy knows the episode but has no transcript.
  */
-export async function fetchTaddyTranscript(config, episode, fetchImpl = fetch) {
+export async function fetchTaddyTranscript(config, episode, fetchImpl = fetch, retry = {}) {
     if (!taddyConfigured(config)) {
         throw new CastrecallSetupError("Taddy is not configured. Set TADDY_API_KEY and TADDY_USER_ID (free signup at https://taddy.org/developers) " +
             "or skip this rung of the transcript ladder.");
@@ -31,7 +32,7 @@ export async function fetchTaddyTranscript(config, episode, fetchImpl = fetch) {
         transcript
       }
     }`;
-        const result = await taddyRequest(config, query, { value: variables[argName] }, fetchImpl);
+        const result = await taddyRequest(config, query, { value: variables[argName] }, fetchImpl, retry);
         const episodeData = result?.getPodcastEpisode;
         if (!episodeData)
             continue;
@@ -47,10 +48,10 @@ export async function fetchTaddyTranscript(config, episode, fetchImpl = fetch) {
     }
     return undefined;
 }
-async function taddyRequest(config, query, variables, fetchImpl) {
+async function taddyRequest(config, query, variables, fetchImpl, retry = {}) {
     let response;
     try {
-        response = await fetchImpl(TADDY_ENDPOINT, {
+        response = await fetchWithRetry(fetchImpl, TADDY_ENDPOINT, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
@@ -58,7 +59,7 @@ async function taddyRequest(config, query, variables, fetchImpl) {
                 "x-api-key": config.taddy.apiKey ?? "",
             },
             body: JSON.stringify({ query, variables }),
-        });
+        }, retry);
     }
     catch (error) {
         throw new Error(`Could not reach the Taddy API (${error instanceof Error ? error.message : String(error)}).`);

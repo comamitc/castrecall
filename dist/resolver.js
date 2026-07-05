@@ -3,6 +3,7 @@
  * so the transcript ladder can start from the open `<podcast:transcript>` standard.
  */
 import { XMLParser } from "fast-xml-parser";
+import { fetchWithRetry } from "./retry.js";
 /**
  * Resolve a Pocket Casts podcast UUID to its RSS feed URL.
  *
@@ -10,19 +11,19 @@ import { XMLParser } from "fast-xml-parser";
  * used by community export tools. Fallback: the official iTunes Search API,
  * matched by podcast title.
  */
-export async function resolveFeedUrl(podcastUuid, podcastTitle, fetchImpl = fetch) {
-    const fromPocketCasts = await feedUrlFromPocketCasts(podcastUuid, fetchImpl);
+export async function resolveFeedUrl(podcastUuid, podcastTitle, fetchImpl = fetch, retry = {}) {
+    const fromPocketCasts = await feedUrlFromPocketCasts(podcastUuid, fetchImpl, retry);
     if (fromPocketCasts)
         return fromPocketCasts;
-    return feedUrlFromItunes(podcastTitle, fetchImpl);
+    return feedUrlFromItunes(podcastTitle, fetchImpl, retry);
 }
-async function feedUrlFromPocketCasts(podcastUuid, fetchImpl) {
+async function feedUrlFromPocketCasts(podcastUuid, fetchImpl, retry) {
     try {
-        const response = await fetchImpl("https://refresh.pocketcasts.com/import/export_feed_urls", {
+        const response = await fetchWithRetry(fetchImpl, "https://refresh.pocketcasts.com/import/export_feed_urls", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ uuids: [podcastUuid] }),
-        });
+        }, retry);
         if (!response.ok)
             return undefined;
         const body = (await response.json());
@@ -33,12 +34,12 @@ async function feedUrlFromPocketCasts(podcastUuid, fetchImpl) {
         return undefined;
     }
 }
-async function feedUrlFromItunes(podcastTitle, fetchImpl) {
+async function feedUrlFromItunes(podcastTitle, fetchImpl, retry) {
     if (!podcastTitle)
         return undefined;
     try {
         const query = new URLSearchParams({ media: "podcast", term: podcastTitle, limit: "5" });
-        const response = await fetchImpl(`https://itunes.apple.com/search?${query}`);
+        const response = await fetchWithRetry(fetchImpl, `https://itunes.apple.com/search?${query}`, undefined, retry);
         if (!response.ok)
             return undefined;
         const body = (await response.json());
@@ -55,10 +56,8 @@ async function feedUrlFromItunes(podcastTitle, fetchImpl) {
  * Fetch the feed and find the item matching the listened episode.
  * Matching order: enclosure URL, then GUID, then normalized title.
  */
-export async function resolveFeedItem(feedUrl, episode, fetchImpl = fetch) {
-    const response = await fetchImpl(feedUrl, {
-        headers: { accept: "application/rss+xml, application/xml, text/xml, */*" },
-    });
+export async function resolveFeedItem(feedUrl, episode, fetchImpl = fetch, retry = {}) {
+    const response = await fetchWithRetry(fetchImpl, feedUrl, { headers: { accept: "application/rss+xml, application/xml, text/xml, */*" } }, retry);
     if (!response.ok) {
         throw new Error(`Feed fetch failed with HTTP ${response.status} for ${feedUrl}`);
     }

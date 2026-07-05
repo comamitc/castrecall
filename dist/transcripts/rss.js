@@ -1,4 +1,5 @@
 /** Rung 1 of the transcript ladder: `<podcast:transcript>` links from the episode's RSS item. */
+import { fetchWithRetry } from "../retry.js";
 import { detectFormat, normalizeTranscript, } from "./normalize.js";
 /** Prefer machine-friendly formats with timing/speaker data over markup. */
 const TYPE_PREFERENCE = [
@@ -19,13 +20,11 @@ function preferenceIndex(type) {
     return index === -1 ? TYPE_PREFERENCE.length : index;
 }
 /** Try each declared transcript link in preference order; return the first that parses. */
-export async function fetchRssTranscript(links, fetchImpl = fetch) {
+export async function fetchRssTranscript(links, fetchImpl = fetch, retry = {}) {
     const failures = [];
     for (const link of rankTranscriptLinks(links)) {
         try {
-            const response = await fetchImpl(link.url, {
-                headers: { accept: link.type ?? "*/*" },
-            });
+            const response = await fetchWithRetry(fetchImpl, link.url, { headers: { accept: link.type ?? "*/*" } }, retry);
             if (!response.ok) {
                 failures.push(`${link.url}: HTTP ${response.status}`);
                 continue;

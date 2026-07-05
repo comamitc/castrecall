@@ -5,6 +5,7 @@
  */
 import { type ResolvedConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
+import { type RetryOptions } from "../retry.js";
 export type TaddyTranscript = {
     text: string;
     episodeUuid?: string;
@@ -17,4 +18,4 @@ export declare function taddyConfigured(config: ResolvedConfig): boolean;
 export declare function fetchTaddyTranscript(config: ResolvedConfig, episode: {
     guid?: string;
     title: string;
-}, fetchImpl?: FetchLike): Promise<TaddyTranscript | undefined>;
+}, fetchImpl?: FetchLike, retry?: RetryOptions): Promise<TaddyTranscript | undefined>;

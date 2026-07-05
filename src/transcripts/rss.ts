@@ -1,6 +1,7 @@
 /** Rung 1 of the transcript ladder: `<podcast:transcript>` links from the episode's RSS item. */
 
 import type { FetchLike } from "../pocketcasts/client.js";
+import { fetchWithRetry, type RetryOptions } from "../retry.js";
 import type { TranscriptLink } from "../resolver.js";
 import {
   detectFormat,
@@ -39,13 +40,17 @@ function preferenceIndex(type?: string): number {
 export async function fetchRssTranscript(
   links: TranscriptLink[],
   fetchImpl: FetchLike = fetch,
+  retry: RetryOptions = {},
 ): Promise<FetchedTranscript | undefined> {
   const failures: string[] = [];
   for (const link of rankTranscriptLinks(links)) {
     try {
-      const response = await fetchImpl(link.url, {
-        headers: { accept: link.type ?? "*/*" },
-      });
+      const response = await fetchWithRetry(
+        fetchImpl,
+        link.url,
+        { headers: { accept: link.type ?? "*/*" } },
+        retry,
+      );
       if (!response.ok) {
         failures.push(`${link.url}: HTTP ${response.status}`);
         continue;
