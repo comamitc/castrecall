@@ -16,8 +16,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 ## Execution queue
 
 ### v0.1.0 — corpus feed
-- [ ] #15 contract hardening (prereq of #14) — pipeline → merge
-- [ ] #14 corpus-export mode — pipeline → merge (after #15)
+- [x] #15 contract hardening — PR #18 squash-merged (4593d02), issue closed. Two pre-merge review rounds: staging moved to `.staging/` namespace + dist rebuilt with CI freshness guard (1cdce18); completeness-contract wording + untracked-dist check (fb0138e). 60 tests green.
+- [ ] #14 corpus-export mode — pipeline → merge (prereq #15 ✓)
 - [ ] #16 README positioning — pipeline → merge
 - [ ] release v0.1.0 → tag, close milestone
 
