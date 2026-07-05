@@ -96,18 +96,21 @@ export async function runPipeline(config, params = {}, deps = {}) {
         // export/review completed must be picked up here, or it stays stranded
         // until a human runs the per-episode tools.
         const stateAfterTranscripts = await storage.loadState();
-        // Export retry pass: fetchTranscript exports inline for the episodes it
-        // touches, but a stored episode whose export failed (or predates export
-        // being enabled) is never re-fetched by the transcript loop above.
+        // Export pass: run the exporter for EVERY stored episode. The exporter's
+        // own content-hash check is the cheap no-op (`skipped: true` when the
+        // target already matches), which makes export self-healing: a changed
+        // CASTRECALL_EXPORT_DIR, a deleted export tree, or a failure recorded by
+        // a prior run all converge on the next scheduled tick. State markers
+        // (exportedAt/exportError) are observability, never the skip condition.
         let exported = 0;
         if (config.exportDir) {
-            const exportTargets = Object.values(stateAfterTranscripts.episodes).filter((episode) => episode.transcriptStatus === "stored" && (!episode.exportedAt || episode.exportError));
+            const exportTargets = Object.values(stateAfterTranscripts.episodes).filter((episode) => episode.transcriptStatus === "stored");
             for (const episode of exportTargets) {
                 const result = await exportAndRecord(config, storage, episode, now);
                 if (result && "error" in result) {
                     errors.push({ stage: "export", episodeUuid: episode.uuid, error: result.error });
                 }
-                else if (result) {
+                else if (result && !result.skipped) {
                     exported += 1;
                 }
             }

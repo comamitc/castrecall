@@ -194,6 +194,13 @@ export class Storage {
             if (currentMtimeMs !== undefined && now().getTime() - currentMtimeMs <= LOCK_TTL_MS) {
                 return { acquired: false };
             }
+            // Fence: a reclaimer that stalled past RECLAIM_MUTEX_TTL_MS may have
+            // lost the mutex to a thief. Re-verify ownership immediately before
+            // every lock mutation so an expired owner resuming here aborts instead
+            // of evicting a lock the new owner may have just created.
+            if (!(await this.ownsReclaimMutex(token))) {
+                return { acquired: false };
+            }
             if (currentMtimeMs !== undefined) {
                 const evictedPath = `${this.lockPath}.evicted.${token}`;
                 try {
@@ -205,13 +212,29 @@ export class Storage {
                 await fs.rm(evictedPath, { force: true });
             }
             await this.lockTestHooks?.afterEvict?.();
+            if (!(await this.ownsReclaimMutex(token))) {
+                return { acquired: false };
+            }
             if (await this.createLockExclusive(token, now)) {
                 return { acquired: true, token };
             }
             return { acquired: false };
         }
         finally {
-            await fs.rm(this.reclaimMutexPath, { force: true });
+            // Release only what we still own — an expired owner must not delete
+            // the mutex out from under the thief that legitimately took it over.
+            if (await this.ownsReclaimMutex(token)) {
+                await fs.rm(this.reclaimMutexPath, { force: true });
+            }
+        }
+    }
+    /** The reclaim mutex file contains its owner's token; ownership = content match. */
+    async ownsReclaimMutex(token) {
+        try {
+            return (await fs.readFile(this.reclaimMutexPath, "utf8")) === token;
+        }
+        catch {
+            return false;
         }
     }
     get reclaimMutexPath() {

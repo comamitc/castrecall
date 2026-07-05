@@ -50,6 +50,17 @@ export async function exportAndRecord(
   if (!config.exportDir) return undefined;
   try {
     const result = await exportIfEnabled(config, storage, record);
+    if (result === undefined) {
+      // Export was enabled but its inputs are missing on disk — that is a
+      // repairable failure, never a success: recording exportedAt here would
+      // stop scheduled runs from ever retrying this episode.
+      const message =
+        `Corpus export skipped for ${record.uuid}: transcript.txt or provenance.json is missing ` +
+        `under sources/${record.uuid}/. Repair or remove the directory, or re-run ` +
+        "castrecall_fetch_transcript for this episode.";
+      await storage.updateEpisode(record.uuid, { exportError: message }, now);
+      return { error: message };
+    }
     await storage.updateEpisode(
       record.uuid,
       { exportedAt: now().toISOString(), exportError: undefined },

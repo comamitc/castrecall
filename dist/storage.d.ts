@@ -131,6 +131,8 @@ export declare class Storage {
     } | {
         acquired: false;
     }>;
+    /** The reclaim mutex file contains its owner's token; ownership = content match. */
+    private ownsReclaimMutex;
     private get reclaimMutexPath();
     /**
      * Test-only seam for orchestrating reclaim interleavings; never set in

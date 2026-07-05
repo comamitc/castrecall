@@ -447,6 +447,41 @@ describe("Storage", () => {
     expect((await storage.acquirePipelineLock(() => new Date())).acquired).toBe(false);
   });
 
+  it("an expired reclaim-mutex owner cannot mutate the lock after losing the mutex", async () => {
+    // Round-4 review scenario: a reclaimer stalls inside its critical
+    // section past RECLAIM_MUTEX_TTL_MS; a thief takes the mutex and a fresh
+    // lock appears. The resumed owner's fence check must abort every lock
+    // mutation and must NOT delete the thief's mutex on the way out.
+    const lockPath = path.join(dir, ".staging", "pipeline.lock");
+    const mutexPath = `${lockPath}.reclaim`;
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(crashed.acquired).toBe(true);
+
+    let thiefToken: string | undefined;
+    storage.lockTestHooks = {
+      insideReclaimMutex: async () => {
+        // Simulate the stall + theft: the thief overwrites the mutex with its
+        // own token, clears the stale lock, and acquires a fresh one.
+        await fs.writeFile(mutexPath, "thief-token", "utf8");
+        await fs.rm(lockPath, { force: true });
+        const thief = await storage.acquirePipelineLock(() => new Date());
+        expect(thief.acquired).toBe(true);
+        if (thief.acquired) thiefToken = thief.token;
+      },
+    };
+    const owner = await storage.acquirePipelineLock(() => new Date());
+    storage.lockTestHooks = undefined;
+
+    // The expired owner aborted: no acquisition, thief's lock untouched,
+    // thief's mutex not deleted by the owner's finally block.
+    expect(owner.acquired).toBe(false);
+    expect(thiefToken).toBeTruthy();
+    expect(await storage.renewPipelineLock(thiefToken!, () => new Date())).toBe(true);
+    expect(await fs.readFile(mutexPath, "utf8")).toBe("thief-token");
+    await fs.rm(mutexPath, { force: true });
+  });
+
   it("a stale-reclaimed lock is never clobbered by the old holder's renewal (renew-vs-reclaim)", async () => {
     const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
     const first = await storage.acquirePipelineLock(() => staleAcquiredAt);

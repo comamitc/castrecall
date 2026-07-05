@@ -437,6 +437,67 @@ describe("runPipeline", () => {
     expect(pages.length).toBeGreaterThan(0);
   });
 
+  it("records a repairable export error (never success) when stored inputs are missing on disk", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([HISTORY_EPISODE]);
+    // State says stored, but the sources dir is gone (corruption/manual deletion).
+    await storage.updateEpisode("ep-1", { transcriptStatus: "stored" });
+
+    const exportDir = path.join(dir, "export");
+    const { fetchImpl } = makeFetchImpl({ episodes: [] });
+    const result = (await runPipeline(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      {},
+      { fetchImpl },
+    )) as Record<string, any>;
+
+    expect(result.exports.exported).toBe(0);
+    expect(result.errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ stage: "export", episodeUuid: "ep-1" })]),
+    );
+    const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(state.episodes["ep-1"].exportError).toMatch(/missing/);
+    expect(state.episodes["ep-1"].exportedAt).toBeUndefined();
+  });
+
+  it("re-exports after the export tree is lost or the export dir changes (self-healing)", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([HISTORY_EPISODE]);
+
+    const exportDir = path.join(dir, "export");
+    const { fetchImpl } = makeFetchImpl();
+    const first = (await runPipeline(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      {},
+      { fetchImpl },
+    )) as Record<string, any>;
+    expect(first.transcripts.stored).toBe(1);
+
+    // Losing the whole export tree must not strand the corpus: the export
+    // pass runs the (hash-idempotent) exporter for every stored episode.
+    await fs.rm(exportDir, { recursive: true, force: true });
+    const second = (await runPipeline(config({ CASTRECALL_EXPORT_DIR: exportDir }), {}, {
+      fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+    })) as Record<string, any>;
+    expect(second.exports.exported).toBe(1);
+
+    // A different export dir is populated the same way.
+    const otherDir = path.join(dir, "export-elsewhere");
+    const third = (await runPipeline(config({ CASTRECALL_EXPORT_DIR: otherDir }), {}, {
+      fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+    })) as Record<string, any>;
+    expect(third.exports.exported).toBe(1);
+
+    // And an unchanged tree converges to the cheap no-op.
+    const fourth = (await runPipeline(config({ CASTRECALL_EXPORT_DIR: otherDir }), {}, {
+      fetchImpl: makeFetchImpl({ episodes: [] }).fetchImpl,
+    })) as Record<string, any>;
+    expect(fourth.exports.exported).toBe(0);
+    expect(fourth.errors).toBeUndefined();
+  });
+
   it("reconciles a pending review file left by a crash so scheduled runs converge", async () => {
     const storage = new Storage(dir);
     await storage.init();
