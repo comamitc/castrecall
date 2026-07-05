@@ -146,6 +146,34 @@ describe("Storage", () => {
     expect(stillFirst.contentHash).toBe(provenance.contentHash);
   });
 
+  it("stays consistent under concurrent same-episode stores", async () => {
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        storage.storeTranscript("ep-1", {
+          raw: `raw-${i}`,
+          ext: "txt",
+          text: `text-${i}`,
+          provenance: PROVENANCE,
+        }),
+      ),
+    );
+    expect(results.filter((r) => !r.alreadyStored)).toHaveLength(1);
+
+    const text = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+    const provenance = JSON.parse(
+      await fs.readFile(path.join(storage.sourceDir("ep-1"), "provenance.json"), "utf8"),
+    ) as StoredProvenance;
+    expect(provenance.contentHash).toBe(createHash("sha256").update(text, "utf8").digest("hex"));
+    const raw = await fs.readFile(
+      path.join(storage.sourceDir("ep-1"), `raw.txt`),
+      "utf8",
+    );
+    expect(raw).toBe(`raw-${text.replace("text-", "")}`);
+
+    const entries = await fs.readdir(path.join(dir, "sources"));
+    expect(entries).toEqual(["ep-1"]);
+  });
+
   it("produces a valid content hash for empty transcript text", async () => {
     const stored = await storage.storeTranscript("ep-1", {
       raw: "",

@@ -98,6 +98,14 @@ export declare class Storage {
      * Store a transcript with its provenance sidecar. Idempotent: if a
      * transcript already exists for the episode, nothing is overwritten — the
      * content hash is computed once, at first write, and is stable thereafter.
+     *
+     * Atomic across concurrent same-episode stores: the artifact triad is
+     * assembled in a private staging directory and published with a single
+     * `rename`, which POSIX guarantees fails (ENOTEMPTY/EEXIST) rather than
+     * merges when the destination is already a populated directory. So a
+     * racing writer can never land only some of its files — either its whole
+     * staged set becomes `dir`, or none of it does and it falls back to
+     * `alreadyStored`.
      */
     storeTranscript(episodeUuid: string, artifact: {
         raw: string;

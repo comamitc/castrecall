@@ -12,7 +12,7 @@
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
@@ -225,6 +225,14 @@ export class Storage {
    * Store a transcript with its provenance sidecar. Idempotent: if a
    * transcript already exists for the episode, nothing is overwritten — the
    * content hash is computed once, at first write, and is stable thereafter.
+   *
+   * Atomic across concurrent same-episode stores: the artifact triad is
+   * assembled in a private staging directory and published with a single
+   * `rename`, which POSIX guarantees fails (ENOTEMPTY/EEXIST) rather than
+   * merges when the destination is already a populated directory. So a
+   * racing writer can never land only some of its files — either its whole
+   * staged set becomes `dir`, or none of it does and it falls back to
+   * `alreadyStored`.
    */
   async storeTranscript(
     episodeUuid: string,
@@ -237,18 +245,32 @@ export class Storage {
     if (await this.hasTranscript(episodeUuid)) {
       return { rawPath, textPath, provenancePath, alreadyStored: true };
     }
-    await fs.mkdir(dir, { recursive: true });
     const contentHash = createHash("sha256").update(artifact.text, "utf8").digest("hex");
     const provenance: StoredProvenance = {
       ...artifact.provenance,
       schemaVersion: SCHEMA_VERSION,
       contentHash,
     };
-    await fs.writeFile(rawPath, artifact.raw, "utf8");
-    await fs.writeFile(provenancePath, `${JSON.stringify(provenance, null, 2)}\n`, "utf8");
-    // transcript.txt last: it is the existence marker for idempotency.
-    await fs.writeFile(textPath, artifact.text, "utf8");
-    return { rawPath, textPath, provenancePath, alreadyStored: false };
+    const stagingDir = `${dir}.tmp-${randomUUID()}`;
+    await fs.mkdir(stagingDir, { recursive: true });
+    try {
+      await fs.writeFile(path.join(stagingDir, path.basename(rawPath)), artifact.raw, "utf8");
+      await fs.writeFile(
+        path.join(stagingDir, "provenance.json"),
+        `${JSON.stringify(provenance, null, 2)}\n`,
+        "utf8",
+      );
+      await fs.writeFile(path.join(stagingDir, "transcript.txt"), artifact.text, "utf8");
+      await fs.rename(stagingDir, dir);
+      return { rawPath, textPath, provenancePath, alreadyStored: false };
+    } catch (error) {
+      await fs.rm(stagingDir, { recursive: true, force: true });
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOTEMPTY" || code === "EEXIST") {
+        return { rawPath, textPath, provenancePath, alreadyStored: true };
+      }
+      throw error;
+    }
   }
 
   reviewCandidatePath(episodeUuid: string): string {
