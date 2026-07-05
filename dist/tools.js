@@ -1,5 +1,5 @@
 /**
- * Implementations behind the five CastRecall tools. Pure functions over
+ * Implementations behind the CastRecall tools. Pure functions over
  * (config, params) so they are testable without the OpenClaw runtime.
  */
 import { createHash } from "node:crypto";
@@ -7,6 +7,7 @@ import { CastrecallSetupError, requirePocketCastsCredentials, } from "./config.j
 import { CorpusExporter } from "./corpus-export.js";
 import { fetchHistory, login } from "./pocketcasts/client.js";
 import { buildReviewCandidate } from "./review.js";
+import { buildSetupPlan, classifyExportDir, detectGbrain, PRIVACY_DEFAULTS, } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { detectLocalWhisper } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
@@ -95,8 +96,9 @@ export async function setupStatus(config, deps = {}) {
     const episodes = Object.values(state.episodes);
     const pendingReviews = await storage.listPendingReviews();
     const stt = sttAvailability(config);
-    const whisper = await detectLocalWhisper(config);
+    const whisper = await detectLocalWhisper(config, deps.env);
     const now = deps.now ?? (() => new Date());
+    const exportStatus = classifyExportDir(config.exportDir);
     const nextEligibleAt = state.sync?.nextEligibleAt;
     const lock = await storage.inspectPipelineLock(now);
     return {
@@ -159,9 +161,57 @@ export async function setupStatus(config, deps = {}) {
             nextEligibleAt: nextEligibleAt ?? null,
             inCooldown: Boolean(nextEligibleAt && now() < new Date(nextEligibleAt)),
         },
+        export: exportStatus,
+        privacyDefaults: {
+            dataDir: config.dataDir,
+            ...PRIVACY_DEFAULTS,
+        },
         privacyModel: "Full transcripts are stored privately under the data dir and are never " +
             "promoted into durable memory by CastRecall. Review candidates in " +
             "review/pending/ require explicit human approval.",
+    };
+}
+/**
+ * Guided first-run setup: reports what's configured/missing/optional and,
+ * with { verify: true } and both credentials present, makes one read-only
+ * Pocket Casts call (login + history fetch) to confirm they work. Never
+ * constructs Storage, never writes to disk, and never returns secret values
+ * or transcript/episode content — only booleans, counts, and plain-language
+ * explanations.
+ */
+export async function setup(config, params = {}, deps = {}) {
+    const whisper = await detectLocalWhisper(config, deps.env);
+    const gbrain = await detectGbrain();
+    const steps = buildSetupPlan(config, { whisper, gbrain });
+    let verify;
+    if (params.verify) {
+        const { email, password } = config.pocketcasts;
+        if (!email || !password) {
+            verify = {
+                ok: false,
+                detail: "Pocket Casts credentials are not configured. Set POCKETCASTS_EMAIL and " +
+                    "POCKETCASTS_PASSWORD first (see the 'pocketcasts' step above).",
+            };
+        }
+        else {
+            const fetchImpl = deps.fetchImpl ?? fetch;
+            try {
+                const token = await login(email, password, fetchImpl);
+                const history = await fetchHistory(token, fetchImpl);
+                verify = { ok: true, sampleCount: history.length };
+            }
+            catch (error) {
+                verify = { ok: false, detail: error instanceof Error ? error.message : String(error) };
+            }
+        }
+    }
+    return {
+        steps,
+        privacyDefaults: {
+            dataDir: config.dataDir,
+            ...PRIVACY_DEFAULTS,
+        },
+        ...(verify ? { verify } : {}),
     };
 }
 export async function syncHistory(config, params, deps = {}) {

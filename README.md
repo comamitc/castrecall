@@ -64,20 +64,22 @@ form above. When CastRecall is published to ClawHub, the install target will be
 
 ## First-run setup
 
-1. Set your Pocket Casts credentials in the environment OpenClaw runs in:
-   ```bash
-   export POCKETCASTS_EMAIL="you@example.com"
-   export POCKETCASTS_PASSWORD="..."
-   ```
-   (See `.env.example` for every variable.)
-2. Optionally configure transcript providers (Taddy, STT — see below).
-3. Ask your agent to run `castrecall_setup_status`. It reports what is and isn't configured — without ever printing secrets — plus data-dir location and counts.
+Ask your agent to run `castrecall_setup` — it walks through everything below instead of you hand-editing config or JSON:
+
+1. **Pocket Casts credentials** — explains what to set (`POCKETCASTS_EMAIL` / `POCKETCASTS_PASSWORD`), the unofficial-API caveat, and the Google/Apple-SSO limitation (those accounts have no password and can't be used). Once set, run `castrecall_setup({ verify: true })` to make one read-only Pocket Casts call confirming they actually work — the result reports success/failure and, on success, how many history entries are visible, never the credential values.
+2. **Storage location** — where transcripts and review candidates live (`CASTRECALL_DATA_DIR`, default `~/.openclaw/castrecall`).
+3. **Privacy defaults** — confirms transcripts are private source material, nothing is ever promoted into durable memory, and corpus export is off unless you opt in.
+4. **Optional providers** — Taddy, local Whisper, and cloud STT, each with what's detected and how to enable it.
+5. **Export directory** — off by default; if a gbrain install is detected (`~/.gbrain/`), `castrecall_setup` suggests its inbox as `CASTRECALL_EXPORT_DIR`.
+
+`castrecall_setup` **never** modifies `openclaw.json` and **never** writes secrets to disk — it only tells you which environment variables to set and where (see `.env.example` for every variable). Re-run `castrecall_setup_status` any time afterward for a compact health report of the same state.
 
 ## Tools
 
 | Tool | What it does |
 | --- | --- |
 | `castrecall_setup_status` | Setup/health report: configured providers, ladder availability, counts. Run first. |
+| `castrecall_setup` | Guided first-run setup: walks through credentials, storage, privacy defaults, optional providers, and export directory. `{ verify: true }` makes a read-only Pocket Casts test call. Never edits config or writes secrets. |
 | `castrecall_sync_history` | Read-only Pocket Casts history sync; records new listens idempotently. |
 | `castrecall_recent` | Lists synced listens with transcript status and episode UUIDs. |
 | `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |

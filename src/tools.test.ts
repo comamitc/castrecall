@@ -5,7 +5,14 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveConfig } from "./config.js";
 import { Storage, type Provenance } from "./storage.js";
-import { fetchTranscript, generateReview, listRecent, setupStatus, syncHistory } from "./tools.js";
+import {
+  fetchTranscript,
+  generateReview,
+  listRecent,
+  setup,
+  setupStatus,
+  syncHistory,
+} from "./tools.js";
 
 const PROVENANCE: Provenance = {
   platform: "pocketcasts",
@@ -66,6 +73,149 @@ describe("tools", () => {
     expect(status.sync.lastError).toContain("HTTP 500");
     expect(status.sync.inCooldown).toBe(true);
     expect(JSON.stringify(status)).not.toContain("hunter2");
+  });
+
+  it("setup_status reports export mode and structured privacy defaults", async () => {
+    const off = (await setupStatus(config(), { env: { PATH: "" } })) as Record<string, any>;
+    expect(off.export).toEqual({ exportDir: null, mode: "off" });
+    expect(off.privacyDefaults.dataDir).toBe(dir);
+    expect(off.privacyDefaults.privacyClass).toBe("private-source");
+    expect(off.privacyDefaults.durableMemory).toContain("never");
+
+    const exportDir = path.join(dir, ".gbrain", "inbox");
+    const on = (await setupStatus(config({ CASTRECALL_EXPORT_DIR: exportDir }), {
+      env: { PATH: "" },
+    })) as Record<string, any>;
+    expect(on.export).toEqual({ exportDir, mode: "gbrain-inbox" });
+  });
+
+  describe("setup", () => {
+    it("returns an ordered plan whose pocketcasts step carries both caveats, with no verify block by default", async () => {
+      const result = (await setup(config(), {}, { env: { PATH: "" } })) as Record<string, any>;
+      expect(result.steps.map((s: any) => s.id)).toEqual([
+        "pocketcasts",
+        "storage",
+        "privacy",
+        "providers.taddy",
+        "providers.localWhisper",
+        "providers.stt",
+        "export",
+      ]);
+      const pocketcasts = result.steps.find((s: any) => s.id === "pocketcasts");
+      expect(pocketcasts.status).toBe("missing");
+      expect(pocketcasts.caveat).toContain("Sign in with Google/Apple");
+      expect(result.privacyDefaults.dataDir).toBe(dir);
+      expect(result.verify).toBeUndefined();
+    });
+
+    it("verify:true with no credentials makes zero fetch calls and reports missing", async () => {
+      let calls = 0;
+      const fetchImpl = (async () => {
+        calls += 1;
+        throw new Error("should never be called");
+      }) as unknown as typeof fetch;
+
+      const result = (await setup(
+        config(),
+        { verify: true },
+        { fetchImpl, env: { PATH: "" } },
+      )) as Record<string, any>;
+      expect(calls).toBe(0);
+      expect(result.verify).toEqual({
+        ok: false,
+        detail: expect.stringContaining("POCKETCASTS_EMAIL"),
+      });
+      expect(result.steps.find((s: any) => s.id === "pocketcasts").status).toBe("missing");
+    });
+
+    it("verify:true with a stubbed fetchImpl calls login then history and reports a sample count only", async () => {
+      const calledUrls: string[] = [];
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        calledUrls.push(url);
+        if (url.endsWith("/user/login")) {
+          return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+        }
+        if (url.endsWith("/user/history")) {
+          return new Response(
+            JSON.stringify({
+              episodes: [
+                { uuid: "ep-1", title: "Secret Episode Title", url: "https://cdn.example.com/ep1.mp3" },
+                { uuid: "ep-2", title: "Another Secret Title", url: "https://cdn.example.com/ep2.mp3" },
+              ],
+            }),
+            { status: 200 },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      const result = (await setup(
+        config({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" }),
+        { verify: true },
+        { fetchImpl, env: { PATH: "" } },
+      )) as Record<string, any>;
+
+      expect(calledUrls.some((u) => u.endsWith("/user/login"))).toBe(true);
+      expect(calledUrls.some((u) => u.endsWith("/user/history"))).toBe(true);
+      expect(result.verify).toEqual({ ok: true, sampleCount: 2 });
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("Secret Episode Title");
+      expect(serialized).not.toContain("Another Secret Title");
+      expect(serialized).not.toContain("a@b.c");
+      expect(serialized).not.toContain("pw");
+    });
+
+    it("verify:true reports failure with the SSO caveat when login is rejected, leaking no secrets", async () => {
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.endsWith("/user/login")) {
+          return new Response(JSON.stringify({ error: "invalid" }), { status: 401 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      const result = (await setup(
+        config({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "wrongpw" }),
+        { verify: true },
+        { fetchImpl, env: { PATH: "" } },
+      )) as Record<string, any>;
+
+      expect(result.verify.ok).toBe(false);
+      expect(result.verify.detail).toContain("Sign in with Google/Apple");
+      const serialized = JSON.stringify(result);
+      expect(serialized).not.toContain("a@b.c");
+      expect(serialized).not.toContain("wrongpw");
+    });
+
+    it("never writes to disk — data dir contents and an openclaw.json sentinel are unchanged", async () => {
+      await fs.mkdir(dir, { recursive: true });
+      const sentinelPath = path.join(dir, "openclaw.json");
+      await fs.writeFile(sentinelPath, '{"sentinel":true}', "utf8");
+      const before = await fs.readdir(dir);
+
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.endsWith("/user/login")) {
+          return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+        }
+        if (url.endsWith("/user/history")) {
+          return new Response(JSON.stringify({ episodes: [] }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      await setup(config(), {}, { env: { PATH: "" } });
+      await setup(
+        config({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" }),
+        { verify: true },
+        { fetchImpl, env: { PATH: "" } },
+      );
+
+      const after = await fs.readdir(dir);
+      expect(after.sort()).toEqual(before.sort());
+      expect(await fs.readFile(sentinelPath, "utf8")).toBe('{"sentinel":true}');
+    });
   });
 
   it("sync_history records new listens via the (stubbed) Pocket Casts API", async () => {

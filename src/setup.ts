@@ -1,0 +1,174 @@
+/**
+ * Pure builder behind the `castrecall_setup` tool: turns resolved config plus
+ * a few pre-detected facts (local Whisper, a gbrain install) into an ordered,
+ * agent-narratable setup plan. No I/O happens here — network calls and
+ * filesystem detection are the caller's job (see setup() in tools.ts) so this
+ * stays deterministic and unit-testable.
+ *
+ * gbrain detection limitation: a CastRecall tool plugin has no reliable,
+ * in-process way to enumerate sibling OpenClaw plugin installs. detectGbrain
+ * therefore only checks for a `~/.gbrain/` directory on disk (the one signal
+ * that's actually testable) — it is a heuristic, not proof the gbrain plugin
+ * is installed.
+ */
+
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { type ResolvedConfig } from "./config.js";
+import { taddyConfigured } from "./transcripts/taddy.js";
+import { sttAvailability } from "./transcripts/stt.js";
+import type { WhisperDetection } from "./transcripts/local-whisper.js";
+
+export type SetupStepStatus = "configured" | "missing" | "optional-off";
+
+export type SetupStep = {
+  id: string;
+  title: string;
+  status: SetupStepStatus;
+  envVars: string[];
+  explanation: string;
+  caveat?: string;
+};
+
+export type GbrainDetection =
+  | { detected: true; suggestedExportDir: string; reason?: undefined }
+  | { detected: false; suggestedExportDir?: undefined; reason: string };
+
+export type ExportMode = "off" | "gbrain-inbox" | "custom";
+
+/** Explicit, confirm-style privacy defaults shown by both setup and setup_status. */
+export const PRIVACY_DEFAULTS = {
+  privacyClass: "private-source",
+  durableMemory:
+    "CastRecall never writes to durable OpenClaw memory. It only generates approval-gated review " +
+    "candidates in review/pending/ — a human decides what, if anything, graduates.",
+  exportDefault: "Corpus export is off unless CASTRECALL_EXPORT_DIR is explicitly set.",
+} as const;
+
+export async function detectGbrain(
+  deps: {
+    homedir?: () => string;
+    access?: (targetPath: string) => Promise<void>;
+  } = {},
+): Promise<GbrainDetection> {
+  const homedir = deps.homedir ?? os.homedir;
+  const access = deps.access ?? ((targetPath: string) => fs.access(targetPath));
+  const gbrainDir = path.join(homedir(), ".gbrain");
+  try {
+    await access(gbrainDir);
+    return { detected: true, suggestedExportDir: path.join(gbrainDir, "inbox") };
+  } catch {
+    return {
+      detected: false,
+      reason:
+        `No ~/.gbrain directory found at ${gbrainDir}. If you use gbrain (or another markdown brain), ` +
+        "point CASTRECALL_EXPORT_DIR at its inbox or sources/ tree yourself — CastRecall cannot " +
+        "otherwise detect a sibling plugin install.",
+    };
+  }
+}
+
+/** True when exportDir is (or ends in) a gbrain-style `.gbrain/inbox` path. */
+function looksLikeGbrainInbox(exportDir: string): boolean {
+  const normalized = exportDir.replace(/[/\\]+$/, "");
+  return normalized.endsWith(path.join(".gbrain", "inbox"));
+}
+
+export function classifyExportDir(exportDir: string | undefined): {
+  exportDir: string | null;
+  mode: ExportMode;
+} {
+  if (!exportDir) return { exportDir: null, mode: "off" };
+  return { exportDir, mode: looksLikeGbrainInbox(exportDir) ? "gbrain-inbox" : "custom" };
+}
+
+export type SetupPlanDeps = {
+  whisper: WhisperDetection;
+  gbrain: GbrainDetection;
+};
+
+export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): SetupStep[] {
+  const credentialsConfigured = Boolean(config.pocketcasts.email && config.pocketcasts.password);
+  const taddyOk = taddyConfigured(config);
+  const stt = sttAvailability(config);
+  const { exportDir, mode } = classifyExportDir(config.exportDir);
+
+  const steps: SetupStep[] = [
+    {
+      id: "pocketcasts",
+      title: "Pocket Casts credentials",
+      status: credentialsConfigured ? "configured" : "missing",
+      envVars: ["POCKETCASTS_EMAIL", "POCKETCASTS_PASSWORD"],
+      explanation:
+        "Read-only access to your Pocket Casts listening history. Set POCKETCASTS_EMAIL and " +
+        "POCKETCASTS_PASSWORD in the environment OpenClaw runs in, then verify with " +
+        "castrecall_setup({ verify: true }).",
+      caveat:
+        "Unofficial API: Pocket Casts has no official public API, so this may break or be blocked " +
+        "without notice, and CastRecall only ever makes read requests with it. Accounts created via " +
+        "'Sign in with Google/Apple' have no password and cannot use this integration until Pocket " +
+        "Casts ships an official API.",
+    },
+    {
+      id: "storage",
+      title: "Storage location",
+      status: "configured",
+      envVars: ["CASTRECALL_DATA_DIR"],
+      explanation:
+        `Transcripts, provenance sidecars, and review candidates are stored privately under ` +
+        `${config.dataDir}. Set CASTRECALL_DATA_DIR before first sync to use a different location.`,
+    },
+    {
+      id: "privacy",
+      title: "Privacy defaults",
+      status: "configured",
+      envVars: [],
+      explanation:
+        `Full transcripts are stored as private source material (privacyClass: ` +
+        `"${PRIVACY_DEFAULTS.privacyClass}"). ${PRIVACY_DEFAULTS.durableMemory} ` +
+        PRIVACY_DEFAULTS.exportDefault,
+    },
+    {
+      id: "providers.taddy",
+      title: "Taddy transcript provider (optional)",
+      status: taddyOk ? "configured" : "optional-off",
+      envVars: ["TADDY_API_KEY", "TADDY_USER_ID"],
+      explanation:
+        "Optional transcript-ladder rung. Free signup at https://taddy.org/developers — podcast-" +
+        "provided transcripts may be available to free accounts; generated/on-demand transcripts use " +
+        "paid Taddy plan credits.",
+    },
+    {
+      id: "providers.localWhisper",
+      title: "Local Whisper (optional, free & fully private)",
+      status: deps.whisper.detected ? "configured" : "optional-off",
+      envVars: ["CASTRECALL_WHISPER_MODEL", "CASTRECALL_WHISPER_COMMAND", "CASTRECALL_DISABLE_LOCAL_WHISPER"],
+      explanation: deps.whisper.detected
+        ? `Detected ${deps.whisper.detected.flavor} on PATH — transcribes locally at no cost and ` +
+          "nothing leaves your machine."
+        : deps.whisper.reason,
+    },
+    {
+      id: "providers.stt",
+      title: "Cloud speech-to-text (optional, costs money)",
+      status: stt.ok ? "configured" : "optional-off",
+      envVars: ["CASTRECALL_ENABLE_STT", "CASTRECALL_STT_PROVIDER", "ASSEMBLYAI_API_KEY", "OPENAI_API_KEY"],
+      explanation: stt.ok ? `Enabled (${config.stt.provider}).` : (stt.reason ?? "Disabled."),
+    },
+    {
+      id: "export",
+      title: "Corpus export (optional)",
+      status: exportDir ? "configured" : "optional-off",
+      envVars: ["CASTRECALL_EXPORT_DIR"],
+      explanation: exportDir
+        ? `Exporting section-split markdown pages to ${exportDir} (mode: ${mode}).`
+        : deps.gbrain.detected
+          ? `Off by default. Detected a gbrain inbox at ${deps.gbrain.suggestedExportDir} — set ` +
+            `CASTRECALL_EXPORT_DIR=${deps.gbrain.suggestedExportDir} to export there.`
+          : `Off by default. Set CASTRECALL_EXPORT_DIR to a markdown inbox or sources/ tree to enable. ${deps.gbrain.reason}`,
+    },
+  ];
+
+  return steps;
+}
