@@ -7,6 +7,7 @@
  * CastRecall only ever calls read endpoints; no playback mutation exists here.
  */
 import { CastrecallSetupError } from "../config.js";
+import { type RetryOptions } from "../retry.js";
 export type FetchLike = typeof fetch;
 export type PocketCastsEpisode = {
     uuid: string;
@@ -34,9 +35,9 @@ export declare class PocketCastsApiError extends Error {
  * The token is held in memory by the caller only; CastRecall never writes
  * credentials or tokens to disk and never includes them in errors or logs.
  */
-export declare function login(email: string, password: string, fetchImpl?: FetchLike): Promise<string>;
+export declare function login(email: string, password: string, fetchImpl?: FetchLike, retry?: RetryOptions): Promise<string>;
 /** Fetch the account's listening history (read-only). Newest first. */
-export declare function fetchHistory(token: string, fetchImpl?: FetchLike): Promise<PocketCastsEpisode[]>;
+export declare function fetchHistory(token: string, fetchImpl?: FetchLike, retry?: RetryOptions): Promise<PocketCastsEpisode[]>;
 /**
  * Decode a JWT's `exp` claim (seconds since epoch) into milliseconds.
  * Returns undefined for anything that isn't a well-formed JWT with a numeric

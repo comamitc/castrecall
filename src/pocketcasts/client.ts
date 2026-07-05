@@ -8,6 +8,7 @@
  */
 
 import { CastrecallSetupError } from "../config.js";
+import { fetchWithRetry, type RetryOptions } from "../retry.js";
 
 const API_BASE = "https://api.pocketcasts.com";
 
@@ -54,14 +55,20 @@ export async function login(
   email: string,
   password: string,
   fetchImpl: FetchLike = fetch,
+  retry: RetryOptions = {},
 ): Promise<string> {
   let response: Response;
   try {
-    response = await fetchImpl(`${API_BASE}/user/login`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email, password, scope: "webplayer" }),
-    });
+    response = await fetchWithRetry(
+      fetchImpl,
+      `${API_BASE}/user/login`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email, password, scope: "webplayer" }),
+      },
+      retry,
+    );
   } catch (error) {
     throw new PocketCastsApiError(
       `Could not reach the Pocket Casts API (${describeNetworkError(error)}). ` +
@@ -102,17 +109,23 @@ export async function login(
 export async function fetchHistory(
   token: string,
   fetchImpl: FetchLike = fetch,
+  retry: RetryOptions = {},
 ): Promise<PocketCastsEpisode[]> {
   let response: Response;
   try {
-    response = await fetchImpl(`${API_BASE}/user/history`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        authorization: `Bearer ${token}`,
+    response = await fetchWithRetry(
+      fetchImpl,
+      `${API_BASE}/user/history`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({}),
       },
-      body: JSON.stringify({}),
-    });
+      retry,
+    );
   } catch (error) {
     throw new PocketCastsApiError(
       `Could not reach the Pocket Casts history endpoint (${describeNetworkError(error)}).`,

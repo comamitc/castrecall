@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { extractTranscriptLinks, findFeedItem } from "./resolver.js";
+import type { FetchLike } from "./pocketcasts/client.js";
+import { extractTranscriptLinks, findFeedItem, resolveFeedUrl } from "./resolver.js";
 import { rankTranscriptLinks } from "./transcripts/rss.js";
+
+const noWaitSleep = async () => {};
 
 const FEED_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
@@ -88,6 +91,34 @@ describe("extractTranscriptLinks", () => {
         rel: undefined,
       },
     ]);
+  });
+});
+
+describe("resolveFeedUrl retry behavior", () => {
+  it("retries a transient feed-export 500 and returns the feed-export URL without ever calling iTunes", async () => {
+    let feedExportCalls = 0;
+    let itunesCalls = 0;
+    const fetchImpl: FetchLike = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("refresh.pocketcasts.com")) {
+        feedExportCalls++;
+        if (feedExportCalls < 2) return new Response("err", { status: 500 });
+        return new Response(
+          JSON.stringify({ result: { "uuid-1": "https://feeds.example.com/show.xml" } }),
+          { status: 200 },
+        );
+      }
+      itunesCalls++;
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }) as FetchLike;
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {
+      sleep: noWaitSleep,
+    });
+
+    expect(feedUrl).toBe("https://feeds.example.com/show.xml");
+    expect(feedExportCalls).toBe(2);
+    expect(itunesCalls).toBe(0);
   });
 });
 

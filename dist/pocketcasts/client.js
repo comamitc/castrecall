@@ -7,6 +7,7 @@
  * CastRecall only ever calls read endpoints; no playback mutation exists here.
  */
 import { CastrecallSetupError } from "../config.js";
+import { fetchWithRetry } from "../retry.js";
 const API_BASE = "https://api.pocketcasts.com";
 export class PocketCastsAuthError extends CastrecallSetupError {
     constructor(message) {
@@ -27,14 +28,14 @@ export class PocketCastsApiError extends Error {
  * The token is held in memory by the caller only; CastRecall never writes
  * credentials or tokens to disk and never includes them in errors or logs.
  */
-export async function login(email, password, fetchImpl = fetch) {
+export async function login(email, password, fetchImpl = fetch, retry = {}) {
     let response;
     try {
-        response = await fetchImpl(`${API_BASE}/user/login`, {
+        response = await fetchWithRetry(fetchImpl, `${API_BASE}/user/login`, {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({ email, password, scope: "webplayer" }),
-        });
+        }, retry);
     }
     catch (error) {
         throw new PocketCastsApiError(`Could not reach the Pocket Casts API (${describeNetworkError(error)}). ` +
@@ -62,17 +63,17 @@ export async function login(email, password, fetchImpl = fetch) {
     return body.token;
 }
 /** Fetch the account's listening history (read-only). Newest first. */
-export async function fetchHistory(token, fetchImpl = fetch) {
+export async function fetchHistory(token, fetchImpl = fetch, retry = {}) {
     let response;
     try {
-        response = await fetchImpl(`${API_BASE}/user/history`, {
+        response = await fetchWithRetry(fetchImpl, `${API_BASE}/user/history`, {
             method: "POST",
             headers: {
                 "content-type": "application/json",
                 authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({}),
-        });
+        }, retry);
     }
     catch (error) {
         throw new PocketCastsApiError(`Could not reach the Pocket Casts history endpoint (${describeNetworkError(error)}).`);
