@@ -19,7 +19,11 @@ import {
   PRIVACY_DEFAULTS,
 } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
-import { detectLocalWhisper } from "./transcripts/local-whisper.js";
+import {
+  WHISPER_CPP_MODEL_MISSING_MESSAGE,
+  detectLocalWhisper,
+  localWhisperReadiness,
+} from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { Storage, type ListenRecord, type Provenance } from "./storage.js";
@@ -182,7 +186,9 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
       rss: "always on (open <podcast:transcript> standard)",
       taddy: taddyConfigured(config) ? "configured" : "not configured (TADDY_API_KEY, TADDY_USER_ID)",
       localWhisper: whisper.detected
-        ? `detected (${whisper.detected.flavor}) — free, private transcription`
+        ? localWhisperReadiness(whisper, config.localWhisper).ready
+          ? `detected (${whisper.detected.flavor}) — free, private transcription`
+          : `detected (${whisper.detected.flavor}) but NOT ready — ${WHISPER_CPP_MODEL_MISSING_MESSAGE}`
         : `unavailable — ${whisper.reason}`,
       stt: stt.ok ? `enabled (${config.stt.provider})` : `off — ${stt.reason}`,
     },

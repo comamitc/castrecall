@@ -7,12 +7,13 @@
  *
  * gbrain detection limitation: a CastRecall tool plugin has no reliable,
  * in-process way to enumerate sibling OpenClaw plugin installs. detectGbrain
- * therefore only checks for a `~/.gbrain/` directory on disk (the one signal
- * that's actually testable) — it is a heuristic, not proof the gbrain plugin
- * is installed.
+ * checks for a `~/.gbrain/` directory on disk (the one signal that's actually
+ * testable), plus CASTRECALL_GBRAIN_INSTALLED as an explicit escape hatch an
+ * agent-driven wrapper can set once it has confirmed the plugin install via
+ * OpenClaw's own plugin inventory — a signal this process cannot see itself.
  */
 import { type ResolvedConfig } from "./config.js";
-import type { WhisperDetection } from "./transcripts/local-whisper.js";
+import { type WhisperDetection } from "./transcripts/local-whisper.js";
 export type SetupStepStatus = "configured" | "missing" | "optional-off";
 export type SetupStep = {
     id: string;
@@ -41,6 +42,7 @@ export declare const PRIVACY_DEFAULTS: {
 export declare function detectGbrain(deps?: {
     homedir?: () => string;
     access?: (targetPath: string) => Promise<void>;
+    env?: NodeJS.ProcessEnv;
 }): Promise<GbrainDetection>;
 export declare function classifyExportDir(exportDir: string | undefined): {
     exportDir: string | null;

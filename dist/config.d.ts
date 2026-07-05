@@ -35,6 +35,7 @@ export type ResolvedConfig = {
         openaiModel: string;
     };
 };
+export declare function envFlag(value: string | undefined): boolean | undefined;
 /**
  * Merge plugin config (non-secret settings) with environment variables.
  * Secrets are env-only by design; they never pass through OpenClaw config.

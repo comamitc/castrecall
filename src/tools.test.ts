@@ -53,6 +53,27 @@ describe("tools", () => {
     expect(status.counts.syncedListens).toBe(0);
   });
 
+  it("setup_status reports whisper.cpp WITHOUT a model as not ready, never as available", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "whisper-cli"), "#!/bin/sh\n", { mode: 0o755 });
+      // Detected on PATH, but no CASTRECALL_WHISPER_MODEL: the rung would
+      // throw on first use, so status must say so up front.
+      const status = (await setupStatus(config(), { env: { PATH: binDir } })) as Record<string, any>;
+      expect(status.transcriptLadder.localWhisper).toContain("NOT ready");
+      expect(status.transcriptLadder.localWhisper).toContain("CASTRECALL_WHISPER_MODEL");
+
+      // With a model configured, the same detection reads as available.
+      const ready = (await setupStatus(
+        config({ CASTRECALL_WHISPER_MODEL: "/models/ggml-base.en.bin" }),
+        { env: { PATH: binDir } },
+      )) as Record<string, any>;
+      expect(ready.transcriptLadder.localWhisper).toContain("free, private transcription");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
   it("sync_history fails fast with an actionable error when credentials are missing", async () => {
     await expect(syncHistory(config(), {})).rejects.toThrowError(/POCKETCASTS_EMAIL/);
   });

@@ -19,7 +19,7 @@ import path from "node:path";
 import { envFlag, type ResolvedConfig } from "./config.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { sttAvailability } from "./transcripts/stt.js";
-import { WHISPER_CPP_MODEL_MISSING_MESSAGE, type WhisperDetection } from "./transcripts/local-whisper.js";
+import { WHISPER_CPP_MODEL_MISSING_MESSAGE, localWhisperReadiness, type WhisperDetection } from "./transcripts/local-whisper.js";
 
 export type SetupStepStatus = "configured" | "missing" | "optional-off";
 
@@ -100,9 +100,10 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
   const taddyOk = taddyConfigured(config);
   const stt = sttAvailability(config);
   const { exportDir, mode } = classifyExportDir(config.exportDir);
-  const whisperNeedsModel =
-    deps.whisper.detected?.flavor === "whisper.cpp" && !config.localWhisper.model;
-  const whisperReady = Boolean(deps.whisper.detected) && !whisperNeedsModel;
+  const { ready: whisperReady, needsModel: whisperNeedsModel } = localWhisperReadiness(
+    deps.whisper,
+    config.localWhisper,
+  );
 
   const steps: SetupStep[] = [
     {

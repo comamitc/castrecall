@@ -7,15 +7,18 @@
  *
  * gbrain detection limitation: a CastRecall tool plugin has no reliable,
  * in-process way to enumerate sibling OpenClaw plugin installs. detectGbrain
- * therefore only checks for a `~/.gbrain/` directory on disk (the one signal
- * that's actually testable) — it is a heuristic, not proof the gbrain plugin
- * is installed.
+ * checks for a `~/.gbrain/` directory on disk (the one signal that's actually
+ * testable), plus CASTRECALL_GBRAIN_INSTALLED as an explicit escape hatch an
+ * agent-driven wrapper can set once it has confirmed the plugin install via
+ * OpenClaw's own plugin inventory — a signal this process cannot see itself.
  */
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { envFlag } from "./config.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { sttAvailability } from "./transcripts/stt.js";
+import { WHISPER_CPP_MODEL_MISSING_MESSAGE, localWhisperReadiness } from "./transcripts/local-whisper.js";
 /** Explicit, confirm-style privacy defaults shown by both setup and setup_status. */
 export const PRIVACY_DEFAULTS = {
     privacyClass: "private-source",
@@ -26,7 +29,11 @@ export const PRIVACY_DEFAULTS = {
 export async function detectGbrain(deps = {}) {
     const homedir = deps.homedir ?? os.homedir;
     const access = deps.access ?? ((targetPath) => fs.access(targetPath));
+    const env = deps.env ?? process.env;
     const gbrainDir = path.join(homedir(), ".gbrain");
+    if (envFlag(env.CASTRECALL_GBRAIN_INSTALLED)) {
+        return { detected: true, suggestedExportDir: path.join(gbrainDir, "inbox") };
+    }
     try {
         await access(gbrainDir);
         return { detected: true, suggestedExportDir: path.join(gbrainDir, "inbox") };
@@ -35,8 +42,9 @@ export async function detectGbrain(deps = {}) {
         return {
             detected: false,
             reason: `No ~/.gbrain directory found at ${gbrainDir}. If you use gbrain (or another markdown brain), ` +
-                "point CASTRECALL_EXPORT_DIR at its inbox or sources/ tree yourself — CastRecall cannot " +
-                "otherwise detect a sibling plugin install.",
+                "point CASTRECALL_EXPORT_DIR at its inbox or sources/ tree yourself. CastRecall cannot " +
+                "otherwise detect a sibling plugin install — if an agent-driven wrapper has already " +
+                "confirmed one via OpenClaw's plugin inventory, set CASTRECALL_GBRAIN_INSTALLED=1.",
         };
     }
 }
@@ -55,6 +63,7 @@ export function buildSetupPlan(config, deps) {
     const taddyOk = taddyConfigured(config);
     const stt = sttAvailability(config);
     const { exportDir, mode } = classifyExportDir(config.exportDir);
+    const { ready: whisperReady, needsModel: whisperNeedsModel } = localWhisperReadiness(deps.whisper, config.localWhisper);
     const steps = [
         {
             id: "pocketcasts",
@@ -98,12 +107,14 @@ export function buildSetupPlan(config, deps) {
         {
             id: "providers.localWhisper",
             title: "Local Whisper (optional, free & fully private)",
-            status: deps.whisper.detected ? "configured" : "optional-off",
+            status: whisperReady ? "configured" : "optional-off",
             envVars: ["CASTRECALL_WHISPER_MODEL", "CASTRECALL_WHISPER_COMMAND", "CASTRECALL_DISABLE_LOCAL_WHISPER"],
-            explanation: deps.whisper.detected
+            explanation: whisperReady
                 ? `Detected ${deps.whisper.detected.flavor} on PATH — transcribes locally at no cost and ` +
                     "nothing leaves your machine."
-                : deps.whisper.reason,
+                : whisperNeedsModel
+                    ? `Detected whisper.cpp on PATH, but it's not ready yet: ${WHISPER_CPP_MODEL_MISSING_MESSAGE}`
+                    : deps.whisper.reason,
         },
         {
             id: "providers.stt",

@@ -40,6 +40,21 @@ export const WHISPER_CPP_MODEL_MISSING_MESSAGE =
   "whisper.cpp needs a ggml model file. Set CASTRECALL_WHISPER_MODEL=/path/to/ggml-<size>.bin " +
   "(download one with whisper.cpp's models script or from Hugging Face ggerganov/whisper.cpp).";
 
+/**
+ * Single source of truth for whether the local Whisper rung can actually RUN
+ * (not merely whether a binary was detected): whisper.cpp additionally needs
+ * a ggml model via CASTRECALL_WHISPER_MODEL. Status surfaces must use this,
+ * never raw detection, or they report "ready" for a rung that will throw.
+ */
+export function localWhisperReadiness(
+  detection: WhisperDetection,
+  localWhisperConfig: { model?: string },
+): { ready: boolean; needsModel: boolean } {
+  const needsModel =
+    detection.detected?.flavor === "whisper.cpp" && !localWhisperConfig.model;
+  return { ready: Boolean(detection.detected) && !needsModel, needsModel };
+}
+
 export type ExecResult = { code: number | null; stdout: string; stderr: string };
 export type ExecImpl = (argv: string[], options: { timeoutMs: number }) => Promise<ExecResult>;
 

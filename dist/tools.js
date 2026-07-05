@@ -9,7 +9,7 @@ import { fetchHistory, login } from "./pocketcasts/client.js";
 import { buildReviewCandidate } from "./review.js";
 import { buildSetupPlan, classifyExportDir, detectGbrain, PRIVACY_DEFAULTS, } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
-import { detectLocalWhisper } from "./transcripts/local-whisper.js";
+import { WHISPER_CPP_MODEL_MISSING_MESSAGE, detectLocalWhisper, localWhisperReadiness, } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { Storage } from "./storage.js";
@@ -139,7 +139,9 @@ export async function setupStatus(config, deps = {}) {
             rss: "always on (open <podcast:transcript> standard)",
             taddy: taddyConfigured(config) ? "configured" : "not configured (TADDY_API_KEY, TADDY_USER_ID)",
             localWhisper: whisper.detected
-                ? `detected (${whisper.detected.flavor}) — free, private transcription`
+                ? localWhisperReadiness(whisper, config.localWhisper).ready
+                    ? `detected (${whisper.detected.flavor}) — free, private transcription`
+                    : `detected (${whisper.detected.flavor}) but NOT ready — ${WHISPER_CPP_MODEL_MISSING_MESSAGE}`
                 : `unavailable — ${whisper.reason}`,
             stt: stt.ok ? `enabled (${config.stt.provider})` : `off — ${stt.reason}`,
         },
@@ -181,7 +183,7 @@ export async function setupStatus(config, deps = {}) {
  */
 export async function setup(config, params = {}, deps = {}) {
     const whisper = await detectLocalWhisper(config, deps.env);
-    const gbrain = await detectGbrain();
+    const gbrain = await detectGbrain({ env: deps.env });
     const steps = buildSetupPlan(config, { whisper, gbrain });
     let verify;
     if (params.verify) {
