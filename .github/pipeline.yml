@@ -18,11 +18,11 @@ ci_poll_interval: 30 # seconds between CI status polls
 ci_no_run_grace_s: 60 # seconds to wait before checking for zero check-runs when CI appears pending; set to 0 to check immediately
 ci_mode: github # github (default): wait for GitHub Actions check-runs; local: rely on the current run's local test-gate result and skip the GitHub Actions wait
 
-# models: # per-phase model alias — only honored when the role's harness is claude; codex ignores it (setting an inert one prints a warning). Uncomment to override.
-#   planning: sonnet # implementer harness
-#   implementing: sonnet # implementer harness
-#   review: opus # reviewer harness
-#   fix: sonnet # implementer harness
+models: # per-phase model alias — only honored when the role's harness is claude; codex ignores it (setting an inert one prints a warning).
+  planning: opus # implementer harness
+  implementing: sonnet # implementer harness
+  review: sonnet # reviewer harness
+  fix: sonnet # implementer harness
 #   intake: sonnet # intake spec-generation — always the claude harness (never inert)
 #   sweep: sonnet # sweep spec-generation — always the claude harness (never inert)
 
