@@ -33,6 +33,16 @@ Use it with those expectations.
 - **Credentials are env-only** and never logged, stored, echoed in errors, or passed through plugin config.
 - Transcripts of published podcasts can still be copyrighted material — keeping them as private source data (rather than republishing or promoting them wholesale) is the intended use.
 
+## CastRecall in the brain ecosystem
+
+CastRecall is a **raw-source pipeline**, not a knowledge base of its own. It produces two lanes: immutable, provenance-bearing transcripts (the source layer) and approval-gated review candidates (curation input for a human to promote or discard). Neither lane is meant to be queried directly as "memory" — they're inputs to whatever markdown-based knowledge system you curate on top.
+
+This mirrors [gbrain](https://github.com/garrytan/gbrain)'s own architecture exactly: an immutable `sources/` tree feeding agent-compiled brain pages. The same split applies just as well to Obsidian vaults, Karpathy-style personal wikis, or any other custom markdown corpus — CastRecall doesn't assume gbrain, it just happens to line up with it.
+
+### Using CastRecall with gbrain
+
+Once corpus-export mode is enabled, CastRecall's exported pages can reach a gbrain instance in one of two ways: dropped into gbrain's **watched inbox** for automatic pickup, or written directly into a brain's **`sources/` tree**, where each show's slug becomes its own two-segment prefix — which gbrain's LSD/brainstorm far-set selection treats as an automatic domain-bank bucket. See [Corpus export (gbrain & other markdown brains)](#corpus-export-gbrain--other-markdown-brains) below for the exact `CASTRECALL_EXPORT_DIR` setup and layout.
+
 ## Install
 
 ```bash
