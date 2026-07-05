@@ -144,12 +144,15 @@ export declare class Storage {
         staleLockAgeMs?: number;
     }>;
     /**
-     * Explicit recovery from a crashed run's leftover lock. Removes the lock
-     * ONLY if it is still stale at call time, then attempts a normal exclusive
-     * acquire. This is a manual override for a human (or a human-approved
-     * agent step) after confirming no run is alive — it must never be called
-     * from a scheduler, because remove-then-create is not atomic and two
-     * concurrent breakers could race. The scheduled path stays fail-closed.
+     * Explicit recovery from a crashed run's leftover lock. Serialized behind
+     * an UNSTEALABLE recovery mutex (exclusive-create, no TTL, no takeover):
+     * two concurrent recoveries cannot both proceed, so the re-checked stale
+     * lock cannot be swapped for a fresh one between the check and the
+     * removal. A crashed recovery leaves the mutex behind and every later
+     * recovery fails closed with the manual remediation — by design, the
+     * failure mode is "a human removes one file", never "two runs proceed".
+     * Throws CastrecallSetupError when recovery is blocked; must never be
+     * called from a scheduler.
      */
     breakStaleLock(now?: () => Date): Promise<{
         acquired: true;
@@ -157,6 +160,18 @@ export declare class Storage {
     } | {
         acquired: false;
         staleLockAgeMs?: number;
+    }>;
+    /**
+     * Read-only lock health for status surfaces: whether a run lock exists,
+     * its age, and whether it reads as stale (heartbeat stopped > LOCK_TTL_MS
+     * ago — a hard-killed run).
+     */
+    inspectPipelineLock(now?: () => Date): Promise<{
+        held: false;
+    } | {
+        held: true;
+        ageMs: number;
+        stale: boolean;
     }>;
     /**
      * Exclusive-create the lock file and stamp its mtime from the caller's

@@ -134,8 +134,26 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
   const whisper = await detectLocalWhisper(config);
   const now = deps.now ?? (() => new Date());
   const nextEligibleAt = state.sync?.nextEligibleAt;
+  const lock = await storage.inspectPipelineLock(now);
   return {
     dataDir: config.dataDir,
+    // Lock health is read straight from the lock file, so a hard-killed run
+    // is visible here even though it never got to write anything to state.
+    pipelineLock: lock.held
+      ? {
+          held: true,
+          ageMinutes: Math.round(lock.ageMs / 60_000),
+          stale: lock.stale,
+          ...(lock.stale
+            ? {
+                note:
+                  "Stale lock: a run was hard-killed. Scheduled runs are skipping (fail-closed). " +
+                  "After confirming no run is alive, recover with castrecall_run_pipeline " +
+                  "{ breakStaleLock: true }.",
+              }
+            : {}),
+        }
+      : { held: false },
     pocketcasts: {
       credentialsConfigured: Boolean(config.pocketcasts.email && config.pocketcasts.password),
       note: "Unofficial API — read-only history access only. May break without notice.",

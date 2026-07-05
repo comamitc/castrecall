@@ -28,7 +28,15 @@ export async function runPipeline(config, params = {}, deps = {}) {
     let lock = await storage.acquirePipelineLock(now);
     if (!lock.acquired && lock.staleLockAgeMs !== undefined && params.breakStaleLock) {
         // Explicit human-approved recovery only — never from a scheduler.
-        lock = await storage.breakStaleLock(now);
+        try {
+            lock = await storage.breakStaleLock(now);
+        }
+        catch (error) {
+            if (error instanceof CastrecallSetupError) {
+                return { skipped: "recovery-blocked", note: error.message };
+            }
+            throw error;
+        }
     }
     if (!lock.acquired) {
         if (lock.staleLockAgeMs !== undefined) {
@@ -43,8 +51,17 @@ export async function runPipeline(config, params = {}, deps = {}) {
         }
         return { skipped: "locked", note: "Another pipeline run holds the lock; this run is a no-op." };
     }
+    // If a renewal ever fails, this run no longer owns the lock (released or
+    // explicitly broken by a human recovery while this process was suspended).
+    // The loops below check the flag at each episode boundary and bail so two
+    // runs never work concurrently for longer than one in-flight episode.
+    let lockLost = false;
+    const heldToken = lock.token;
     const heartbeat = setInterval(() => {
-        void storage.renewPipelineLock(lock.token, now);
+        void storage.renewPipelineLock(heldToken, now).then((renewed) => {
+            if (!renewed)
+                lockLost = true;
+        });
     }, LOCK_HEARTBEAT_INTERVAL_MS);
     heartbeat.unref?.();
     try {
@@ -87,6 +104,8 @@ export async function runPipeline(config, params = {}, deps = {}) {
         let failed = 0;
         const errors = [];
         for (const episode of pendingTranscripts) {
+            if (lockLost)
+                break;
             try {
                 const result = (await fetchTranscript(config, { episodeUuid: episode.uuid }, deps));
                 if (result.status === "stored" || result.status === "already-stored") {
@@ -120,6 +139,8 @@ export async function runPipeline(config, params = {}, deps = {}) {
         if (config.exportDir) {
             const exportTargets = Object.values(stateAfterTranscripts.episodes).filter((episode) => episode.transcriptStatus === "stored");
             for (const episode of exportTargets) {
+                if (lockLost)
+                    break;
                 const result = await exportAndRecord(config, storage, episode, now);
                 if (result && "error" in result) {
                     errors.push({ stage: "export", episodeUuid: episode.uuid, error: result.error });
@@ -135,6 +156,8 @@ export async function runPipeline(config, params = {}, deps = {}) {
         let generated = 0;
         let skipped = 0;
         for (const episodeUuid of reviewTargets) {
+            if (lockLost)
+                break;
             try {
                 const result = (await generateReview(config, { episodeUuid }, deps));
                 generated += result.generated.length;
@@ -152,10 +175,18 @@ export async function runPipeline(config, params = {}, deps = {}) {
             ...(config.exportDir ? { exports: { exported } } : {}),
             reviews: { generated, skipped },
             ...(errors.length > 0 ? { errors } : {}),
+            ...(lockLost
+                ? {
+                    aborted: "lock-lost",
+                    note: "The run lock was lost mid-run (released or broken by an explicit recovery while " +
+                        "this process was suspended); remaining work was left for the next scheduled run.",
+                }
+                : {}),
         };
     }
     finally {
         clearInterval(heartbeat);
-        await storage.releasePipelineLock(lock.token);
+        if (!lockLost)
+            await storage.releasePipelineLock(lock.token);
     }
 }

@@ -14,6 +14,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { CastrecallSetupError } from "./config.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
  * shape). Bump only for breaking changes; new fields are additive within a
@@ -173,24 +174,65 @@ export class Storage {
         return { acquired: false };
     }
     /**
-     * Explicit recovery from a crashed run's leftover lock. Removes the lock
-     * ONLY if it is still stale at call time, then attempts a normal exclusive
-     * acquire. This is a manual override for a human (or a human-approved
-     * agent step) after confirming no run is alive — it must never be called
-     * from a scheduler, because remove-then-create is not atomic and two
-     * concurrent breakers could race. The scheduled path stays fail-closed.
+     * Explicit recovery from a crashed run's leftover lock. Serialized behind
+     * an UNSTEALABLE recovery mutex (exclusive-create, no TTL, no takeover):
+     * two concurrent recoveries cannot both proceed, so the re-checked stale
+     * lock cannot be swapped for a fresh one between the check and the
+     * removal. A crashed recovery leaves the mutex behind and every later
+     * recovery fails closed with the manual remediation — by design, the
+     * failure mode is "a human removes one file", never "two runs proceed".
+     * Throws CastrecallSetupError when recovery is blocked; must never be
+     * called from a scheduler.
      */
     async breakStaleLock(now = () => new Date()) {
+        const recoveryMutexPath = `${this.lockPath}.recovery`;
         try {
-            const age = now().getTime() - (await fs.stat(this.lockPath)).mtimeMs;
-            if (age <= LOCK_TTL_MS)
-                return { acquired: false }; // live again — refuse
-            await fs.rm(this.lockPath, { force: true });
+            await fs.writeFile(recoveryMutexPath, new Date().toISOString(), {
+                encoding: "utf8",
+                flag: "wx",
+            });
+        }
+        catch (error) {
+            if (error.code !== "EEXIST")
+                throw error;
+            throw new CastrecallSetupError(`Stale-lock recovery is blocked: ${recoveryMutexPath} exists, which means another ` +
+                "recovery is in progress or a previous recovery was hard-killed. After confirming no " +
+                "recovery is running, remove that file manually and retry.");
+        }
+        try {
+            try {
+                const age = now().getTime() - (await fs.stat(this.lockPath)).mtimeMs;
+                if (age <= LOCK_TTL_MS)
+                    return { acquired: false }; // live again — refuse
+                // Under the mutex this removal cannot race another recovery, and
+                // ordinary acquirers never replace an existing lock, so what we
+                // re-checked is what we remove.
+                await fs.rm(this.lockPath, { force: true });
+            }
+            catch {
+                // Lock already gone — fall through to a normal acquire.
+            }
+            // Plain exclusive acquire: if a scheduled run slips in first, we lose
+            // cleanly (single-holder invariant holds either way).
+            return await this.acquirePipelineLock(now);
+        }
+        finally {
+            await fs.rm(recoveryMutexPath, { force: true });
+        }
+    }
+    /**
+     * Read-only lock health for status surfaces: whether a run lock exists,
+     * its age, and whether it reads as stale (heartbeat stopped > LOCK_TTL_MS
+     * ago — a hard-killed run).
+     */
+    async inspectPipelineLock(now = () => new Date()) {
+        try {
+            const ageMs = now().getTime() - (await fs.stat(this.lockPath)).mtimeMs;
+            return { held: true, ageMs, stale: ageMs > LOCK_TTL_MS };
         }
         catch {
-            // Lock already gone — fall through to a normal acquire.
+            return { held: false };
         }
-        return this.acquirePipelineLock(now);
     }
     /**
      * Exclusive-create the lock file and stamp its mtime from the caller's

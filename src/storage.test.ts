@@ -339,6 +339,39 @@ describe("Storage", () => {
     expect(refused.acquired).toBe(false);
   });
 
+  it("breakStaleLock is serialized: a held/crashed recovery mutex fails closed with remediation", async () => {
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(crashed.acquired).toBe(true);
+
+    // Simulate a concurrent (or hard-killed) recovery holding the mutex.
+    const recoveryMutex = path.join(dir, ".staging", "pipeline.lock.recovery");
+    await fs.writeFile(recoveryMutex, new Date().toISOString(), "utf8");
+    await expect(storage.breakStaleLock(() => new Date())).rejects.toThrow(/remove that file manually/);
+    // The blocked recovery touched nothing: the stale lock is still there.
+    await expect(fs.stat(path.join(dir, ".staging", "pipeline.lock"))).resolves.toBeTruthy();
+
+    // After manual mutex removal, recovery works and cleans up after itself.
+    await fs.rm(recoveryMutex);
+    const broken = await storage.breakStaleLock(() => new Date());
+    expect(broken.acquired).toBe(true);
+    await expect(fs.stat(recoveryMutex)).rejects.toThrow();
+  });
+
+  it("inspectPipelineLock reports held/stale without touching the lock", async () => {
+    expect(await storage.inspectPipelineLock()).toEqual({ held: false });
+
+    const staleAcquiredAt = new Date(Date.now() - LOCK_TTL_MS - 60_000);
+    const crashed = await storage.acquirePipelineLock(() => staleAcquiredAt);
+    expect(crashed.acquired).toBe(true);
+
+    const inspected = await storage.inspectPipelineLock(() => new Date());
+    expect(inspected).toMatchObject({ held: true, stale: true });
+    // Inspection is read-only: the lock file is still present and unchanged.
+    const again = await storage.inspectPipelineLock(() => new Date());
+    expect(again).toMatchObject({ held: true, stale: true });
+  });
+
   it("does not report a lock younger than LOCK_TTL_MS as stale", async () => {
     const recentAcquiredAt = new Date(Date.now() - (LOCK_TTL_MS - 1_000));
     const first = await storage.acquirePipelineLock(() => recentAcquiredAt);
