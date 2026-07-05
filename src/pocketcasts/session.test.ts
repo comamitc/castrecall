@@ -262,6 +262,40 @@ describe("session", () => {
     expect(loginCalls).toBe(1);
   });
 
+  it("does not share an in-flight login across different credentials (rotation mid-login)", async () => {
+    const configA = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw-a" });
+    const configB = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw-b" });
+    const loginCalls: Record<string, number> = { "pw-a": 0, "pw-b": 0 };
+    let resolveA!: (response: Response) => void;
+    let resolveB!: (response: Response) => void;
+    const responseA = new Promise<Response>((resolve) => {
+      resolveA = resolve;
+    });
+    const responseB = new Promise<Response>((resolve) => {
+      resolveB = resolve;
+    });
+    const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/user/login")) {
+        const { password } = JSON.parse(String(init?.body)) as { password: string };
+        loginCalls[password] = (loginCalls[password] ?? 0) + 1;
+        return password === "pw-a" ? responseA : responseB;
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const tokenA = getPocketCastsToken(configA, { fetchImpl, env: { PATH: "" } });
+    const tokenB = getPocketCastsToken(configB, { fetchImpl, env: { PATH: "" } });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    resolveA(new Response(JSON.stringify({ token: "tok-a" }), { status: 200 }));
+    resolveB(new Response(JSON.stringify({ token: "tok-b" }), { status: 200 }));
+
+    expect(await tokenA).toBe("tok-a");
+    expect(await tokenB).toBe("tok-b");
+    expect(loginCalls["pw-a"]).toBe(1);
+    expect(loginCalls["pw-b"]).toBe(1);
+  });
+
   describe("401 invalidation", () => {
     function authFlipFetch() {
       const counts = { login: 0, history: 0 };

@@ -251,6 +251,53 @@ describe("tools", () => {
       expect(after.sort()).toEqual(before.sort());
       expect(await fs.readFile(sentinelPath, "utf8")).toBe('{"sentinel":true}');
     });
+
+    it("verify:true never persists a durable session token to the keychain", async () => {
+      const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-keychain-bin-"));
+      try {
+        await fs.writeFile(path.join(binDir, "security"), "#!/bin/sh\n", { mode: 0o755 });
+        const store = new Map<string, string>();
+        const writes: string[] = [];
+        const execImpl: ExecImpl = async (argv) => {
+          const action = argv[1];
+          const account = argv[argv.indexOf("-a") + 1];
+          if (action === "find-generic-password") {
+            const value = store.get(account);
+            return value === undefined
+              ? { code: 44, stdout: "", stderr: "not found" }
+              : { code: 0, stdout: `${value}\n`, stderr: "" };
+          }
+          if (action === "add-generic-password") {
+            writes.push(account);
+            store.set(account, argv[argv.indexOf("-w") + 1]);
+            return { code: 0, stdout: "", stderr: "" };
+          }
+          throw new Error(`unexpected argv: ${argv.join(" ")}`);
+        };
+
+        const fetchImpl = (async (input: any) => {
+          const url = String(input);
+          if (url.endsWith("/user/login")) {
+            return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+          }
+          if (url.endsWith("/user/history")) {
+            return new Response(JSON.stringify({ episodes: [] }), { status: 200 });
+          }
+          throw new Error(`unexpected fetch: ${url}`);
+        }) as typeof fetch;
+
+        const result = (await setup(
+          config({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" }),
+          { verify: true },
+          { fetchImpl, execImpl, env: { PATH: binDir }, platform: "darwin" },
+        )) as Record<string, any>;
+
+        expect(result.verify).toEqual({ ok: true, sampleCount: 0 });
+        expect(writes).toEqual([]);
+      } finally {
+        await fs.rm(binDir, { recursive: true, force: true });
+      }
+    });
   });
 
   it("sync_history records new listens via the (stubbed) Pocket Casts API", async () => {

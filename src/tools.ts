@@ -279,7 +279,7 @@ export async function setup(
       };
     } else {
       try {
-        const history = await fetchHistoryWithSession(config, deps);
+        const history = await fetchHistoryWithSession(config, { ...deps, skipTokenPersist: true });
         verify = { ok: true, sampleCount: history.length };
       } catch (error) {
         verify = { ok: false, detail: error instanceof Error ? error.message : String(error) };

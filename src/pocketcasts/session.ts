@@ -46,6 +46,8 @@ export type SessionDeps = {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   now?: () => Date;
+  /** Skip the durable keychain write on login — the token still lives in the in-memory cache. */
+  skipTokenPersist?: boolean;
 };
 
 export type CredentialSource = "keychain" | "env" | "none";
@@ -64,7 +66,7 @@ type CachedToken = {
 type TokenRecord = { token: string; expiresAt: number; credentialHash: string };
 
 let cache: CachedToken | undefined;
-let inFlightLogin: Promise<string> | undefined;
+let inFlightLogin: { service: string; credentialHash: string; promise: Promise<string> } | undefined;
 
 /** Test isolation: resets the in-memory token cache and any in-flight login. */
 export function clearPocketCastsSessionCache(): void {
@@ -172,14 +174,19 @@ async function loginAndCache(
   const token = await login(email, password, deps.fetchImpl);
   const expiresAt = parseTokenExpiry(token) ?? nowMs + DEFAULT_TOKEN_TTL_MS;
   cache = { service: config.secrets.service, credentialHash: hash, token, expiresAt };
-  await persistTokenToKeychain(config, deps, hash, token, expiresAt);
+  if (!deps.skipTokenPersist) {
+    await persistTokenToKeychain(config, deps, hash, token, expiresAt);
+  }
   return token;
 }
 
 /**
  * Resolve credentials and return a valid session token, reusing the
  * in-memory cache or a durable keychain token record before logging in
- * fresh. Concurrent callers share one in-flight login (single-flight).
+ * fresh. Concurrent callers for the same service + credentialHash share one
+ * in-flight login (single-flight); a different service or rotated
+ * credentials starts a separate login rather than reusing another
+ * context's in-flight promise.
  * `forceLogin` skips both cache lookups — used only by fetchHistoryWithSession's
  * post-401 retry, so a stale keychain record can never absorb that retry.
  */
@@ -214,12 +221,17 @@ export async function getPocketCastsToken(
     if (fromKeychain) return fromKeychain;
   }
 
-  if (!inFlightLogin) {
-    inFlightLogin = loginAndCache(config, deps, email, password, hash, nowMs).finally(() => {
-      inFlightLogin = undefined;
+  if (
+    !inFlightLogin ||
+    inFlightLogin.service !== config.secrets.service ||
+    inFlightLogin.credentialHash !== hash
+  ) {
+    const promise = loginAndCache(config, deps, email, password, hash, nowMs).finally(() => {
+      if (inFlightLogin?.promise === promise) inFlightLogin = undefined;
     });
+    inFlightLogin = { service: config.secrets.service, credentialHash: hash, promise };
   }
-  return inFlightLogin;
+  return inFlightLogin.promise;
 }
 
 /**
