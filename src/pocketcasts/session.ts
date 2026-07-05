@@ -214,20 +214,22 @@ export async function getPocketCastsToken(
   const nowMs = (deps.now ?? (() => new Date()))().getTime();
 
   if (!forceLogin) {
+    const entry = cache;
     if (
-      cache &&
-      cache.service === config.secrets.service &&
-      cache.credentialHash === hash &&
-      nowMs + TOKEN_EXPIRY_SKEW_MS < cache.expiresAt
+      entry &&
+      entry.service === config.secrets.service &&
+      entry.credentialHash === hash &&
+      nowMs + TOKEN_EXPIRY_SKEW_MS < entry.expiresAt
     ) {
       // A verification login may have seeded this token without a durable
       // write; the first non-skip caller persists it so a process restart
-      // does not force a fresh password login.
-      if (!cache.persisted && !deps.skipTokenPersist) {
-        await persistTokenToKeychain(config, deps, hash, cache.token, cache.expiresAt);
-        cache.persisted = true;
-      }
-      return cache.token;
+      // does not force a fresh password login. Everything below operates on
+      // the CAPTURED entry, never the module global: during the persist
+      // await, a 401 invalidation or another credential context may replace
+      // `cache`, and re-reading it here could throw or return a token for
+      // credentials other than the ones this caller resolved.
+      await upgradeToPersisted(config, deps, entry);
+      return entry.token;
     }
     const fromKeychain = await readCachedTokenFromKeychain(config, deps, hash, nowMs);
     if (fromKeychain) return fromKeychain;
@@ -241,7 +243,37 @@ export async function getPocketCastsToken(
     });
     inFlightLogins.set(flightKey, flight);
   }
-  return flight;
+  const token = await flight;
+  // A non-skip caller that joined a flight started by setup verification
+  // (skipTokenPersist) would otherwise return a token that was never written
+  // durably — the shared login used the FIRST caller's deps. Upgrade the
+  // cached entry to persisted if it is the one this flight produced.
+  const settled = cache;
+  if (
+    settled &&
+    settled.service === config.secrets.service &&
+    settled.credentialHash === hash &&
+    settled.token === token
+  ) {
+    await upgradeToPersisted(config, deps, settled);
+  }
+  return token;
+}
+
+/**
+ * Persist a cached-but-unpersisted token for a non-skip caller. Operates on
+ * a captured entry (never the module-global `cache`) so concurrent
+ * invalidation/replacement can't misdirect the flag or the write; marking a
+ * since-replaced entry is harmless because nothing reads it anymore.
+ */
+async function upgradeToPersisted(
+  config: ResolvedConfig,
+  deps: SessionDeps,
+  entry: CachedToken,
+): Promise<void> {
+  if (entry.persisted || deps.skipTokenPersist) return;
+  await persistTokenToKeychain(config, deps, entry.credentialHash, entry.token, entry.expiresAt);
+  entry.persisted = true;
 }
 
 /**

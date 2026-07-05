@@ -440,6 +440,83 @@ describe("session", () => {
       expect(counts.login).toBe(1);
     });
 
+    it("a sync joining an in-flight verification login still persists the token durably", async () => {
+      const { execImpl, calls } = createKeychainExec({});
+      const config = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
+      // A login endpoint that hangs until released, so both callers join one flight.
+      let releaseLogin!: () => void;
+      const gate = new Promise<void>((resolve) => (releaseLogin = resolve));
+      const counts = { login: 0 };
+      const fetchImpl = (async (input: unknown) => {
+        const url = String(input);
+        if (url.endsWith("/user/login")) {
+          counts.login += 1;
+          await gate;
+          return new Response(JSON.stringify({ token: "tok-shared" }), { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+      const deps = { fetchImpl, execImpl, env: { PATH: binDir }, platform: "darwin" as const };
+
+      // Verification starts the flight with skipTokenPersist...
+      const verify = getPocketCastsToken(config, { ...deps, skipTokenPersist: true });
+      // ...and a real sync joins the SAME flight before it resolves. Give the
+      // joiner time to pass its (fast, local) credential/keychain awaits and
+      // reach the flight map before the login gate opens.
+      const sync = getPocketCastsToken(config, deps);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      releaseLogin();
+      expect(await verify).toBe("tok-shared");
+      expect(await sync).toBe("tok-shared");
+      expect(counts.login).toBe(1); // single-flight held
+
+      // The non-skip joiner upgraded the shared token to durable persistence.
+      const tokenWrites = calls.filter(
+        (c) => c[1] === "add-generic-password" && c.includes("pocketcasts-token"),
+      );
+      expect(tokenWrites).toHaveLength(1);
+    });
+
+    it("cache invalidation during the persistence await neither throws nor misdirects", async () => {
+      const config = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
+      const { fetchImpl } = loginFetch();
+      // Keychain writes hang until released, so we can clear the cache mid-persist.
+      let releaseWrite!: () => void;
+      const writeGate = new Promise<void>((resolve) => (releaseWrite = resolve));
+      let notifyWriteStarted!: () => void;
+      const writeStarted = new Promise<void>((resolve) => (notifyWriteStarted = resolve));
+      const store = new Map<string, string>();
+      const execImpl: ExecImpl = async (argv) => {
+        if (argv[1] === "find-generic-password") {
+          const account = argv[argv.indexOf("-a") + 1];
+          const value = store.get(account);
+          return value === undefined
+            ? { code: 44, stdout: "", stderr: "" }
+            : { code: 0, stdout: `${value}\n`, stderr: "" };
+        }
+        if (argv[1] === "add-generic-password") {
+          notifyWriteStarted();
+          await writeGate;
+          store.set(argv[argv.indexOf("-a") + 1], argv[argv.indexOf("-w") + 1]);
+          return { code: 0, stdout: "", stderr: "" };
+        }
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const deps = { fetchImpl, execImpl, env: { PATH: binDir }, platform: "darwin" as const };
+
+      // Seed an unpersisted cached token via verification (no keychain write attempted).
+      await getPocketCastsToken(config, { ...deps, skipTokenPersist: true });
+
+      // A real call enters the persistence await...
+      const pending = getPocketCastsToken(config, deps);
+      await writeStarted; // it is now inside the keychain write
+      // ...and the cache is invalidated underneath it (as a 401 handler would).
+      clearPocketCastsSessionCache();
+      releaseWrite();
+      // The captured entry keeps the call safe: original token, no throw.
+      expect(await pending).toBe("tok-1");
+    });
+
     it("reuses a token record from the keychain across process-lifetime cache misses", async () => {
       const { execImpl, calls } = createKeychainExec({});
       const config = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
