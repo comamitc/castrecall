@@ -68,7 +68,13 @@ sources/<episodeUuid>/
   transcript.txt
   provenance.json
 review/pending/<episodeUuid>.md
+.staging/          # reserved: in-flight atomic writes — consumers must ignore it
 ```
+
+`.staging/` is CastRecall's private scratch namespace: transcript artifacts are
+assembled there and published into `sources/` with a single atomic rename, so a
+directory that exists under `sources/` is always complete. Downstream scans
+must skip `.staging/` (and any future dot-prefixed top-level entry).
 
 ### `provenance.json` fields
 

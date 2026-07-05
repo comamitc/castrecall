@@ -246,6 +246,38 @@ describe("Storage", () => {
     expect(await fs.readFile(path.join(legacyDir, "raw.txt"), "utf8")).toBe("raw");
   });
 
+  it("stages writes outside sources/ so downstream scans never see partial entries", async () => {
+    // Success path leaves nothing behind in either namespace.
+    await storage.storeTranscript("ep-1", {
+      raw: "raw",
+      ext: "txt",
+      text: "text",
+      provenance: PROVENANCE,
+    });
+    const sourcesEntries = await fs.readdir(path.join(dir, "sources"));
+    expect(sourcesEntries).toEqual(["ep-1"]);
+
+    // Failure path (stale partial dir blocks publish) must also leave the
+    // sources/ namespace clean of temp entries — staging lives in .staging/.
+    const partial = storage.sourceDir("ep-2");
+    await fs.mkdir(partial, { recursive: true });
+    await fs.writeFile(path.join(partial, "raw.txt"), "raw", "utf8");
+    await expect(
+      storage.storeTranscript("ep-2", {
+        raw: "raw",
+        ext: "txt",
+        text: "text",
+        provenance: { ...PROVENANCE, episodeUuid: "ep-2" },
+      }),
+    ).rejects.toThrow(/missing transcript\.txt/);
+    const after = await fs.readdir(path.join(dir, "sources"));
+    expect(after.sort()).toEqual(["ep-1", "ep-2"]);
+    expect(after.some((name) => name.includes(".tmp"))).toBe(false);
+    // Discarded staging dirs are cleaned up; the reserved namespace holds no residue.
+    const staging = await fs.readdir(path.join(dir, ".staging")).catch(() => []);
+    expect(staging).toEqual([]);
+  });
+
   it("never allows updateEpisode to change stable identifiers", async () => {
     await storage.recordListens([EPISODE]);
     const updated = await storage.updateEpisode("ep-1", {

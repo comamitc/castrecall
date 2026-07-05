@@ -251,8 +251,16 @@ export class Storage {
       schemaVersion: SCHEMA_VERSION,
       contentHash,
     };
-    const stagingDir = `${dir}.tmp-${randomUUID()}`;
+    // Stage under the reserved `.staging/` namespace — never inside `sources/`,
+    // which is a public contract surface: downstream scans must never see
+    // half-written entries there.
+    const stagingDir = path.join(
+      this.dataDir,
+      ".staging",
+      `${safeName(episodeUuid)}-${randomUUID()}`,
+    );
     await fs.mkdir(stagingDir, { recursive: true });
+    await fs.mkdir(path.dirname(dir), { recursive: true });
     try {
       await fs.writeFile(path.join(stagingDir, path.basename(rawPath)), artifact.raw, "utf8");
       await fs.writeFile(

@@ -167,8 +167,12 @@ export class Storage {
             schemaVersion: SCHEMA_VERSION,
             contentHash,
         };
-        const stagingDir = `${dir}.tmp-${randomUUID()}`;
+        // Stage under the reserved `.staging/` namespace — never inside `sources/`,
+        // which is a public contract surface: downstream scans must never see
+        // half-written entries there.
+        const stagingDir = path.join(this.dataDir, ".staging", `${safeName(episodeUuid)}-${randomUUID()}`);
         await fs.mkdir(stagingDir, { recursive: true });
+        await fs.mkdir(path.dirname(dir), { recursive: true });
         try {
             await fs.writeFile(path.join(stagingDir, path.basename(rawPath)), artifact.raw, "utf8");
             await fs.writeFile(path.join(stagingDir, "provenance.json"), `${JSON.stringify(provenance, null, 2)}\n`, "utf8");
@@ -180,7 +184,13 @@ export class Storage {
             await fs.rm(stagingDir, { recursive: true, force: true });
             const code = error.code;
             if (code === "ENOTEMPTY" || code === "EEXIST") {
-                return { rawPath, textPath, provenancePath, alreadyStored: true };
+                if (await this.hasTranscript(episodeUuid)) {
+                    return { rawPath, textPath, provenancePath, alreadyStored: true };
+                }
+                throw new Error(`Refusing to report alreadyStored for episode ${episodeUuid}: ` +
+                    `${dir} exists but is missing transcript.txt. This is likely a partial ` +
+                    `directory left behind by an older writer — inspect and repair or remove ` +
+                    `it manually before retrying.`);
             }
             throw error;
         }

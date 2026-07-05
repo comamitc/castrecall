@@ -113,7 +113,8 @@ Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`) can
 │   ├── transcript.txt            # normalized plain text
 │   └── provenance.json           # platform, feed, URLs, timestamps, source, privacy class,
 │                                  # contentHash, schemaVersion
-└── review/pending/<episodeUuid>.md   # approval-gated review candidates
+├── review/pending/<episodeUuid>.md   # approval-gated review candidates
+└── .staging/                     # reserved scratch for atomic writes — ignore it
 ```
 
 `state.json` and `provenance.json` are a versioned, machine-readable
