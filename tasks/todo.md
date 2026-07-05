@@ -23,8 +23,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 
 ### v0.2.0 — freshness & onboarding
 - [x] #3 periodic sync — PR #22 squash-merged after EIGHT pre-merge review rounds. Final design: `castrecall_run_pipeline` (sync → transcripts → hash-idempotent self-healing export pass → reviews, all worklists from durable state), FAIL-CLOSED run lock (exclusive-create + touch-only heartbeat renewal + zero auto-reclaim; explicit breakStaleLock recovery serialized behind an unstealable mutex that scheduled acquirers also observe), capped-backoff cooldown, structured pipelineErrors + lock health in setup_status. 121 tests green on main.
-- [ ] #2 setup flow — pipeline → merge
-- [ ] release v0.2.0
+- [x] #2 setup flow — PR #23 squash-merged (castrecall_setup tool; one review round: shared whisper readiness predicate + dist rebuild), issue closed.
+- [x] release v0.2.0 — PR #25 merged, version 0.1.0→0.2.0, tag pushed, GitHub release published, milestone closed.
 
 ### v0.3.0 — robustness
 - [ ] #7 credentials · [ ] #6 retry/backoff · [ ] release v0.3.0
