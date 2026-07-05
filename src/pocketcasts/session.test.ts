@@ -399,6 +399,47 @@ describe("session", () => {
       expect(typeof record.credentialHash).toBe("string");
     });
 
+    it("persists a verification-seeded cached token on the first real sync (skipTokenPersist)", async () => {
+      const { execImpl, calls } = createKeychainExec({});
+      const config = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });
+      const { fetchImpl, counts } = loginFetch();
+
+      // Setup verification: logs in but must NOT write the token durably.
+      await getPocketCastsToken(config, {
+        fetchImpl,
+        execImpl,
+        env: { PATH: binDir },
+        platform: "darwin",
+        skipTokenPersist: true,
+      });
+      expect(counts.login).toBe(1);
+      const tokenWrites = () =>
+        calls.filter((c) => c[1] === "add-generic-password" && c.includes("pocketcasts-token"));
+      expect(tokenWrites()).toHaveLength(0);
+
+      // First real sync in the SAME process: hits the in-memory cache (no
+      // second login) but must still persist the token durably, or a process
+      // restart would force a fresh password login.
+      await fetchHistoryWithSession(config, {
+        fetchImpl,
+        execImpl,
+        env: { PATH: binDir },
+        platform: "darwin",
+      });
+      expect(counts.login).toBe(1);
+      expect(tokenWrites()).toHaveLength(1);
+
+      // Restart: the durable record is reusable — still no new login.
+      clearPocketCastsSessionCache();
+      await fetchHistoryWithSession(config, {
+        fetchImpl,
+        execImpl,
+        env: { PATH: binDir },
+        platform: "darwin",
+      });
+      expect(counts.login).toBe(1);
+    });
+
     it("reuses a token record from the keychain across process-lifetime cache misses", async () => {
       const { execImpl, calls } = createKeychainExec({});
       const config = envConfig({ POCKETCASTS_EMAIL: "a@b.c", POCKETCASTS_PASSWORD: "pw" });

@@ -24,11 +24,11 @@ export const DEFAULT_TOKEN_TTL_MS = 12 * 60 * 60_000;
 /** A token within this window of its expiry is treated as already expired. */
 export const TOKEN_EXPIRY_SKEW_MS = 60_000;
 let cache;
-let inFlightLogin;
+const inFlightLogins = new Map();
 /** Test isolation: resets the in-memory token cache and any in-flight login. */
 export function clearPocketCastsSessionCache() {
     cache = undefined;
-    inFlightLogin = undefined;
+    inFlightLogins.clear();
 }
 function credentialHash(email, password) {
     return createHash("sha256").update(`${email}\n${password}`, "utf8").digest("hex");
@@ -76,7 +76,7 @@ async function readCachedTokenFromKeychain(config, deps, hash, nowMs) {
     }
     if (nowMs + TOKEN_EXPIRY_SKEW_MS >= record.expiresAt)
         return undefined;
-    cache = { service: config.secrets.service, credentialHash: hash, token: record.token, expiresAt: record.expiresAt };
+    cache = { service: config.secrets.service, credentialHash: hash, token: record.token, expiresAt: record.expiresAt, persisted: true };
     return record.token;
 }
 /** Best-effort durable persistence — a write failure never blocks the caller. */
@@ -111,8 +111,9 @@ async function invalidateSession(config, deps) {
 async function loginAndCache(config, deps, email, password, hash, nowMs) {
     const token = await login(email, password, deps.fetchImpl);
     const expiresAt = parseTokenExpiry(token) ?? nowMs + DEFAULT_TOKEN_TTL_MS;
-    cache = { service: config.secrets.service, credentialHash: hash, token, expiresAt };
-    if (!deps.skipTokenPersist) {
+    const persisted = !deps.skipTokenPersist;
+    cache = { service: config.secrets.service, credentialHash: hash, token, expiresAt, persisted };
+    if (persisted) {
         await persistTokenToKeychain(config, deps, hash, token, expiresAt);
     }
     return token;
@@ -143,22 +144,29 @@ export async function getPocketCastsToken(config, deps = {}, forceLogin = false)
             cache.service === config.secrets.service &&
             cache.credentialHash === hash &&
             nowMs + TOKEN_EXPIRY_SKEW_MS < cache.expiresAt) {
+            // A verification login may have seeded this token without a durable
+            // write; the first non-skip caller persists it so a process restart
+            // does not force a fresh password login.
+            if (!cache.persisted && !deps.skipTokenPersist) {
+                await persistTokenToKeychain(config, deps, hash, cache.token, cache.expiresAt);
+                cache.persisted = true;
+            }
             return cache.token;
         }
         const fromKeychain = await readCachedTokenFromKeychain(config, deps, hash, nowMs);
         if (fromKeychain)
             return fromKeychain;
     }
-    if (!inFlightLogin ||
-        inFlightLogin.service !== config.secrets.service ||
-        inFlightLogin.credentialHash !== hash) {
-        const promise = loginAndCache(config, deps, email, password, hash, nowMs).finally(() => {
-            if (inFlightLogin?.promise === promise)
-                inFlightLogin = undefined;
+    const flightKey = `${config.secrets.service}\n${hash}`;
+    let flight = inFlightLogins.get(flightKey);
+    if (!flight) {
+        flight = loginAndCache(config, deps, email, password, hash, nowMs).finally(() => {
+            if (inFlightLogins.get(flightKey) === flight)
+                inFlightLogins.delete(flightKey);
         });
-        inFlightLogin = { service: config.secrets.service, credentialHash: hash, promise };
+        inFlightLogins.set(flightKey, flight);
     }
-    return inFlightLogin.promise;
+    return flight;
 }
 /**
  * Whether a durable token record currently exists in the keychain — a cheap,
