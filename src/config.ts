@@ -9,11 +9,14 @@ export type PluginSettings = {
   historyLimit?: number;
   sttEnabled?: boolean;
   sttProvider?: SttProvider;
+  exportDir?: string;
 };
 
 export type ResolvedConfig = {
   dataDir: string;
   historyLimit: number;
+  /** Corpus export: off (undefined) by default — see docs/ARCHITECTURE.md. */
+  exportDir?: string;
   pocketcasts: {
     email?: string;
     password?: string;
@@ -77,9 +80,12 @@ export function resolveConfig(
     nonEmpty(env.CASTRECALL_STT_PROVIDER)?.toLowerCase() ?? settings.sttProvider ?? "assemblyai";
   const provider: SttProvider = providerRaw === "openai" ? "openai" : "assemblyai";
 
+  const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
+
   return {
     dataDir,
     historyLimit,
+    exportDir,
     pocketcasts: {
       email: nonEmpty(env.POCKETCASTS_EMAIL),
       password: nonEmpty(env.POCKETCASTS_PASSWORD),

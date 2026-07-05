@@ -21,6 +21,7 @@ src/
 ├── config.ts              # Env-first config resolution; secrets never in plugin config
 ├── storage.ts             # Data dir layout, state.json, idempotent writes
 ├── review.ts              # Review-candidate markdown generation (heuristic excerpts)
+├── corpus-export.ts       # Opt-in export: section-split, frontmattered markdown pages (gbrain, etc.)
 ├── resolver.ts            # Pocket Casts listen → RSS feed URL → feed item + transcript links
 ├── pocketcasts/
 │   └── client.ts          # Read-only unofficial API adapter (login + history)
@@ -54,6 +55,29 @@ sources/<uuid>/{raw.<ext>, transcript.txt, provenance.json}   ← private source
         ▼
 review/pending/<uuid>.md   ← approval gate; human promotes (or deletes) manually
 ```
+
+If `CASTRECALL_EXPORT_DIR` is set, `castrecall_fetch_transcript` also projects
+the same source lane out to markdown pages, independently of the review gate:
+
+```
+sources/<uuid>/{transcript.txt, provenance.json}
+        │  castrecall_fetch_transcript (CASTRECALL_EXPORT_DIR set)
+        ▼
+<export-dir>/podcasts/<show-slug>/<episode-slug>/*.md   ← markdown pages (gbrain, etc. — see README)
+```
+
+### Corpus export is a projection, not a relocation
+
+`corpus-export.ts` reads only `sources/<uuid>/{transcript.txt, provenance.json}`
+and writes section-split, frontmattered markdown pages to a separate,
+user-designated directory (`CASTRECALL_EXPORT_DIR`/`exportDir`, off by
+default). It deliberately does **not** relocate the data dir into a corpus:
+the raw `sources/` layout doesn't match a page-per-section shape, so export is
+a bridge, not a redesign. Like review candidates, it structurally cannot read
+`review/pending/` or `state.json` — it only ever reads the two source
+artifacts a transcript store already produces. Idempotency is keyed off
+`contentHash` (see below); a changed hash replaces the whole episode's page
+set atomically so no stale section files survive a shorter re-transcription.
 
 ## Data dir: versioned machine-readable interface
 

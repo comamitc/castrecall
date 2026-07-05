@@ -41,6 +41,24 @@ describe("resolveConfig", () => {
     expect(config.pocketcasts.email).toBeUndefined();
     expect(config.pocketcasts.password).toBeUndefined();
   });
+
+  it("leaves corpus export off (undefined) by default", () => {
+    const config = resolveConfig({}, {});
+    expect(config.exportDir).toBeUndefined();
+  });
+
+  it("lets CASTRECALL_EXPORT_DIR override the exportDir plugin setting", () => {
+    const config = resolveConfig(
+      { exportDir: "/from/settings" },
+      { CASTRECALL_EXPORT_DIR: "/from/env" },
+    );
+    expect(config.exportDir).toBe("/from/env");
+  });
+
+  it("uses the exportDir plugin setting when the env var is unset", () => {
+    const config = resolveConfig({ exportDir: "/from/settings" }, {});
+    expect(config.exportDir).toBe("/from/settings");
+  });
 });
 
 describe("requirePocketCastsCredentials", () => {
