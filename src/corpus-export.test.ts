@@ -1,9 +1,13 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ListenRecord, Provenance } from "./storage.js";
 import { CorpusExporter, buildCorpusPages, slugify, splitSections } from "./corpus-export.js";
+
+// Deterministic sha256("ep-1").slice(0, 8) disambiguator the exporter appends
+// to RECORD's episode slug (see episodeDirSlug in corpus-export.ts).
+const EP1_DIR = "episode-one-a-deep-dive-25422834";
 
 const RECORD: ListenRecord = {
   uuid: "ep-1",
@@ -167,12 +171,10 @@ describe("buildCorpusPages", () => {
     for (const [i, page] of sectionPages.entries()) {
       const nn = String(i + 1).padStart(2, "0");
       expect(page.relativePath).toMatch(
-        new RegExp(`^podcasts/example-show/episode-one-a-deep-dive/${nn}-[a-z0-9-]+\\.md$`),
+        new RegExp(`^podcasts/example-show/${EP1_DIR}/${nn}-[a-z0-9-]+\\.md$`),
       );
     }
-    expect(indexPage?.relativePath).toBe(
-      "podcasts/example-show/episode-one-a-deep-dive/index.md",
-    );
+    expect(indexPage?.relativePath).toBe(`podcasts/example-show/${EP1_DIR}/index.md`);
   });
 
   it("gives a non-empty fallback show/episode slug for all-symbol titles", () => {
@@ -183,8 +185,26 @@ describe("buildCorpusPages", () => {
       contentHash: "hash",
     });
     for (const page of pages) {
-      expect(page.relativePath).toMatch(/^podcasts\/show\/episode\//);
+      expect(page.relativePath).toMatch(/^podcasts\/show\/episode-[0-9a-f]{8}\//);
     }
+  });
+
+  it("disambiguates two episodes whose titles collapse to the same fallback slug", () => {
+    const first = buildCorpusPages({
+      record: { ...RECORD, uuid: "ep-a", title: "???" },
+      provenance: PROVENANCE,
+      text: "Body text one.",
+      contentHash: "hash",
+    });
+    const second = buildCorpusPages({
+      record: { ...RECORD, uuid: "ep-b", title: "!!!" },
+      provenance: PROVENANCE,
+      text: "Body text two.",
+      contentHash: "hash",
+    });
+    const firstDir = first[0].relativePath.split("/")[2];
+    const secondDir = second[0].relativePath.split("/")[2];
+    expect(firstDir).not.toBe(secondDir);
   });
 });
 
@@ -229,9 +249,7 @@ describe("CorpusExporter", () => {
     expect(result.exported).toBeGreaterThan(0);
     const files = await listFiles(dir);
     expect(files.some((f) => f.endsWith("index.md"))).toBe(true);
-    expect(files.every((f) => f.includes("podcasts/example-show/episode-one-a-deep-dive"))).toBe(
-      true,
-    );
+    expect(files.every((f) => f.includes(`podcasts/example-show/${EP1_DIR}`))).toBe(true);
   });
 
   it("is idempotent: re-exporting the same content hash writes nothing", async () => {
@@ -295,10 +313,80 @@ describe("CorpusExporter", () => {
       expect(secondFiles).not.toContain(stale);
     }
     const indexContent = await fs.readFile(
-      path.join(dir, "podcasts/example-show/episode-one-a-deep-dive/index.md"),
+      path.join(dir, `podcasts/example-show/${EP1_DIR}/index.md`),
       "utf8",
     );
     expect(indexContent).toContain('content_hash: "hash-b"');
+  });
+
+  it("keeps distinct episode directories for two episodes with colliding fallback slugs", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: { ...RECORD, uuid: "ep-a", title: "???" },
+      provenance: PROVENANCE,
+      text: "First colliding episode.",
+      contentHash: "hash-first",
+    });
+    const result = await exporter.exportEpisode({
+      record: { ...RECORD, uuid: "ep-b", title: "!!!" },
+      provenance: PROVENANCE,
+      text: "Second colliding episode.",
+      contentHash: "hash-second",
+    });
+    expect(result.skipped).toBe(false);
+
+    // Both episodes fall back to the "episode" slug but carry distinct
+    // uuids, so each must keep — not overwrite — its own directory.
+    const firstIndex = await fs.readFile(
+      path.join(dir, "podcasts/example-show/episode-152a27ea/index.md"),
+      "utf8",
+    );
+    const secondIndex = await fs.readFile(
+      path.join(dir, "podcasts/example-show/episode-455a9080/index.md"),
+      "utf8",
+    );
+    expect(firstIndex).toContain('content_hash: "hash-first"');
+    expect(secondIndex).toContain('content_hash: "hash-second"');
+  });
+
+  it("restores the previous export if promotion fails after the old dir is moved aside", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Original good export.",
+      contentHash: "hash-good",
+    });
+    const episodeDir = path.join(dir, `podcasts/example-show/${EP1_DIR}`);
+    const goodIndex = await fs.readFile(path.join(episodeDir, "index.md"), "utf8");
+    expect(goodIndex).toContain('content_hash: "hash-good"');
+
+    // Fail only the second rename of the promotion (staging -> target),
+    // letting the first (target -> backup) succeed for real, so this
+    // exercises "backup made, promotion failed" — not a backup-step failure.
+    const realRename = fs.rename.bind(fs);
+    let renameCalls = 0;
+    const renameSpy = vi
+      .spyOn(fs, "rename")
+      .mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+        renameCalls += 1;
+        if (renameCalls === 2) throw new Error("simulated disk failure during promotion");
+        return realRename(...args);
+      });
+
+    await expect(
+      exporter.exportEpisode({
+        record: RECORD,
+        provenance: PROVENANCE,
+        text: "New export that never lands.",
+        contentHash: "hash-new",
+      }),
+    ).rejects.toThrow("simulated disk failure during promotion");
+
+    renameSpy.mockRestore();
+
+    const survivingIndex = await fs.readFile(path.join(episodeDir, "index.md"), "utf8");
+    expect(survivingIndex).toContain('content_hash: "hash-good"');
   });
 
   it("never writes state.json, review/ paths, or pending-review status under the export dir", async () => {

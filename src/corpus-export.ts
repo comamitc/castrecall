@@ -10,7 +10,7 @@
  */
 
 import { promises as fs } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ListenRecord, Provenance } from "./storage.js";
 
@@ -35,6 +35,17 @@ export function slugify(value: string, fallback: string): string {
     .slice(0, 60)
     .replace(/-+$/g, "");
   return slug || fallback;
+}
+
+/**
+ * Episode directory slug, disambiguated by the episode's globally unique
+ * uuid so two episodes that title-slugify (or fallback-slugify) to the same
+ * string never share — and one export overwrite — the other's directory.
+ */
+function episodeDirSlug(record: ListenRecord): string {
+  const slug = slugify(record.title, "episode");
+  const suffix = createHash("sha256").update(record.uuid).digest("hex").slice(0, 8);
+  return `${slug}-${suffix}`;
 }
 
 function wordCount(text: string): number {
@@ -183,7 +194,7 @@ export function buildCorpusPages(options: {
 }): CorpusPage[] {
   const { record, provenance, text, contentHash } = options;
   const showSlug = slugify(record.podcastTitle, "show");
-  const episodeSlug = slugify(record.title, "episode");
+  const episodeSlug = episodeDirSlug(record);
   const sections = splitSections(text, {
     targetWords: options.targetWords,
     maxWords: options.maxWords,
@@ -261,7 +272,7 @@ export class CorpusExporter {
     contentHash: string;
   }): Promise<ExportResult> {
     const showSlug = slugify(options.record.podcastTitle, "show");
-    const episodeSlug = slugify(options.record.title, "episode");
+    const episodeSlug = episodeDirSlug(options.record);
     const targetDir = path.join(this.exportDir, "podcasts", showSlug, episodeSlug);
 
     const existingHash = await readExistingContentHash(targetDir);
@@ -278,11 +289,22 @@ export class CorpusExporter {
       }
       await fs.mkdir(path.dirname(targetDir), { recursive: true });
       // fs.rename onto a populated directory fails on POSIX rather than
-      // merging, so a changed-hash re-export must clear the stale episode
-      // dir first — otherwise section files from a previously longer
-      // transcript would survive alongside the new, shorter set.
-      await fs.rm(targetDir, { recursive: true, force: true });
-      await fs.rename(stagingDir, targetDir);
+      // merging, so a changed-hash re-export must move the stale episode
+      // dir out of the way first. It is moved to a backup — not deleted —
+      // so an interrupted or failed promotion below can restore it instead
+      // of leaving the user's corpus missing the last good export.
+      const backupDir = path.join(this.exportDir, ".staging", `${episodeSlug}-backup-${randomUUID()}`);
+      const hadExisting = await fs
+        .rename(targetDir, backupDir)
+        .then(() => true)
+        .catch(() => false);
+      try {
+        await fs.rename(stagingDir, targetDir);
+      } catch (err) {
+        if (hadExisting) await fs.rename(backupDir, targetDir);
+        throw err;
+      }
+      if (hadExisting) await fs.rm(backupDir, { recursive: true, force: true });
       return { exported: pages.length, skipped: false, dir: targetDir };
     } finally {
       await fs.rm(stagingDir, { recursive: true, force: true });

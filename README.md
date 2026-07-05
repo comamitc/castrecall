@@ -139,12 +139,14 @@ sidecar — review candidates and `state.json` are never exported.
 
 - **Watched inbox** — point `CASTRECALL_EXPORT_DIR` at `~/.gbrain/inbox/`;
   gbrain's watched-inbox ingestion picks the pages up automatically.
-- **Domain-bank bucket** — point it at a brain's `sources/podcasts/` tree
-  (e.g. `~/.gbrain/sources/podcasts`). Each show then gets its own
-  `podcasts/<show-slug>/` prefix, which gbrain's LSD/brainstorm far-set
-  selection treats as an automatic domain-bank bucket (it samples one far
-  page per two-segment prefix; LSD adds stale-bias on top) — no gbrain-side
-  registration needed.
+- **Domain-bank bucket** — point it at a brain's `sources/` root
+  (e.g. `~/.gbrain/sources`), *not* `sources/podcasts` — the exporter already
+  adds its own `podcasts/<show-slug>/` prefix under whatever directory you
+  point it at, so pointing at `sources/` yields `sources/podcasts/<show-slug>/`.
+  Each show then gets its own two-segment prefix, which gbrain's
+  LSD/brainstorm far-set selection treats as an automatic domain-bank bucket
+  (it samples one far page per two-segment prefix; LSD adds stale-bias on
+  top) — no gbrain-side registration needed.
 
 ## Data layout
 

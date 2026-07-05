@@ -252,7 +252,7 @@ describe("tools", () => {
     expect(result.export.skipped).toBe(false);
     expect(result.export.exported).toBeGreaterThan(0);
 
-    const episodeDir = path.join(exportDir, "podcasts", "example-show", "episode-one");
+    const episodeDir = path.join(exportDir, "podcasts", "example-show", "episode-one-25422834");
     const files = await fs.readdir(episodeDir);
     expect(files).toContain("index.md");
 
@@ -302,7 +302,13 @@ describe("tools", () => {
     expect(result.status).toBe("already-stored");
     expect(result.export.skipped).toBe(false);
 
-    const indexPath = path.join(exportDir, "podcasts", "example-show", "episode-one", "index.md");
+    const indexPath = path.join(
+      exportDir,
+      "podcasts",
+      "example-show",
+      "episode-one-25422834",
+      "index.md",
+    );
     const indexContent = await fs.readFile(indexPath, "utf8");
     const expectedHash = createHash("sha256").update(text, "utf8").digest("hex");
     expect(indexContent).toContain(`content_hash: "${expectedHash}"`);
