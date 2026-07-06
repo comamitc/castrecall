@@ -194,7 +194,7 @@ async function transcribeWithDeepgram(config, audioUrl, fetchImpl) {
     // Deepgram's utterance start/end are already seconds (unlike AssemblyAI's milliseconds).
     const segments = body.results?.utterances?.length
         ? utterancesToSegments(body.results.utterances.map((u) => ({
-            speaker: u.speaker ?? 0,
+            speaker: u.speaker,
             text: u.transcript ?? "",
             startSeconds: u.start,
             endSeconds: u.end,
