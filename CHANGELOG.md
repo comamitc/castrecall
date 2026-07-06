@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.11.0 — 2026-07-06
+
+Local-Whisper guardrails, part one: no more silently transcribing a corpus
+with a toy model.
+
+- **Explicit quality-ready model selection for MLX Whisper** (#51, PR #59):
+  an installed `mlx_whisper` no longer counts as a usable backend by
+  itself — upstream falls back to `whisper-tiny`, which is corpus-poison.
+  Local MLX transcription now fails closed with a setup error unless
+  `CASTRECALL_WHISPER_MODEL` names a model, a quality preset is set, or
+  `CASTRECALL_WHISPER_ALLOW_LOW_QUALITY` explicitly opts into the upstream
+  default. `castrecall_setup`/`castrecall_setup_status` name the concrete
+  model before any corpus-scale run.
+- **Apple Silicon quality presets** (#52, PR #65):
+  `CASTRECALL_LOCAL_WHISPER_PRESET` gives mlx_whisper users a blessed
+  path — `best`/`balanced` resolve to `mlx-community/whisper-large-v3-turbo`
+  (the quality-approved corpus model today; `balanced` may diverge to a
+  validated mid-tier later), `fast` is an explicit opt-in to
+  `whisper-small-mlx`, never an accidental default. Presets satisfy #51's
+  gate, are ignored with an explanatory reason on non-MLX Whisper flavors
+  (`mlx-community/...` models don't run there), and
+  `CASTRECALL_WHISPER_MODEL` always wins when both are set.
+
 ## v0.10.0 — 2026-07-06
 
 The memory-curation lane closes the loop: review candidates can now be
