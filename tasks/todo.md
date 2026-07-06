@@ -86,6 +86,18 @@ segments; #46 glossary corrections plug into #45's cleanup pass.
 - [ ] #43 timestamped segments through storage/export → then #44 speaker metadata/diarization → release v0.15.0
 - [ ] #45 transcript cleanup pass → then #46 proper-noun glossary → release v0.16.0
 
+### v0.17.0–v0.18.0 — remote STT track (added 2026-07-06, issues #61–#64)
+
+User-added mid-goal; queued LAST deliberately: #54 (decode provenance) and #55
+(preflight) reshape exactly the surfaces remote STT plugs into, so this track lands
+on top of them instead of churning those files twice. Order (dependency-driven):
+#61 defines the generic remote-stt provider contract; #62's WhisperX reference
+worker implements it; #63's setup/status endpoint checks validate it (built on
+#55's finished preflight); #64 documents the full provider model last.
+
+- [ ] #61 generic remote STT provider contract → then #62 WhisperX reference worker → release v0.17.0
+- [ ] #63 remote-endpoint setup/status checks → then #64 remote/self-hosted STT docs → release v0.18.0
+
 > HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resumed from #9 on the new machine 2026-07-06.
 
 #### #9 Taddy webhooks (event-driven transcript availability) — implementation checklist
