@@ -18,6 +18,7 @@ import os from "node:os";
 import path from "node:path";
 import { envFlag, type ResolvedConfig } from "./config.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
+import { podchaserConfigured } from "./transcripts/podchaser.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { WHISPER_CPP_MODEL_MISSING_MESSAGE, localWhisperReadiness, type WhisperDetection } from "./transcripts/local-whisper.js";
 
@@ -112,6 +113,7 @@ function keychainStoreRecipe(service: string, secretBackend: SetupSecretBackendI
 export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): SetupStep[] {
   const credentialsConfigured = deps.credentials.configured;
   const taddyOk = taddyConfigured(config);
+  const podchaserOk = podchaserConfigured(config);
   const stt = sttAvailability(config);
   const { exportDir, mode } = classifyExportDir(config.exportDir);
   const { ready: whisperReady, needsModel: whisperNeedsModel } = localWhisperReadiness(
@@ -170,6 +172,16 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
         "Optional transcript-ladder rung. Free signup at https://taddy.org/developers — podcast-" +
         "provided transcripts may be available to free accounts; generated/on-demand transcripts use " +
         "paid Taddy plan credits.",
+    },
+    {
+      id: "providers.podchaser",
+      title: "Podchaser transcript provider (optional)",
+      status: podchaserOk ? "configured" : "optional-off",
+      envVars: ["PODCHASER_API_KEY"],
+      explanation:
+        "Optional transcript-ladder rung, checked after Taddy. PODCHASER_API_KEY is a bearer " +
+        "access token minted via Podchaser's requestAccessToken mutation " +
+        "(see https://api-docs.podchaser.com/docs/authorization/), not a raw client secret.",
     },
     {
       id: "providers.localWhisper",

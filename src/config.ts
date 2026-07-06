@@ -25,6 +25,10 @@ export type ResolvedConfig = {
     apiKey?: string;
     userId?: string;
   };
+  podchaser: {
+    /** Pre-minted OAuth2 bearer access token from Podchaser's requestAccessToken mutation. */
+    apiKey?: string;
+  };
   localWhisper: {
     disabled: boolean;
     /** Custom command template with an {input} placeholder; transcript expected on stdout. */
@@ -125,6 +129,9 @@ export function resolveConfig(
     taddy: {
       apiKey: nonEmpty(env.TADDY_API_KEY),
       userId: nonEmpty(env.TADDY_USER_ID),
+    },
+    podchaser: {
+      apiKey: nonEmpty(env.PODCHASER_API_KEY),
     },
     localWhisper: {
       disabled: envFlag(env.CASTRECALL_DISABLE_LOCAL_WHISPER) ?? false,

@@ -67,6 +67,16 @@ describe("resolveConfig", () => {
     expect(config.pocketcasts.password).toBeUndefined();
   });
 
+  it("resolves PODCHASER_API_KEY into config.podchaser.apiKey", () => {
+    const config = resolveConfig({}, { PODCHASER_API_KEY: "pk_x" });
+    expect(config.podchaser.apiKey).toBe("pk_x");
+  });
+
+  it("leaves config.podchaser.apiKey undefined when PODCHASER_API_KEY is unset or blank", () => {
+    expect(resolveConfig({}, {}).podchaser.apiKey).toBeUndefined();
+    expect(resolveConfig({}, { PODCHASER_API_KEY: "  " }).podchaser.apiKey).toBeUndefined();
+  });
+
   it("leaves corpus export off (undefined) by default", () => {
     const config = resolveConfig({}, {});
     expect(config.exportDir).toBeUndefined();

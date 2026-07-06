@@ -121,6 +121,7 @@ describe("buildSetupPlan", () => {
       "storage",
       "privacy",
       "providers.taddy",
+      "providers.podchaser",
       "providers.localWhisper",
       "providers.stt",
       "export",
@@ -145,6 +146,14 @@ describe("buildSetupPlan", () => {
 
     const full = plan(config({ TADDY_API_KEY: "k", TADDY_USER_ID: "u" }));
     expect(full.find((s) => s.id === "providers.taddy")!.status).toBe("configured");
+  });
+
+  it("flips the podchaser step to configured only when PODCHASER_API_KEY is set", () => {
+    const off = plan(config({}));
+    expect(off.find((s) => s.id === "providers.podchaser")!.status).toBe("optional-off");
+
+    const on = plan(config({ PODCHASER_API_KEY: "pk_x" }));
+    expect(on.find((s) => s.id === "providers.podchaser")!.status).toBe("configured");
   });
 
   it("reflects an injected WhisperDetection for the localWhisper step", () => {

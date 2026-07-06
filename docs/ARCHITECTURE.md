@@ -30,11 +30,12 @@ src/
 │   ├── secret-store.ts    # OS keychain backend (macOS `security` / libsecret `secret-tool`)
 │   └── session.ts         # Auth seam: credential resolution + token cache/refresh (see below)
 └── transcripts/
-    ├── ladder.ts          # Orchestrates the four rungs, collects outcomes
+    ├── ladder.ts          # Orchestrates the five rungs, collects outcomes
     ├── rss.ts             # Rung 1: <podcast:transcript> fetch, format preference
     ├── taddy.ts           # Rung 2: Taddy GraphQL (optional)
-    ├── local-whisper.ts   # Rung 3: detected local Whisper CLI (free, private)
-    ├── stt.ts             # Rung 4: AssemblyAI / OpenAI (optional, gated, paid)
+    ├── podchaser.ts       # Rung 3: Podchaser GraphQL, two-hop transcript-URL fetch (optional)
+    ├── local-whisper.ts   # Rung 4: detected local Whisper CLI (free, private)
+    ├── stt.ts             # Rung 5: AssemblyAI / OpenAI / Deepgram (optional, gated, paid)
     └── normalize.ts       # VTT/SRT/JSON/HTML/plain → normalized text + segments
 ```
 
@@ -51,7 +52,7 @@ Pocket Casts history (unofficial API, read-only)
 state.json (seen episode UUIDs, timestamps, transcript status)
         │  castrecall_fetch_transcript
         ▼
-Transcript ladder: RSS <podcast:transcript> → Taddy → local Whisper (detected) → cloud STT (explicitly enabled)
+Transcript ladder: RSS <podcast:transcript> → Taddy → Podchaser → local Whisper (detected) → cloud STT (explicitly enabled)
         │
         ▼
 sources/<uuid>/{raw.<ext>, transcript.txt, provenance.json}   ← private source lane
@@ -221,7 +222,7 @@ can be repaired or removed manually; it never deletes them silently.
 | `podcastUuid`, `episodeUuid` | Stable identifiers — see below. |
 | `episodeUrl`, `audioUrl`, `feedUrl` | Optional source URLs. |
 | `listenTimestamp` | When the episode was first seen synced, if known. |
-| `transcriptSource` | `"rss" \| "taddy" \| "local-whisper" \| "stt"`. |
+| `transcriptSource` | `"rss" \| "taddy" \| "podchaser" \| "local-whisper" \| "stt"`. |
 | `transcriptSourceUrl`, `provider` | Optional rung-specific detail. |
 | `format` | Raw transcript format (`vtt`, `srt`, `json`, `txt`, ...). |
 | `fetchedAt` | ISO timestamp of the fetch that produced this sidecar. |

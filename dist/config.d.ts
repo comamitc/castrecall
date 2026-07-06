@@ -20,6 +20,10 @@ export type ResolvedConfig = {
         apiKey?: string;
         userId?: string;
     };
+    podchaser: {
+        /** Pre-minted OAuth2 bearer access token from Podchaser's requestAccessToken mutation. */
+        apiKey?: string;
+    };
     localWhisper: {
         disabled: boolean;
         /** Custom command template with an {input} placeholder; transcript expected on stdout. */

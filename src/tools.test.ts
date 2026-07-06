@@ -124,6 +124,7 @@ describe("tools", () => {
         "storage",
         "privacy",
         "providers.taddy",
+        "providers.podchaser",
         "providers.localWhisper",
         "providers.stt",
         "export",
@@ -550,10 +551,69 @@ describe("tools", () => {
     const rungs = Object.fromEntries(result.ladder.map((r: any) => [r.rung, r]));
     expect(rungs.taddy.outcome).toBe("skipped");
     expect(rungs.taddy.detail).toContain("TADDY_API_KEY");
+    expect(rungs.podchaser.outcome).toBe("skipped");
+    expect(rungs.podchaser.detail).toContain("PODCHASER_API_KEY");
+    expect(result.ladder.findIndex((r: any) => r.rung === "podchaser")).toBeGreaterThan(
+      result.ladder.findIndex((r: any) => r.rung === "taddy"),
+    );
+    expect(result.ladder.findIndex((r: any) => r.rung === "podchaser")).toBeLessThan(
+      result.ladder.findIndex((r: any) => r.rung === "local-whisper"),
+    );
     expect(rungs["local-whisper"].outcome).toBe("skipped");
     expect(rungs["local-whisper"].detail).toContain("No local Whisper CLI detected");
     expect(rungs.stt.outcome).toBe("skipped");
     expect(rungs.stt.detail).toContain("CASTRECALL_ENABLE_STT");
+  });
+
+  it("fetch_transcript hits the podchaser rung when configured and RSS/Taddy miss", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "https://api.podchaser.com/graphql") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              episodes: {
+                data: [
+                  {
+                    title: "Episode One",
+                    transcripts: [
+                      { url: "https://transcripts.example.com/ep1.json", transcriptType: "raw_JSON" },
+                    ],
+                  },
+                ],
+              },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url === "https://transcripts.example.com/ep1.json") {
+        return new Response(JSON.stringify([{ utterance: "hello from podchaser" }]), { status: 200 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const result = (await fetchTranscript(
+      config({ PODCHASER_API_KEY: "pk_x" }),
+      { episodeUuid: "ep-1" },
+      { fetchImpl, env: { PATH: "" } },
+    )) as any;
+    expect(result.status).toBe("stored");
+    expect(result.source).toBe("podchaser");
+    const rungs = Object.fromEntries(result.ladder.map((r: any) => [r.rung, r]));
+    expect(rungs.podchaser.outcome).toBe("hit");
+    expect(rungs["local-whisper"]).toBeUndefined();
+    expect(rungs.stt).toBeUndefined();
   });
 
   it("fetch_transcript bounds transient STT retries: capped backoff, then a terminal failure after the budget", async () => {

@@ -14,6 +14,7 @@ import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { WHISPER_CPP_MODEL_MISSING_MESSAGE, detectLocalWhisper, localWhisperReadiness, } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
+import { podchaserConfigured } from "./transcripts/podchaser.js";
 import { BACKOFF_BASE_MS, BACKOFF_CAP_MS, Storage, TRANSCRIPT_RETRY_MAX_ATTEMPTS, } from "./storage.js";
 function storageFor(config) {
     return new Storage(config.dataDir);
@@ -159,6 +160,7 @@ export async function setupStatus(config, deps = {}) {
         transcriptLadder: {
             rss: "always on (open <podcast:transcript> standard)",
             taddy: taddyConfigured(config) ? "configured" : "not configured (TADDY_API_KEY, TADDY_USER_ID)",
+            podchaser: podchaserConfigured(config) ? "configured" : "not configured (PODCHASER_API_KEY)",
             localWhisper: whisper.detected
                 ? localWhisperReadiness(whisper, config.localWhisper).ready
                     ? `detected (${whisper.detected.flavor}) — free, private transcription`
