@@ -59,6 +59,18 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] release v0.8.0 — PR #47 merged, version 0.7.0→0.8.0 (manifest regenerated), tag pushed, GitHub release published, milestone closed.
 - [ ] #11 → v0.9.0 (release after)
 
+### v0.11.0–v0.13.0 — transcript quality track (added 2026-07-06, issues #41–#46)
+
+User-added mid-goal; queued after the original roadmap (#11 → v0.9.0, #1 → v0.10.0).
+Milestones and order (dependency-driven): #42 loop detection is the bug and its
+detector feeds #41's scoring; #44 speaker turns ride on #43's persisted segments;
+#46 glossary corrections plug into #45's cleanup pass. All six triaged
+`pipeline:backlog` → `pipeline:ready` and milestoned accordingly.
+
+- [ ] #42 Whisper repetition-loop detection/quarantine → then #41 transcript quality scoring → release v0.11.0
+- [ ] #43 timestamped segments through storage/export → then #44 speaker metadata/diarization → release v0.12.0
+- [ ] #45 transcript cleanup pass → then #46 proper-noun glossary → release v0.13.0
+
 > HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resumed from #9 on the new machine 2026-07-06.
 
 #### #9 Taddy webhooks (event-driven transcript availability) — implementation checklist
