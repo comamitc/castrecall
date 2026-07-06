@@ -25,7 +25,7 @@
 8. **#13** Platform-caption sources (Apple/Pocket Casts) — v0.4.0, investigated and closed as **no-go** (no ladder rung shipped); see `docs/transcript-source-investigation.md`
 9. **#12** STT: Deepgram provider — v0.4.0
 10. **#10** Podchaser provider — v0.5.0
-11. **#9** Taddy webhooks — v0.6.0
+11. **#9** Taddy webhooks — v0.6.0 — shipped as a scheduled-polling substitute (no reachable inbound endpoint exists for a literal webhook in the OpenClaw plugin model); see `docs/ARCHITECTURE.md`'s "Event-driven transcript availability" section
 12. **#8** Publish to ClawHub / marketplace — v0.7.0
 13. **#5** Search over the private transcript corpus — v0.7.0
 14. **#4** Cross-episode digest — v0.8.0

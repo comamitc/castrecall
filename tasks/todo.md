@@ -42,6 +42,55 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 
 > HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resume from #9 on the new machine.
 
+#### #9 Taddy webhooks (event-driven transcript availability) — implementation checklist
+
+Conflict: CastRecall is an OpenClaw plugin with no reachable inbound endpoint — a literal
+webhook can't ship. Delivering the issue's own stated fallback instead: scheduled polling of
+Taddy's `taddyTranscribeStatus` plus an RSS "transcript may appear later" re-check, via a new
+`transcriptRecheck` sibling to the existing `transcriptRetry` STT-billing backoff.
+
+- [x] `taddy.ts`: `fetchTaddyTranscript` returns `TaddyLookup` (`hit`/`pending`/`miss`) instead of
+      `TaddyTranscript | undefined`; read `taddyTranscribeStatus`; `isTranscribingStatus` allowlist
+      match with `NOT_TRANSCRIBING`-substring negation guard
+- [x] `ladder.ts`: `RungOutcome.recheckable?: boolean`; Taddy `pending` → recheckable miss rung; RSS
+      "no transcript links declared" → recheckable miss rung
+- [x] `storage.ts`: `ListenRecord.transcriptRecheck` (additive), `TRANSCRIPT_RECHECK_BASE_MS` /
+      `_CAP_MS` / `_MAX_AGE_MS` constants
+- [x] `tools.ts`: `fetchTranscript` middle case between retryable and terminal-failed; `retryable`
+      still checked first (billing precedence); `livePipelineErrors` folds recheck
+      `nextEligibleAt`; `setupStatus` gets `transcriptsPendingRecheck` count
+- [x] `pipeline.ts`: gate defers until `max(transcriptRetry, transcriptRecheck)` eligible time
+- [x] Tests: new `src/transcripts/taddy.test.ts` (13 tests); `tools.test.ts` recheck/horizon/precedence
+      cases (+5); `pipeline.test.ts` defer/resume + dual-gate + RSS-horizon cases (+3)
+- [x] Docs: README Scheduled-sync section (webhook infeasibility + polling substitute + RSS
+      horizon trade-off) + ladder section note; `docs/ARCHITECTURE.md` new "Event-driven transcript
+      availability" subsection + three-backoff-layers update; roadmap doc annotated
+- [x] `npm run typecheck && npm run build && npm test` green (303/303, was 283)
+- [x] Review section appended below
+
+##### Review
+
+- `npm run typecheck`: pass. `npm run build`: pass. `npm test`: **303/303 passed** (was 283 before
+  this change; +20: 13 in new `taddy.test.ts`, 5 in `tools.test.ts` (recheck-then-store, horizon
+  terminal-failure, non-recheckable-miss regression, retryable-beats-recheckable precedence — plus
+  the recheck/horizon defer-resume pair counted individually), 3 in `pipeline.test.ts`
+  (defer/resume, RSS-horizon, dual-gate).
+- Design: `transcriptRecheck` is a sibling field to `transcriptRetry`, not a reuse — kept separate
+  so `transcriptRetry`'s paid-STT billing cap is never blurred with the recheck horizon's
+  futile-poll bound. `fetchTranscript` checks `retryable` before `recheckable`, so a transient STT
+  failure always wins over an availability-pending miss (asserted by a dedicated dual-signal test).
+  `isTranscribingStatus` is an explicit `{PROCESSING, TRANSCRIBING}` allowlist with a negated
+  substring fallback, because `NOT_TRANSCRIBING` (Taddy's real terminal-state enum value) contains
+  the substring `TRANSCRIBING` and would otherwise be misclassified as pending.
+- Conflict surfaced and documented: the issue asks for a literal Taddy webhook, which cannot ship
+  in CastRecall's architecture (OpenClaw tool plugin, no reachable inbound HTTP endpoint). Shipped
+  the issue's own stated fallback (scheduled polling) instead, and documented why in both README
+  and ARCHITECTURE.md, with the recheck/`transcriptRecheck` machinery noted as the landing point
+  for a real webhook handler if OpenClaw ever exposes inbound HTTP to plugins.
+- No dist regressions: `fetchTaddyTranscript`'s new discriminated-union return type only changes
+  its one caller (`ladder.ts`'s Taddy rung); `RungOutcome.recheckable` and
+  `ListenRecord.transcriptRecheck` are both additive optional fields.
+
 #### #10 Podchaser transcript rung — implementation checklist
 - [x] `resolveConfig` resolves `PODCHASER_API_KEY` into `config.podchaser.apiKey` (empty string → undefined)
 - [x] `podchaserConfigured(config)` true iff apiKey set

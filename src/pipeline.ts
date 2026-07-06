@@ -142,19 +142,26 @@ export async function runPipeline(
     // still transcriptStatus "none" and would otherwise never be retried,
     // since recordListens only reports it as "new" once.
     const stateAfterSync = await storage.loadState();
-    // Honor per-episode retry backoff: an episode whose last transcript
-    // attempt failed transiently (retryable STT error) carries a
-    // nextEligibleAt, and re-attempting before then would re-bill a paid STT
-    // provider on every scheduled tick. Deferred episodes are reported, not
-    // silently dropped; fetch_transcript run manually is never gated.
+    // Honor per-episode retry/recheck backoff: an episode whose last
+    // transcript attempt failed transiently (retryable STT error) or whose
+    // transcript simply wasn't available yet (Taddy still transcribing, RSS
+    // declaring no transcript links) carries a nextEligibleAt, and
+    // re-attempting before the LATER of the two gates would re-bill a paid
+    // STT provider or poll a provider needlessly on every scheduled tick.
+    // Deferred episodes are reported, not silently dropped; fetch_transcript
+    // run manually is never gated.
     const nowMs = now().getTime();
     const pendingTranscripts: ListenRecord[] = [];
     let deferred = 0;
     for (const episode of Object.values(stateAfterSync.episodes)) {
       if (episode.transcriptStatus !== "none") continue;
-      const eligibleAt = episode.transcriptRetry
+      const retryEligibleAt = episode.transcriptRetry
         ? Date.parse(episode.transcriptRetry.nextEligibleAt)
         : Number.NEGATIVE_INFINITY;
+      const recheckEligibleAt = episode.transcriptRecheck
+        ? Date.parse(episode.transcriptRecheck.nextEligibleAt)
+        : Number.NEGATIVE_INFINITY;
+      const eligibleAt = Math.max(retryEligibleAt, recheckEligibleAt);
       if (Number.isFinite(eligibleAt) && eligibleAt > nowMs) {
         deferred += 1;
         continue;
@@ -172,7 +179,11 @@ export async function runPipeline(
     for (const episode of pendingTranscripts) {
       if (lockLost) break;
       try {
-        const result = (await fetchTranscript(config, { episodeUuid: episode.uuid }, deps)) as {
+        const result = (await fetchTranscript(
+          config,
+          { episodeUuid: episode.uuid, scheduled: true },
+          deps,
+        )) as {
           status: "stored" | "already-stored" | "no-transcript";
         };
         if (result.status === "stored" || result.status === "already-stored") {

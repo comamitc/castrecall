@@ -42,6 +42,7 @@ export async function runTranscriptLadder(config, record, options = {}) {
                         rung: "rss",
                         outcome: "miss",
                         detail: `Feed item found in ${feedUrl} but it declares no <podcast:transcript> links.`,
+                        recheckable: true,
                     });
                 }
                 else {
@@ -95,25 +96,35 @@ export async function runTranscriptLadder(config, record, options = {}) {
     else {
         try {
             const taddy = await fetchTaddyTranscript(config, { guid: feedItem?.itemGuid, title: record.title }, fetchImpl);
-            if (taddy) {
+            if (taddy.status === "hit") {
                 rungs.push({ rung: "taddy", outcome: "hit", detail: "Transcript returned by Taddy." });
                 return {
                     transcript: {
                         source: "taddy",
                         format: "txt",
-                        raw: taddy.text,
-                        text: taddy.text,
+                        raw: taddy.transcript.text,
+                        text: taddy.transcript.text,
                         provider: "taddy",
                     },
                     feedItem,
                     rungs,
                 };
             }
-            rungs.push({
-                rung: "taddy",
-                outcome: "miss",
-                detail: "Taddy has no transcript for this episode (or the plan does not include transcripts).",
-            });
+            if (taddy.status === "pending") {
+                rungs.push({
+                    rung: "taddy",
+                    outcome: "miss",
+                    detail: "Taddy is transcribing this episode but the transcript isn't ready yet.",
+                    recheckable: true,
+                });
+            }
+            else {
+                rungs.push({
+                    rung: "taddy",
+                    outcome: "miss",
+                    detail: "Taddy has no transcript for this episode (or the plan does not include transcripts).",
+                });
+            }
         }
         catch (error) {
             rungs.push({ rung: "taddy", outcome: "failed", detail: describeError(error) });
@@ -193,7 +204,14 @@ export async function runTranscriptLadder(config, record, options = {}) {
     }
     // Rung 5: cloud speech-to-text (explicitly enabled only — costs money)
     const stt = sttAvailability(config);
-    if (!stt.ok) {
+    if (options.skipStt) {
+        rungs.push({
+            rung: "stt",
+            outcome: "skipped",
+            detail: "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
+        });
+    }
+    else if (!stt.ok) {
         rungs.push({ rung: "stt", outcome: "skipped", detail: stt.reason ?? "STT unavailable." });
     }
     else {

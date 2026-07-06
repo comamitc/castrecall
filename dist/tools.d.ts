@@ -50,6 +50,7 @@ export declare function listRecent(config: ResolvedConfig, params: {
 }): Promise<unknown>;
 export declare function fetchTranscript(config: ResolvedConfig, params: {
     episodeUuid: string;
+    scheduled?: boolean;
 }, deps?: ToolDeps): Promise<unknown>;
 export declare function generateReview(config: ResolvedConfig, params: {
     episodeUuid?: string;

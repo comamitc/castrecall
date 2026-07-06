@@ -6,7 +6,7 @@ import { resolveConfig } from "./config.js";
 import { runPipeline } from "./pipeline.js";
 import { clearPocketCastsSessionCache } from "./pocketcasts/session.js";
 import { setupStatus } from "./tools.js";
-import { LOCK_TTL_MS, Storage } from "./storage.js";
+import { LOCK_TTL_MS, Storage, TRANSCRIPT_RECHECK_BASE_MS } from "./storage.js";
 
 const HISTORY_EPISODE = {
   uuid: "ep-1",
@@ -326,6 +326,162 @@ describe("runPipeline", () => {
     const stateAfterRecovery = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
     expect(stateAfterRecovery.episodes["ep-1"].transcriptStatus).toBe("stored");
     expect(stateAfterRecovery.episodes["ep-1"].transcriptRetry).toBeUndefined();
+  });
+
+  it("defers a Taddy-pending transcript until eligible (zero ladder attempts while deferred), then resumes it", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+
+    const taddyConfig = config({ TADDY_API_KEY: "key", TADDY_USER_ID: "user" });
+    let clock = Date.parse("2026-01-01T00:00:00Z");
+    const now = () => new Date(clock);
+
+    const pendingFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+      if (url.endsWith("/user/history")) {
+        return new Response(JSON.stringify({ episodes: [HISTORY_EPISODE] }), { status: 200 });
+      }
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "PROCESSING" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const first = (await runPipeline(taddyConfig, {}, { fetchImpl: pendingFetchImpl, env: { PATH: "" }, now })) as Record<
+      string,
+      any
+    >;
+    expect(first.transcripts).toEqual({ stored: 0, failed: 1 });
+
+    const stateAfterFirst = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(stateAfterFirst.episodes["ep-1"].transcriptStatus).toBe("none");
+    expect(stateAfterFirst.episodes["ep-1"].transcriptRecheck.attempts).toBe(1);
+
+    // A tick before the recheck gate elapses must defer — zero further ladder attempts.
+    clock += 60_000;
+    const deferred = (await runPipeline(taddyConfig, {}, { fetchImpl: pendingFetchImpl, env: { PATH: "" }, now })) as Record<
+      string,
+      any
+    >;
+    expect(deferred.transcripts).toEqual({ stored: 0, failed: 0, deferred: 1 });
+
+    // Past the gate, with the transcript now available, the episode is picked back up.
+    clock += TRANSCRIPT_RECHECK_BASE_MS;
+    const hitFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+      if (url.endsWith("/user/history")) {
+        return new Response(JSON.stringify({ episodes: [HISTORY_EPISODE] }), { status: 200 });
+      }
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({ data: { getPodcastEpisode: { uuid: "ep-1", transcript: "now available" } } }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const recovered = (await runPipeline(taddyConfig, {}, { fetchImpl: hitFetchImpl, env: { PATH: "" }, now })) as Record<
+      string,
+      any
+    >;
+    expect(recovered.transcripts).toEqual({ stored: 1, failed: 0 });
+    const stateAfterRecovery = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(stateAfterRecovery.episodes["ep-1"].transcriptStatus).toBe("stored");
+    expect(stateAfterRecovery.episodes["ep-1"].transcriptRecheck).toBeUndefined();
+  });
+
+  it("defers an RSS 'no transcript links declared' episode across runs until the recheck horizon, then fails it terminally", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+
+    let clock = Date.parse("2026-01-01T00:00:00Z");
+    const now = () => new Date(clock);
+    const NO_TRANSCRIPT_LINKS_FEED = `<?xml version="1.0"?>
+      <rss version="2.0">
+        <channel>
+          <item>
+            <title>Episode One</title>
+            <guid>ep-1</guid>
+            <enclosure url="https://cdn.example.com/ep1.mp3" />
+          </item>
+        </channel>
+      </rss>`;
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+      if (url.endsWith("/user/history")) {
+        return new Response(JSON.stringify({ episodes: [HISTORY_EPISODE] }), { status: 200 });
+      }
+      if (url.includes("export_feed_urls")) {
+        return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+          status: 200,
+        });
+      }
+      if (url === "https://example.com/feed.xml") {
+        return new Response(NO_TRANSCRIPT_LINKS_FEED, { status: 200 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const first = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" }, now })) as Record<string, any>;
+    expect(first.transcripts).toEqual({ stored: 0, failed: 1 });
+    const stateAfterFirst = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    // Stays "none" (not terminally failed) — the transcript link may simply not exist YET.
+    expect(stateAfterFirst.episodes["ep-1"].transcriptStatus).toBe("none");
+    expect(stateAfterFirst.episodes["ep-1"].transcriptRecheck).toBeDefined();
+
+    // Fast-forward well past the recheck horizon with the feed still declaring no links.
+    clock += 15 * 24 * 60 * 60_000;
+    const last = (await runPipeline(config(), {}, { fetchImpl, env: { PATH: "" }, now })) as Record<string, any>;
+    expect(last.transcripts).toEqual({ stored: 0, failed: 1 });
+    const finalState = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(finalState.episodes["ep-1"].transcriptStatus).toBe("failed");
+    expect(finalState.episodes["ep-1"].transcriptRecheck).toBeUndefined();
+  });
+
+  it("defers until the LATER of transcriptRetry and transcriptRecheck when both gates are set", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([HISTORY_EPISODE]);
+    await storage.updateEpisode(
+      "ep-1",
+      {
+        transcriptRetry: { consecutiveFailures: 1, nextEligibleAt: "2026-01-01T00:05:00.000Z" },
+        transcriptRecheck: {
+          attempts: 1,
+          nextEligibleAt: "2026-01-01T01:00:00.000Z",
+          firstDeferredAt: "2026-01-01T00:00:00.000Z",
+        },
+      },
+      () => new Date("2026-01-01T00:00:00.000Z"),
+    );
+
+    const { fetchImpl } = makeFetchImpl({ episodes: [] });
+
+    // Past the earlier (transcriptRetry) gate but still before the later (transcriptRecheck) gate.
+    const stillDeferred = (await runPipeline(config(), {}, {
+      fetchImpl,
+      env: { PATH: "" },
+      now: () => new Date("2026-01-01T00:10:00.000Z"),
+    })) as Record<string, any>;
+    expect(stillDeferred.transcripts).toEqual({ stored: 0, failed: 0, deferred: 1 });
+
+    // Past both gates: the episode is picked up.
+    const resumed = (await runPipeline(config(), {}, {
+      fetchImpl,
+      env: { PATH: "" },
+      now: () => new Date("2026-01-01T01:05:00.000Z"),
+    })) as Record<string, any>;
+    expect(resumed.transcripts.deferred).toBeUndefined();
   });
 
   it("picks up stored-but-unreviewed episodes from prior runs; skips those already reviewed", async () => {
