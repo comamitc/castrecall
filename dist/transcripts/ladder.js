@@ -204,7 +204,14 @@ export async function runTranscriptLadder(config, record, options = {}) {
     }
     // Rung 5: cloud speech-to-text (explicitly enabled only — costs money)
     const stt = sttAvailability(config);
-    if (!stt.ok) {
+    if (options.skipStt) {
+        rungs.push({
+            rung: "stt",
+            outcome: "skipped",
+            detail: "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
+        });
+    }
+    else if (!stt.ok) {
         rungs.push({ rung: "stt", outcome: "skipped", detail: stt.reason ?? "STT unavailable." });
     }
     else {

@@ -37,4 +37,5 @@ export type LadderResult = {
 export declare function runTranscriptLadder(config: ResolvedConfig, record: ListenRecord, options?: {
     fetchImpl?: FetchLike;
     env?: NodeJS.ProcessEnv;
+    skipStt?: boolean;
 }): Promise<LadderResult>;
