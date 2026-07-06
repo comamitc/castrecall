@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.6.1 — 2026-07-06
+
+Marketplace-publish readiness (#8): no runtime changes, closes the gap
+between what the plugin manifest claims and what actually ships.
+
+- **Manifest/package version drift fixed and CI-guarded**: `openclaw.plugin.json`
+  had been frozen at `0.3.0` since v0.1.0 while `package.json` moved on to
+  `0.6.0` — ClawHub reads the manifest version, so publishing today would
+  have listed a stale, misleading version. `npx openclaw plugins build
+  --entry ./dist/index.js --check` now runs in CI right after the existing
+  committed-`dist`-must-match-build guard, so the manifest can never drift
+  from source again.
+- **ClawHub publish spec finalized**: package renamed `castrecall` →
+  `@comamitc/castrecall` (ClawHub plugin scope must match the publish owner);
+  `openclaw.install.clawhubSpec` updated to `clawhub:@comamitc/castrecall`.
+  The plugin `id` (`castrecall`) is unchanged, so `openclaw plugins enable
+  castrecall` and all tool names are unaffected.
+- **Listing icon**: added `assets/icon.svg` (shipped via `package.json`
+  `files`) and a manifest `icon` field pointing at its raw-GitHub URL —
+  the only marketplace-card field ClawHub's plugin manifest supports.
+- **Docs**: README documents the GitHub install path as current and the
+  ClawHub path as pending publish/security review, adds a "Screenshots"
+  section showing an example `castrecall_generate_review` candidate; new
+  `docs/RELEASING.md` runbook covers version bump → manifest regen →
+  packaging → tag → `clawhub package publish` → post-publish README flip.
+
 ## v0.6.0 — 2026-07-06
 
 Event-driven transcript availability — delivered as bounded polling, because

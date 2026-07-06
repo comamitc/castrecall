@@ -1,12 +1,16 @@
 {
-  "name": "castrecall",
-  "version": "0.6.0",
+  "name": "@comamitc/castrecall",
+  "version": "0.6.1",
   "description": "CastRecall — turn podcast listening into retrievable memory. An OpenClaw tool plugin that ingests Pocket Casts listens, finds or generates transcripts, and creates approval-gated review candidates.",
   "type": "module",
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/comamitc/castrecall.git"
+  },
+  "homepage": "https://github.com/comamitc/castrecall#readme",
+  "bugs": {
+    "url": "https://github.com/comamitc/castrecall/issues"
   },
   "keywords": [
     "openclaw",
@@ -29,6 +33,7 @@
     "README.md",
     ".env.example",
     "docs",
+    "assets",
     "LICENSE"
   ],
   "peerDependencies": {
@@ -48,7 +53,7 @@
       "./dist/index.js"
     ],
     "install": {
-      "clawhubSpec": "clawhub:comamitc/castrecall",
+      "clawhubSpec": "clawhub:@comamitc/castrecall",
       "localPath": ".",
       "defaultChoice": "clawhub",
       "minHostVersion": ">=2026.6.11"

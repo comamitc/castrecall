@@ -26,4 +26,6 @@ jobs:
             echo "$untracked" >&2
             exit 1
           fi
+      - name: Committed plugin manifest must match generated metadata
+        run: npx openclaw plugins build --entry ./dist/index.js --check
       - run: npm test

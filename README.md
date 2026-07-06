@@ -59,8 +59,10 @@ Then enable it if needed with `openclaw plugins enable castrecall`.
 
 OpenClaw's current installer does not accept bare HTTPS GitHub URLs such as
 `https://github.com/comamitc/castrecall`; use the `git:github.com/...@ref`
-form above. When CastRecall is published to ClawHub, the install target will be
-`openclaw plugins install clawhub:comamitc/castrecall`.
+form above. That GitHub form is the current primary install path. Once
+CastRecall clears ClawHub's publish review, the install target will be
+`openclaw plugins install clawhub:@comamitc/castrecall` (pending publish —
+not yet live).
 
 ## First-run setup
 
@@ -85,6 +87,59 @@ Ask your agent to run `castrecall_setup` — it walks through everything below i
 | `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |
 | `castrecall_generate_review` | Writes approval-gated review candidates for stored transcripts. |
 | `castrecall_run_pipeline` | Chains sync → fetch transcripts (new listens only) → generate reviews (episodes newly stored this run) → corpus export. The tool a scheduler recipe should call — see "Scheduled / periodic sync" below. |
+
+## Screenshots
+
+CastRecall is a tool plugin with no GUI of its own, so the most honest
+"screenshot" of the review flow is its actual output. `castrecall_generate_review`
+writes one markdown file per episode to `review/pending/<episodeUuid>.md`:
+
+```
+$ castrecall_generate_review
+{ "generated": 1, "skipped": 0 }
+```
+
+```markdown
+---
+status: pending-review
+privacy: private-source
+episode_uuid: 3f9c1e2a-...
+podcast: "Some Great Podcast"
+episode: "Episode 42: The One About Memory"
+listened: 2026-07-04T18:12:00.000Z
+transcript_source: rss
+transcript_format: text
+generated_at: 2026-07-06T03:00:00.000Z
+---
+
+# Review: Episode 42: The One About Memory
+
+From **Some Great Podcast** by Jane Host.
+
+> This is a review candidate generated from a privately stored transcript.
+> Nothing below is in durable memory. Promote only what is worth keeping,
+> in your own words where possible, and discard the rest.
+
+## Provenance
+
+- Platform: Pocket Casts (listen history)
+- Feed: https://example.com/feed.xml
+- Transcript: rss
+- Fetched: 2026-07-04T18:20:00.000Z
+- Full transcript (4,213 words): ~/.openclaw/castrecall/sources/3f9c1e2a-.../transcript.txt
+
+## Excerpt candidates
+
+1. The most substantial paragraph the heuristic picked, verbatim from the transcript...
+
+## Reviewer notes
+
+- [ ] Worth keeping? What is the one durable idea?
+- [ ] Anything here change what I'm working on or thinking about?
+```
+
+You (or your agent) read the candidate, keep one durable idea in your own
+words, and delete the rest — nothing here is ever auto-promoted.
 
 ## The transcript ladder
 
