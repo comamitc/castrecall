@@ -20,8 +20,8 @@ export function podchaserConfigured(config) {
 /**
  * Look an episode up by RSS GUID first (exact), then by title, and return its transcript.
  * Podchaser episode GUIDs and titles are only unique within a podcast, so every candidate
- * is validated against the resolved feed's URL (or podcast title, as a fallback) before its
- * transcript is accepted — an unscoped match is treated as a miss rather than a hit.
+ * is validated against the resolved feed's URL when one is known, or against the podcast
+ * title otherwise — an unscoped or mismatched candidate is treated as a miss rather than a hit.
  * Returns undefined when Podchaser knows the episode but has no usable transcript.
  */
 export async function fetchPodchaserTranscript(config, episode, fetchImpl = fetch, retry = {}) {
@@ -34,7 +34,7 @@ export async function fetchPodchaserTranscript(config, episode, fetchImpl = fetc
     const attempts = [];
     if (episode.guid) {
         attempts.push(async () => {
-            const found = await lookupByGuid(config, episode.guid, fetchImpl, retry);
+            const found = await lookupByGuid(config, episode.guid, episode.feedUrl, fetchImpl, retry);
             return found ? [found] : [];
         });
     }
@@ -62,8 +62,9 @@ export async function fetchPodchaserTranscript(config, episode, fetchImpl = fetc
 function matchesExpectedPodcast(candidatePodcast, expected) {
     if (!expected.feedUrl && !expected.podcastTitle)
         return false;
-    if (expected.feedUrl && candidatePodcast?.rssUrl) {
-        return normalizeUrl(candidatePodcast.rssUrl) === normalizeUrl(expected.feedUrl);
+    if (expected.feedUrl) {
+        return (Boolean(candidatePodcast?.rssUrl) &&
+            normalizeUrl(candidatePodcast.rssUrl) === normalizeUrl(expected.feedUrl));
     }
     if (expected.podcastTitle && candidatePodcast?.title) {
         return normalizeTitle(candidatePodcast.title) === normalizeTitle(expected.podcastTitle);
@@ -76,7 +77,7 @@ function normalizeUrl(url) {
 function normalizeTitle(title) {
     return title.trim().toLowerCase();
 }
-async function lookupByGuid(config, guid, fetchImpl, retry) {
+async function lookupByGuid(config, guid, feedUrl, fetchImpl, retry) {
     const query = `query GetEpisodeByGuid($identifier: EpisodeIdentifier!) {
     episode(identifier: $identifier) {
       title
@@ -84,7 +85,11 @@ async function lookupByGuid(config, guid, fetchImpl, retry) {
       podcast { title rssUrl }
     }
   }`;
-    const result = await podchaserRequest(config, query, { identifier: { id: guid, type: "GUID" } }, fetchImpl, retry);
+    const identifier = { id: guid, type: "GUID" };
+    if (feedUrl) {
+        identifier.podcast = { id: feedUrl, type: "RSS" };
+    }
+    const result = await podchaserRequest(config, query, { identifier }, fetchImpl, retry);
     return result?.episode ?? undefined;
 }
 async function lookupByTitle(config, title, fetchImpl, retry) {

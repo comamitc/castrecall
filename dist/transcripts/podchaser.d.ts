@@ -20,8 +20,8 @@ export declare function podchaserConfigured(config: ResolvedConfig): boolean;
 /**
  * Look an episode up by RSS GUID first (exact), then by title, and return its transcript.
  * Podchaser episode GUIDs and titles are only unique within a podcast, so every candidate
- * is validated against the resolved feed's URL (or podcast title, as a fallback) before its
- * transcript is accepted — an unscoped match is treated as a miss rather than a hit.
+ * is validated against the resolved feed's URL when one is known, or against the podcast
+ * title otherwise — an unscoped or mismatched candidate is treated as a miss rather than a hit.
  * Returns undefined when Podchaser knows the episode but has no usable transcript.
  */
 export declare function fetchPodchaserTranscript(config: ResolvedConfig, episode: {
