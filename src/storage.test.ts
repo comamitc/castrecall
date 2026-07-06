@@ -200,6 +200,27 @@ describe("Storage", () => {
     expect(await storage.deriveSegmentsFromRaw("ep-1", cleanedText)).toBeUndefined();
   });
 
+  it("refuses to derive segments from a raw file that has drifted into cleanup-equivalent output text via different steps (issue #45 review)", async () => {
+    const text = "Hello world.";
+    const stored = await storage.storeTranscript("ep-1", {
+      raw: "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHello world.",
+      ext: "vtt",
+      text,
+      // Cleanup ran but was a no-op against the original raw — `applied: []`.
+      provenance: { ...PROVENANCE, format: "vtt", cleanup: { version: CLEANUP_VERSION, applied: [] } },
+    });
+
+    // The raw artifact is later overwritten with unrelated content whose
+    // *cleaned* output happens to coincide with the stored text, but only by
+    // actually firing a cleanup step the original no-op provenance never recorded.
+    const driftedRaw = "WEBVTT\n\n00:00:05.000 --> 00:00:09.000\n- Hello world.";
+    const driftedNormalized = normalizeTranscript(driftedRaw, "vtt");
+    expect(cleanTranscript(driftedNormalized.text)).toEqual({ text, applied: ["strip-caption-markers"] });
+    await fs.writeFile(stored.rawPath, driftedRaw, "utf8");
+
+    expect(await storage.deriveSegmentsFromRaw("ep-1", text)).toBeUndefined();
+  });
+
   it("refuses to derive segments when the raw artifact no longer normalizes to the stored text", async () => {
     const text = "Stored text that has since diverged from the raw file.";
     await storage.storeTranscript("ep-1", {
