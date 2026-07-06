@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.15.0 — 2026-07-06
+
+Transcripts gain structure: timing and speakers survive from provider
+output all the way into the exported corpus.
+
+- **Timestamped transcript segments** (#43, PR #78): VTT/SRT/JSON provider
+  output and STT responses now normalize into segments with start/end
+  times that persist through storage and surface in corpus export, so
+  downstream consumers can anchor quotes to a position in the episode
+  instead of losing all timing at ingestion.
+- **Speaker metadata and diarization** (#44, PR #79): speaker labels from
+  provider transcripts and diarizing STT backends are normalized,
+  preserved in stored metadata, and included as speaker turns in exported
+  corpus pages when available — attribution-grade structure on top of
+  #43's segments, with sources that carry no speaker data degrading
+  cleanly.
+
 ## v0.14.0 — 2026-07-06
 
 The transcript quality track begins: bad transcripts get caught and
