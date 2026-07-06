@@ -69,7 +69,8 @@ the fail-closed bug and #52's preset is the blessed way to satisfy it; #54 recor
 the exact provider/model/decode settings that #52/#53 introduce; #55's preflight
 summarizes the #51–#53 config surface; #56 documents all of it last.
 
-- [ ] #51 explicit quality-ready MLX model (fail closed) → then #52 Apple Silicon large-v3-turbo preset → release v0.11.0
+- [x] #51 explicit quality-ready MLX model — PR #59 squash-merged, issue closed. MLX Whisper now fails closed (CastrecallSetupError) instead of silently transcribing a corpus with upstream whisper-tiny; requires explicit CASTRECALL_WHISPER_MODEL. Two review rounds clean; one dist-drift CI round (rebuilt). Ran in PARALLEL with #1's pipeline (disjoint lanes).
+- [ ] #52 Apple Silicon large-v3-turbo preset → release v0.11.0
 - [ ] #53 loop-safe Whisper decoding options → then #54 exact provider/model/decode provenance → release v0.12.0
 - [ ] #55 corpus-scale transcription preflight/warnings → then #56 local-model docs → release v0.13.0
 
