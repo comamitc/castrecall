@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.5.0 — 2026-07-06
+
+A fifth transcript-ladder rung: Podchaser transcript lookup, hardened against
+private-feed token disclosure.
+
+- **Podchaser transcript rung** (#10, PR #33): with `PODCHASER_API_KEY` set
+  (a pre-minted bearer access token from Podchaser's `requestAccessToken`
+  exchange), the ladder checks Podchaser's GraphQL API between Taddy and
+  local Whisper — a cheap transcript-lookup tier before any transcription
+  runs. Two-hop lookup (episode by RSS GUID, falling back to exact-title
+  search; then the short-lived transcript URL, normalized from
+  beautified/raw JSON utterances), with every candidate validated against
+  the resolved feed before it is trusted.
+- **Trust-boundary hardening** (same PR, driven by five adversarial review
+  rounds): nothing derived from the user's subscription feed ever crosses
+  the Podchaser boundary. Feed URLs are used only for local candidate
+  validation and are never transmitted (private/paid feeds embed subscriber
+  tokens in userinfo, query, fragment, or path — unprovably public);
+  RSS GUIDs are sent only when provably opaque, with URL-like GUIDs —
+  including percent-encoded and double-encoded structure — falling back to
+  title-only search. Regression matrix asserts no request body ever
+  contains a token in any position.
+
 ## v0.4.0 — 2026-07-06
 
 Ladder breadth: a second cloud STT provider, and an honest answer on
