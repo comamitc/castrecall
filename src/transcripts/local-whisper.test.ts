@@ -203,16 +203,53 @@ describe("resolveWhisperDecodeArgs", () => {
     }
   });
 
-  it("applies hallucinationSilenceThreshold on Python-backed flavors once word timestamps are enabled", () => {
+  it("applies hallucinationSilenceThreshold on Python-backed flavors once word timestamps are APPLIED (json output)", () => {
     const decode: WhisperDecodeConfig = {
       ...DEFAULT_DECODE,
       wordTimestamps: true,
+      outputFormat: "json",
       hallucinationSilenceThreshold: 2,
     };
     const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
     expect(mlx.args).toEqual(expect.arrayContaining(["--hallucination-silence-threshold", "2"]));
-    expect(mlx.applied).toEqual(expect.arrayContaining(["hallucinationSilenceThreshold"]));
+    expect(mlx.applied).toEqual(
+      expect.arrayContaining(["wordTimestamps", "hallucinationSilenceThreshold"]),
+    );
     expect(mlx.ignored).toEqual([]);
+  });
+
+  it("never reports word timestamps as applied when the stored output format cannot carry them", () => {
+    // txt output stores no word-level timing — reporting the option as
+    // honored would be false provenance.
+    const decode: WhisperDecodeConfig = { ...DEFAULT_DECODE, wordTimestamps: true };
+    for (const flavor of ["mlx-whisper", "openai-whisper", "whisper-ctranslate2"] as const) {
+      const resolution = resolveWhisperDecodeArgs(flavor, decode);
+      expect(resolution.applied).not.toContain("wordTimestamps");
+      expect(resolution.args.join(" ")).not.toContain("word");
+      const entry = resolution.ignored.find((item) => item.option === "wordTimestamps");
+      expect(entry?.reason).toContain("json");
+    }
+  });
+
+  it("ignores hallucinationSilenceThreshold when word timestamps were requested but not applied", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      wordTimestamps: true, // requested, but txt output means not applied
+      hallucinationSilenceThreshold: 2,
+    };
+    const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
+    expect(mlx.applied).not.toContain("hallucinationSilenceThreshold");
+    expect(mlx.ignored.map((item) => item.option)).toEqual(
+      expect.arrayContaining(["wordTimestamps", "hallucinationSilenceThreshold"]),
+    );
+  });
+
+  it("custom flavor surfaces the unapplied loop-prevention default even with an otherwise default config", () => {
+    const custom = resolveWhisperDecodeArgs("custom", DEFAULT_DECODE);
+    expect(custom.args).toEqual([]);
+    expect(custom.applied).toEqual([]);
+    expect(custom.ignored.map((item) => item.option)).toEqual(["conditionOnPreviousText"]);
+    expect(custom.ignored[0].reason).toContain("loop-prevention");
   });
 
   it("ignores whisper.cpp-unsupported options with a reason instead of dropping them silently", () => {
@@ -672,7 +709,7 @@ describe("transcribeWithLocalWhisper decode options (issue #53)", () => {
     }
   });
 
-  it("resolveWhisperDecodeArgs custom no-op still lets the existing custom command test pass unchanged", async () => {
+  it("custom command surfaces every bypassed decode control as ignored, including the loop-prevention default", async () => {
     const config = resolveConfig(
       {},
       {
@@ -687,6 +724,16 @@ describe("transcribeWithLocalWhisper decode options (issue #53)", () => {
     });
     expect(result.text).toBe("fake audio bytes standing in for a transcript");
     expect(result.format).toBe("txt");
-    expect(result.ignoredOptions).toEqual([]);
+    // The custom template owns the command line, so nothing is applied —
+    // but nothing is silently dropped either: the requested language and
+    // output format AND CastRecall's own condition-on-previous-text
+    // loop-prevention default all show up as ignored with reasons.
+    expect(result.ignoredOptions.map((entry) => entry.option)).toEqual(
+      expect.arrayContaining(["conditionOnPreviousText", "language", "outputFormat"]),
+    );
+    const loopGuard = result.ignoredOptions.find(
+      (entry) => entry.option === "conditionOnPreviousText",
+    );
+    expect(loopGuard?.reason).toContain("loop-prevention");
   });
 });

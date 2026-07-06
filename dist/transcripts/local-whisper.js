@@ -86,13 +86,44 @@ const WHISPER_CPP_FORMAT_FLAGS = {
  * flavor CLI flags. Every option lands in `applied` with the flag it
  * produced, or in `ignored` with a reason — nothing is silently dropped
  * (the "fail clearly or ignored with explicit provenance" criterion). The
- * `custom` flavor ignores everything: same precedent as resolveWhisperModel
- * treating a leftover preset on `custom` as neither consumed nor an error,
- * because the user owns the whole command template.
+ * `custom` flavor applies nothing (the user owns the whole command
+ * template) but every decode control it bypasses — INCLUDING CastRecall's
+ * own loop-prevention default — is reported in `ignored`, so
+ * setup/status/rung provenance shows exactly which guardrails a custom
+ * command is running without.
  */
 export function resolveWhisperDecodeArgs(flavor, decode) {
     if (flavor === "custom") {
-        return { args: [], applied: [], ignored: [], outputFormat: "txt" };
+        const ignored = [];
+        const customReason = "CASTRECALL_WHISPER_COMMAND owns its full command line; CastRecall adds no decode flags. " +
+            "Include the equivalent flag in the command template itself.";
+        if (!decode.conditionOnPreviousText) {
+            ignored.push({
+                option: "conditionOnPreviousText",
+                reason: "CastRecall's loop-prevention default (condition-on-previous-text off) is NOT applied " +
+                    `to a custom command. ${customReason}`,
+            });
+        }
+        if (decode.language)
+            ignored.push({ option: "language", reason: customReason });
+        if (decode.wordTimestamps)
+            ignored.push({ option: "wordTimestamps", reason: customReason });
+        if (decode.noSpeechThreshold !== undefined) {
+            ignored.push({ option: "noSpeechThreshold", reason: customReason });
+        }
+        if (decode.logprobThreshold !== undefined) {
+            ignored.push({ option: "logprobThreshold", reason: customReason });
+        }
+        if (decode.compressionRatioThreshold !== undefined) {
+            ignored.push({ option: "compressionRatioThreshold", reason: customReason });
+        }
+        if (decode.hallucinationSilenceThreshold !== undefined) {
+            ignored.push({ option: "hallucinationSilenceThreshold", reason: customReason });
+        }
+        if (decode.outputFormat !== "txt") {
+            ignored.push({ option: "outputFormat", reason: customReason });
+        }
+        return { args: [], applied: [], ignored, outputFormat: "txt" };
     }
     const ignored = [];
     const ignore = (option, reason) => ignored.push({ option, reason });
@@ -132,24 +163,30 @@ export function resolveWhisperDecodeArgs(flavor, decode) {
         }
         applied.push("conditionOnPreviousText");
     }
+    // Word-level timing only survives into the STORED artifact when the
+    // output format can carry it (json). Passing the flag with a txt/vtt/srt
+    // output would decode differently but store no word timing — reporting
+    // that as "applied" is false provenance, so it's ignored with the fix.
+    let wordTimestampsApplied = false;
     if (decode.wordTimestamps) {
-        if (flavor === "whisper.cpp") {
-            if (outputFormat === "json") {
-                args.push("-ojf");
-                applied.push("wordTimestamps");
-            }
-            else {
-                ignore("wordTimestamps", "whisper.cpp only carries word-level timing in its full-JSON -ojf output; set " +
-                    "CASTRECALL_WHISPER_OUTPUT_FORMAT=json to use this.");
-            }
+        if (outputFormat !== "json") {
+            ignore("wordTimestamps", `${flavor} word-level timing survives only in json output; the stored ${outputFormat} ` +
+                "output cannot carry it. Set CASTRECALL_WHISPER_OUTPUT_FORMAT=json to use this.");
+        }
+        else if (flavor === "whisper.cpp") {
+            args.push("-ojf");
+            applied.push("wordTimestamps");
+            wordTimestampsApplied = true;
         }
         else if (flavor === "mlx-whisper") {
             args.push("--word-timestamps", "True");
             applied.push("wordTimestamps");
+            wordTimestampsApplied = true;
         }
         else {
             args.push("--word_timestamps", "True");
             applied.push("wordTimestamps");
+            wordTimestampsApplied = true;
         }
     }
     applyThreshold(flavor, decode.noSpeechThreshold, "noSpeechThreshold", args, applied, ignore, {
@@ -175,9 +212,9 @@ export function resolveWhisperDecodeArgs(flavor, decode) {
     // ignored with an explicit reason instead of being reported as applied.
     if (decode.hallucinationSilenceThreshold !== undefined &&
         flavor !== "whisper.cpp" &&
-        !decode.wordTimestamps) {
-        ignore("hallucinationSilenceThreshold", `${flavor} only honors hallucinationSilenceThreshold alongside word timestamps; set ` +
-            "CASTRECALL_WHISPER_WORD_TIMESTAMPS=true to use this.");
+        !wordTimestampsApplied) {
+        ignore("hallucinationSilenceThreshold", `${flavor} only honors hallucinationSilenceThreshold alongside APPLIED word timestamps ` +
+            "(CASTRECALL_WHISPER_WORD_TIMESTAMPS=true with CASTRECALL_WHISPER_OUTPUT_FORMAT=json).");
     }
     else {
         applyThreshold(flavor, decode.hallucinationSilenceThreshold, "hallucinationSilenceThreshold", args, applied, ignore, {

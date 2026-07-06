@@ -98,9 +98,11 @@ export type WhisperDecodeResolution = {
  * flavor CLI flags. Every option lands in `applied` with the flag it
  * produced, or in `ignored` with a reason — nothing is silently dropped
  * (the "fail clearly or ignored with explicit provenance" criterion). The
- * `custom` flavor ignores everything: same precedent as resolveWhisperModel
- * treating a leftover preset on `custom` as neither consumed nor an error,
- * because the user owns the whole command template.
+ * `custom` flavor applies nothing (the user owns the whole command
+ * template) but every decode control it bypasses — INCLUDING CastRecall's
+ * own loop-prevention default — is reported in `ignored`, so
+ * setup/status/rung provenance shows exactly which guardrails a custom
+ * command is running without.
  */
 export declare function resolveWhisperDecodeArgs(flavor: WhisperFlavor, decode: WhisperDecodeConfig): WhisperDecodeResolution;
 /**
