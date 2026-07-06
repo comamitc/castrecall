@@ -21,6 +21,13 @@ describe("cleanTranscript", () => {
       expect(result.text).toBe(input);
       expect(result.applied).toEqual([]);
     });
+
+    it("preserves decimals, clock times, and URLs — never splits digit/domain punctuation", () => {
+      const input = "The value is 3.14, arriving at 10:30, see example.com for details.";
+      const result = cleanTranscript(input);
+      expect(result.text).toBe(input);
+      expect(result.applied).toEqual([]);
+    });
   });
 
   describe("regression fixtures — caption-formatting defects", () => {
@@ -45,6 +52,22 @@ describe("cleanTranscript", () => {
       const result = cleanTranscript("- Hello there.\n- Hi back.");
       expect(result.text).toBe("Hello there.\nHi back.");
       expect(result.applied).toContain("strip-caption-markers");
+    });
+
+    it("strips a caret-prefixed standalone cue line", () => {
+      const result = cleanTranscript("Hello there.\n>> [MUSIC]\nGoodbye.");
+      expect(result.text).toBe("Hello there.\nGoodbye.");
+      expect(result.applied).toEqual(
+        expect.arrayContaining(["strip-caption-markers", "strip-standalone-cues"]),
+      );
+    });
+
+    it("strips a dash-prefixed standalone cue line", () => {
+      const result = cleanTranscript("Hello there.\n- (inaudible)\nGoodbye.");
+      expect(result.text).toBe("Hello there.\nGoodbye.");
+      expect(result.applied).toEqual(
+        expect.arrayContaining(["strip-caption-markers", "strip-standalone-cues"]),
+      );
     });
 
     it("leaves a mid-sentence cue in place — the allowlist only fires on standalone lines", () => {
@@ -86,6 +109,9 @@ describe("cleanTranscript", () => {
       "- Hello there.\n- Hi back.",
       "Already clean, perfectly normal prose. Nothing to fix here.",
       "(inaudible)\nWe went to the (inaudible) store yesterday.",
+      "Hello there.\n>> [MUSIC]\nGoodbye.",
+      "Hello there.\n- (inaudible)\nGoodbye.",
+      "The value is 3.14, arriving at 10:30, see example.com for details.",
     ];
 
     it("is idempotent — cleaning already-clean output changes nothing further", () => {
