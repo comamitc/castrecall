@@ -251,6 +251,22 @@ export type Provenance = {
 };
 
 /**
+ * True when `generation` is local-whisper provenance. Recognizes both the
+ * documented `kind: "local-whisper"` discriminator (issue #61) and sidecars
+ * written before that discriminator existed — those carry local-whisper-only
+ * fields like `backend`/`decode` with no `kind` at all, and must still be
+ * treated as local-whisper rather than silently falling through as neither
+ * local nor remote.
+ */
+export function isLocalWhisperGeneration(
+  gen: LocalWhisperGeneration | RemoteSttGeneration | undefined,
+): gen is LocalWhisperGeneration {
+  if (!gen) return false;
+  if (gen.kind === "local-whisper") return true;
+  return gen.kind === undefined && "backend" in gen;
+}
+
+/**
  * The shape actually persisted to provenance.json: a Provenance plus the
  * fields storage stamps on write (schema version, content hash). Sidecars
  * written before v1 may lack these two fields.

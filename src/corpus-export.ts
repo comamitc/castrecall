@@ -12,7 +12,7 @@
 import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
-import type { ListenRecord, Provenance } from "./storage.js";
+import { isLocalWhisperGeneration, type ListenRecord, type Provenance } from "./storage.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
 import type { TranscriptSegment } from "./transcripts/normalize.js";
 import type { TranscriptQuality } from "./transcripts/quality.js";
@@ -305,7 +305,7 @@ type PageMeta = {
 
 function frontmatterLines(title: string, meta: PageMeta, timing?: SectionTiming): string[] {
   const gen = meta.generation;
-  const localGen = gen?.kind === "local-whisper" ? gen : undefined;
+  const localGen = isLocalWhisperGeneration(gen) ? gen : undefined;
   const remoteGen = gen?.kind === "remote-stt" ? gen : undefined;
   const lines: Array<string | undefined> = [
     "---",

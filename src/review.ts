@@ -7,7 +7,7 @@
  * decides what — if anything — graduates into curated memory.
  */
 
-import type { ListenRecord, Provenance } from "./storage.js";
+import { isLocalWhisperGeneration, type ListenRecord, type Provenance } from "./storage.js";
 
 const MAX_EXCERPTS = 5;
 const MAX_EXCERPT_CHARS = 600;
@@ -24,7 +24,7 @@ export function buildReviewCandidate(options: {
   const excerpts = pickExcerpts(transcriptText);
   const wordCount = transcriptText.split(/\s+/).filter(Boolean).length;
   const gen = provenance.generation;
-  const localGen = gen?.kind === "local-whisper" ? gen : undefined;
+  const localGen = isLocalWhisperGeneration(gen) ? gen : undefined;
   const remoteGen = gen?.kind === "remote-stt" ? gen : undefined;
   // Stored provenance predating newer generation fields (or written by a
   // different build) may lack decode.applied, outputFormat, or
