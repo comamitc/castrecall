@@ -46,9 +46,16 @@ const configSchema = Type.Object(
     ),
     sttProvider: Type.Optional(
       Type.Union(
-        [Type.Literal("assemblyai"), Type.Literal("openai"), Type.Literal("deepgram")],
+        [
+          Type.Literal("assemblyai"),
+          Type.Literal("openai"),
+          Type.Literal("deepgram"),
+          Type.Literal("remote-stt"),
+        ],
         {
-          description: "Speech-to-text provider when sttEnabled is true (default assemblyai).",
+          description:
+            "Speech-to-text provider when sttEnabled is true (default assemblyai). remote-stt " +
+            "calls a self-hosted service via CASTRECALL_REMOTE_STT_BASE_URL/CASTRECALL_REMOTE_STT_TOKEN.",
         },
       ),
     ),

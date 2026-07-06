@@ -22,8 +22,14 @@ const configSchema = Type.Object({
     sttEnabled: Type.Optional(Type.Boolean({
         description: "Explicitly enable the paid speech-to-text fallback (default false; it costs money per episode).",
     })),
-    sttProvider: Type.Optional(Type.Union([Type.Literal("assemblyai"), Type.Literal("openai"), Type.Literal("deepgram")], {
-        description: "Speech-to-text provider when sttEnabled is true (default assemblyai).",
+    sttProvider: Type.Optional(Type.Union([
+        Type.Literal("assemblyai"),
+        Type.Literal("openai"),
+        Type.Literal("deepgram"),
+        Type.Literal("remote-stt"),
+    ], {
+        description: "Speech-to-text provider when sttEnabled is true (default assemblyai). remote-stt " +
+            "calls a self-hosted service via CASTRECALL_REMOTE_STT_BASE_URL/CASTRECALL_REMOTE_STT_TOKEN.",
     })),
     exportDir: Type.Optional(Type.String({
         description: "Opt-in: also write section-split, frontmattered markdown pages here on transcript " +
