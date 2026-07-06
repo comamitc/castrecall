@@ -23,6 +23,12 @@ import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
+import {
+  normalizeTranscript,
+  type NormalizedTranscript,
+  type TranscriptFormat,
+  type TranscriptSegment,
+} from "./transcripts/normalize.js";
 import type { TranscriptQuality } from "./transcripts/quality.js";
 
 /**
@@ -221,6 +227,8 @@ export type StoredTranscript = {
   rawPath: string;
   textPath: string;
   provenancePath: string;
+  /** Only set when the stored artifact carried a non-empty `segments` array (issue #43). */
+  segmentsPath?: string;
   alreadyStored: boolean;
 };
 
@@ -625,6 +633,57 @@ export class Storage {
   }
 
   /**
+   * Read the optional `segments.json` sidecar (issue #43). Additive: episodes
+   * stored before this sidecar existed, or stored from a source with no
+   * segment timing (e.g. plain text), simply have no file — this returns
+   * `undefined` rather than throwing, same tolerance as `readProvenance`.
+   */
+  async readSegments(episodeUuid: string): Promise<TranscriptSegment[] | undefined> {
+    try {
+      const raw = await fs.readFile(path.join(this.sourceDir(episodeUuid), "segments.json"), "utf8");
+      return JSON.parse(raw) as TranscriptSegment[];
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Recover segment timing for a transcript stored before the `segments.json`
+   * sidecar existed (issue #43), by re-normalizing the still-present
+   * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
+   * freshly normalized text matches `expectedText` exactly, so a raw file
+   * that has drifted from the recorded transcript.txt can never contaminate
+   * export with mismatched timing. Returns `undefined` when there is no raw
+   * artifact, its format is unrecognized, it fails to parse, or its
+   * normalized text no longer matches.
+   */
+  async deriveSegmentsFromRaw(
+    episodeUuid: string,
+    expectedText: string,
+  ): Promise<TranscriptSegment[] | undefined> {
+    const provenance = await this.readProvenance(episodeUuid);
+    const format = provenance?.format;
+    if (!format || !isTranscriptFormat(format)) return undefined;
+    let raw: string;
+    try {
+      raw = await fs.readFile(
+        path.join(this.sourceDir(episodeUuid), `raw.${format}`),
+        "utf8",
+      );
+    } catch {
+      return undefined;
+    }
+    let normalized: NormalizedTranscript;
+    try {
+      normalized = normalizeTranscript(raw, format);
+    } catch {
+      return undefined;
+    }
+    if (normalized.text !== expectedText) return undefined;
+    return normalized.segments?.length ? normalized.segments : undefined;
+  }
+
+  /**
    * Store a transcript with its provenance sidecar. Idempotent: if a
    * transcript already exists for the episode, nothing is overwritten — the
    * content hash is computed once, at first write, and is stable thereafter.
@@ -639,14 +698,34 @@ export class Storage {
    */
   async storeTranscript(
     episodeUuid: string,
-    artifact: { raw: string; ext: string; text: string; provenance: Provenance },
+    artifact: {
+      raw: string;
+      ext: string;
+      text: string;
+      provenance: Provenance;
+      segments?: TranscriptSegment[];
+    },
   ): Promise<StoredTranscript> {
     const dir = this.sourceDir(episodeUuid);
     const rawPath = path.join(dir, `raw.${artifact.ext.replace(/^\./, "")}`);
     const textPath = path.join(dir, "transcript.txt");
     const provenancePath = path.join(dir, "provenance.json");
+    const segmentsPath = path.join(dir, "segments.json");
     if (await this.hasTranscript(episodeUuid)) {
-      return { rawPath, textPath, provenancePath, alreadyStored: true };
+      // alreadyStored means nothing from THIS call was written — reflect what
+      // actually landed on disk from the original store, not this call's
+      // (possibly different) artifact.segments.
+      const segmentsOnDisk = await fs
+        .access(segmentsPath)
+        .then(() => true)
+        .catch(() => false);
+      return {
+        rawPath,
+        textPath,
+        provenancePath,
+        segmentsPath: segmentsOnDisk ? segmentsPath : undefined,
+        alreadyStored: true,
+      };
     }
     const contentHash = createHash("sha256").update(artifact.text, "utf8").digest("hex");
     const provenance: StoredProvenance = {
@@ -664,6 +743,7 @@ export class Storage {
     );
     await fs.mkdir(stagingDir, { recursive: true });
     await fs.mkdir(path.dirname(dir), { recursive: true });
+    const hasSegments = (artifact.segments?.length ?? 0) > 0;
     try {
       await fs.writeFile(path.join(stagingDir, path.basename(rawPath)), artifact.raw, "utf8");
       await fs.writeFile(
@@ -672,14 +752,40 @@ export class Storage {
         "utf8",
       );
       await fs.writeFile(path.join(stagingDir, "transcript.txt"), artifact.text, "utf8");
+      // Additive sidecar (issue #43): written only when segments are present,
+      // so it lands atomically with the triad via the single rename below, or
+      // not at all — never as a partial/orphaned write.
+      if (hasSegments) {
+        await fs.writeFile(
+          path.join(stagingDir, "segments.json"),
+          `${JSON.stringify(artifact.segments, null, 2)}\n`,
+          "utf8",
+        );
+      }
       await fs.rename(stagingDir, dir);
-      return { rawPath, textPath, provenancePath, alreadyStored: false };
+      return {
+        rawPath,
+        textPath,
+        provenancePath,
+        segmentsPath: hasSegments ? segmentsPath : undefined,
+        alreadyStored: false,
+      };
     } catch (error) {
       await fs.rm(stagingDir, { recursive: true, force: true });
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOTEMPTY" || code === "EEXIST") {
         if (await this.hasTranscript(episodeUuid)) {
-          return { rawPath, textPath, provenancePath, alreadyStored: true };
+          const segmentsOnDisk = await fs
+            .access(segmentsPath)
+            .then(() => true)
+            .catch(() => false);
+          return {
+            rawPath,
+            textPath,
+            provenancePath,
+            segmentsPath: segmentsOnDisk ? segmentsPath : undefined,
+            alreadyStored: true,
+          };
         }
         throw new Error(
           `Refusing to report alreadyStored for episode ${episodeUuid}: ` +
@@ -859,4 +965,10 @@ export class Storage {
 
 function safeName(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+const TRANSCRIPT_FORMATS = new Set<TranscriptFormat>(["txt", "html", "vtt", "srt", "json"]);
+
+function isTranscriptFormat(value: string): value is TranscriptFormat {
+  return TRANSCRIPT_FORMATS.has(value as TranscriptFormat);
 }

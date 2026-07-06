@@ -3,7 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ListenRecord, Provenance } from "./storage.js";
-import { CorpusExporter, buildCorpusPages, slugify, splitSections } from "./corpus-export.js";
+import type { TranscriptSegment } from "./transcripts/normalize.js";
+import {
+  CorpusExporter,
+  buildCorpusPages,
+  formatTimecode,
+  sectionTimestamps,
+  slugify,
+  splitSectionRanges,
+  splitSections,
+} from "./corpus-export.js";
 
 // Deterministic sha256("ep-1").slice(0, 8) disambiguator the exporter appends
 // to RECORD's episode slug (see episodeDirSlug in corpus-export.ts).
@@ -38,6 +47,59 @@ function paragraph(words: number, seed: string): string {
   return Array.from({ length: words }, (_, i) => `${seed}${i}`).join(" ");
 }
 
+describe("formatTimecode", () => {
+  it("formats seconds as HH:MM:SS, rounding and supporting durations over an hour", () => {
+    expect(formatTimecode(0)).toBe("00:00:00");
+    expect(formatTimecode(90.5)).toBe("00:01:31");
+    expect(formatTimecode(3661)).toBe("01:01:01");
+  });
+});
+
+describe("sectionTimestamps", () => {
+  function seg(text: string, startSeconds?: number, endSeconds?: number): TranscriptSegment {
+    return { text, startSeconds, endSeconds };
+  }
+
+  it("returns all-undefined entries when there is no usable timing signal", () => {
+    expect(sectionTimestamps(undefined, [{ start: 0, end: 10 }], 10)).toEqual([{}]);
+    expect(sectionTimestamps([seg("hi")], [{ start: 0, end: 2 }], 2)).toEqual([{}]);
+    expect(sectionTimestamps([seg("hi", 0, 1)], [], 2)).toEqual([]);
+    expect(sectionTimestamps([seg("hi", 0, 1)], [{ start: 0, end: 0 }], 0)).toEqual([{}]);
+  });
+
+  it("interpolates proportionally and clamps to the final segment's endSeconds past the timed range", () => {
+    const segments = [seg("AAAA", 0, 4), seg("BBBB", 4, 8), seg("CCCC", 8, 12)];
+    const ranges = [
+      { start: 0, end: 4 },
+      { start: 4, end: 8 },
+      { start: 8, end: 12 },
+    ];
+    const result = sectionTimestamps(segments, ranges, 12);
+    expect(result).toEqual([
+      { approxStart: 0, approxEnd: 4 },
+      { approxStart: 4, approxEnd: 8 },
+      { approxStart: 8, approxEnd: 12 },
+    ]);
+  });
+
+  it("yields undefined (never NaN) for a section mapping into a gap left by an untimed middle segment, and stays monotonic", () => {
+    const segments = [seg("AAAA", 0, 4), seg("BBBB"), seg("CCCC", 8, 12)];
+    const ranges = [
+      { start: 0, end: 4 },
+      { start: 5, end: 7 },
+      { start: 8, end: 12 },
+    ];
+    const result = sectionTimestamps(segments, ranges, 12);
+    expect(result[0]).toEqual({ approxStart: 0, approxEnd: 4 });
+    expect(result[1]).toEqual({ approxStart: undefined, approxEnd: undefined });
+    expect(result[2]).toEqual({ approxStart: 8, approxEnd: 12 });
+    for (const entry of result) {
+      if (entry.approxStart !== undefined) expect(Number.isNaN(entry.approxStart)).toBe(false);
+      if (entry.approxEnd !== undefined) expect(Number.isNaN(entry.approxEnd)).toBe(false);
+    }
+  });
+});
+
 describe("slugify", () => {
   it("kebab-cases normal titles", () => {
     expect(slugify("Episode One: A Deep Dive", "x")).toBe("episode-one-a-deep-dive");
@@ -60,6 +122,14 @@ describe("slugify", () => {
     const slug = slugify(long, "x");
     expect(slug.length).toBeLessThanOrEqual(60);
     expect(slug.endsWith("-")).toBe(false);
+  });
+});
+
+describe("splitSectionRanges", () => {
+  it("produces ranges whose slices equal splitSections' output", () => {
+    const text = `Intro paragraph with some words.\n\nSecond paragraph continues the idea further.\n\nThird and final paragraph wraps up.`;
+    const ranges = splitSectionRanges(text, { targetWords: 5, maxWords: 8 });
+    expect(ranges.map((r) => text.slice(r.start, r.end))).toEqual(splitSections(text, { targetWords: 5, maxWords: 8 }));
   });
 });
 
@@ -297,6 +367,99 @@ describe("buildCorpusPages", () => {
       expect(page.content).not.toContain("transcript_quality_reasons:");
     }
   });
+
+  it("computes approximate section timestamps from segments (issue #43): quoted frontmatter plus index timecode suffixes", () => {
+    const longText = Array.from({ length: 10 }, (_, i) => paragraph(60, `s${i}-w`)).join("\n\n");
+    const half = Math.floor(longText.length / 2);
+    const segments: TranscriptSegment[] = [
+      { text: longText.slice(0, half), startSeconds: 0, endSeconds: 100 },
+      { text: longText.slice(half), startSeconds: 100, endSeconds: 200 },
+    ];
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: longText,
+      contentHash: "hash",
+      targetWords: 150,
+      maxWords: 200,
+      segments,
+    });
+    const sectionPages = pages.filter((p) => !p.relativePath.endsWith("index.md"));
+    const indexPage = pages.find((p) => p.relativePath.endsWith("index.md"))!;
+    expect(sectionPages.length).toBeGreaterThan(1);
+    for (const page of sectionPages) {
+      expect(page.content).toMatch(/approx_start: "\d{2}:\d{2}:\d{2}"/);
+      expect(page.content).toMatch(/approx_end: "\d{2}:\d{2}:\d{2}"/);
+    }
+    expect(indexPage.content).toContain('approx_start: "00:00:00"');
+    expect(indexPage.content).toContain('approx_end: "00:03:20"');
+    expect(indexPage.content).toMatch(/\[.+\]\(.+\) — \d{2}:\d{2}:\d{2}/);
+  });
+
+  it("omits approx_start/approx_end entirely when segments are not supplied (backward compatible)", () => {
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Body text.",
+      contentHash: "hash",
+    });
+    for (const page of pages) {
+      expect(page.content).not.toContain("approx_start:");
+      expect(page.content).not.toContain("approx_end:");
+    }
+  });
+
+  it("always emits approx_start and approx_end on index.md together, never one without the other", () => {
+    const withSegments = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Body text for timing.",
+      contentHash: "hash",
+      segments: [{ text: "Body text for timing.", startSeconds: 5, endSeconds: 15 }],
+    });
+    const withIndex = withSegments.find((p) => p.relativePath.endsWith("index.md"))!;
+    expect(withIndex.content).toContain("approx_start:");
+    expect(withIndex.content).toContain("approx_end:");
+
+    const withoutSegments = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Body text for timing.",
+      contentHash: "hash",
+    });
+    const withoutIndex = withoutSegments.find((p) => p.relativePath.endsWith("index.md"))!;
+    expect(withoutIndex.content).not.toContain("approx_start:");
+    expect(withoutIndex.content).not.toContain("approx_end:");
+  });
+
+  it("never emits NaN and keeps section approx_start non-decreasing when a middle segment has no timing", () => {
+    const longText = Array.from({ length: 10 }, (_, i) => paragraph(60, `m${i}-w`)).join("\n\n");
+    const third = Math.floor(longText.length / 3);
+    const segments: TranscriptSegment[] = [
+      { text: longText.slice(0, third), startSeconds: 0, endSeconds: 50 },
+      { text: longText.slice(third, third * 2) },
+      { text: longText.slice(third * 2), startSeconds: 100, endSeconds: 150 },
+    ];
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: longText,
+      contentHash: "hash",
+      targetWords: 150,
+      maxWords: 200,
+      segments,
+    });
+    const sectionPages = pages.filter((p) => !p.relativePath.endsWith("index.md"));
+    const starts: number[] = [];
+    for (const page of sectionPages) {
+      expect(page.content).not.toContain("NaN");
+      const match = page.content.match(/approx_start: "(\d{2}):(\d{2}):(\d{2})"/);
+      if (match) starts.push(Number(match[1]) * 3600 + Number(match[2]) * 60 + Number(match[3]));
+    }
+    for (let i = 1; i < starts.length; i++) {
+      expect(starts[i]).toBeGreaterThanOrEqual(starts[i - 1]);
+    }
+  });
 });
 
 describe("CorpusExporter", () => {
@@ -456,6 +619,71 @@ describe("CorpusExporter", () => {
 
     const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
     expect(afterIndex).toContain("transcript_quality_score: 82");
+  });
+
+  it("re-exports on an unchanged content hash to backfill timestamps once segments become available, then settles (issue #43)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    const beforeIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(beforeIndex).not.toContain("approx_start:");
+
+    const segments: TranscriptSegment[] = [{ text: "Some transcript text.", startSeconds: 0, endSeconds: 10 }];
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments,
+    });
+    expect(second.skipped).toBe(false);
+    expect(second.exported).toBeGreaterThan(0);
+
+    const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(afterIndex).toContain("approx_start:");
+    expect(afterIndex).toContain("approx_end:");
+
+    const third = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments,
+    });
+    expect(third.skipped).toBe(true);
+  });
+
+  it("stays idempotent on an unchanged content hash when segments only carry partial timing that can never emit approx_start (issue #43 review)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+
+    const partialSegments: TranscriptSegment[] = [{ text: "Some transcript text.", startSeconds: 0 }];
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments: partialSegments,
+    });
+    expect(second.skipped).toBe(true);
+
+    const third = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments: partialSegments,
+    });
+    expect(third.skipped).toBe(true);
   });
 
   it("replaces the episode dir with no stale files when the content hash changes", async () => {

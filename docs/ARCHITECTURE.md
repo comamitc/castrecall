@@ -57,7 +57,7 @@ state.json (seen episode UUIDs, timestamps, transcript status)
 Transcript ladder: RSS <podcast:transcript> → Taddy → Podchaser → local Whisper (detected) → cloud STT (explicitly enabled)
         │
         ▼
-sources/<uuid>/{raw.<ext>, transcript.txt, provenance.json}   ← private source lane
+sources/<uuid>/{raw.<ext>, transcript.txt, provenance.json, segments.json?}   ← private source lane
         │  castrecall_generate_review
         ▼
 review/pending/<uuid>.md   ← approval gate; conversation is the UI (see below)
@@ -98,7 +98,7 @@ If `CASTRECALL_EXPORT_DIR` is set, `castrecall_fetch_transcript` also projects
 the same source lane out to markdown pages, independently of the review gate:
 
 ```
-sources/<uuid>/{transcript.txt, provenance.json}
+sources/<uuid>/{transcript.txt, provenance.json, segments.json?}
         │  castrecall_fetch_transcript (CASTRECALL_EXPORT_DIR set)
         ▼
 <export-dir>/podcasts/<show-slug>/<episode-slug>/*.md   ← markdown pages (gbrain, etc. — see README)
@@ -267,16 +267,33 @@ input mechanism.
 
 ### Corpus export is a projection, not a relocation
 
-`corpus-export.ts` reads only `sources/<uuid>/{transcript.txt, provenance.json}`
-and writes section-split, frontmattered markdown pages to a separate,
-user-designated directory (`CASTRECALL_EXPORT_DIR`/`exportDir`, off by
-default). It deliberately does **not** relocate the data dir into a corpus:
+`corpus-export.ts` reads only `sources/<uuid>/{transcript.txt, provenance.json,
+segments.json?}` and writes section-split, frontmattered markdown pages to a
+separate, user-designated directory (`CASTRECALL_EXPORT_DIR`/`exportDir`, off
+by default). It deliberately does **not** relocate the data dir into a corpus:
 the raw `sources/` layout doesn't match a page-per-section shape, so export is
 a bridge, not a redesign. Like review candidates, it structurally cannot read
-`review/pending/` or `state.json` — it only ever reads the two source
-artifacts a transcript store already produces. Idempotency is keyed off
-`contentHash` (see below); a changed hash replaces the whole episode's page
-set atomically so no stale section files survive a shorter re-transcription.
+`review/pending/` or `state.json` — it only ever reads the source artifacts a
+transcript store already produces. Idempotency is keyed off `contentHash` (see
+below); a changed hash replaces the whole episode's page set atomically so no
+stale section files survive a shorter re-transcription.
+
+**Timestamped sections (issue #43).** When `segments.json` exists (VTT/SRT/JSON
+sources carry segment start/end timing; plain text and other sources don't),
+`buildCorpusPages` maps each section's approximate position onto the segment
+timeline and adds quoted `approx_start`/`approx_end` (`HH:MM:SS`) to that
+section's frontmatter, plus a ` — HH:MM:SS` suffix on its link in `index.md`.
+The mapping is proportional and therefore approximate — `transcript.txt` is
+deduped/whitespace-collapsed (see `joinSegments` in `normalize.ts`), so char
+offsets don't line up exactly with segment boundaries — but it is always
+non-decreasing across ordered sections and never renders `NaN`; a section that
+maps into a gap left by an untimed segment simply omits both fields. The
+episode-level span (first section's `approxStart` through the last section's
+`approxEnd`) is written to `index.md`'s frontmatter too, which doubles as the
+**sole reconciliation marker**: `readExistingExportMeta` reads only
+`index.md`, so an episode exported before segments existed re-exports once
+(same idempotent backfill idiom as `quality`, issue #41) as soon as segments
+with numeric times become available, then settles.
 
 ### Search over the corpus
 
@@ -321,6 +338,7 @@ sources/<episodeUuid>/
   raw.<ext>
   transcript.txt
   provenance.json
+  segments.json      # optional — only written when the source carried segment timing (issue #43)
 review/pending/<episodeUuid>.md
 review/resolved/<episodeUuid>.md   # moved here by castrecall_resolve_review; disposition lives in state.json
 .staging/          # reserved: in-flight atomic writes + pipeline.lock — consumers must ignore it
@@ -366,6 +384,18 @@ can be repaired or removed manually; it never deletes them silently.
 | `privacyClass` | Always `"private-source"`. |
 | `contentHash` | sha256 (hex) of the exact bytes written to `transcript.txt` — the normalized transcript text. Computed once, at first write, so it is stable across re-runs; downstream consumers can key idempotency off it. |
 | `schemaVersion` | Data-dir contract version (currently `1`). |
+
+### `segments.json` (issue #43)
+
+An optional sidecar: the exact `TranscriptSegment[]` the ladder produced
+(`normalize.ts`), written atomically alongside `transcript.txt`/
+`provenance.json` only when non-empty. VTT/SRT/JSON sources populate it; plain
+text, HTML, Taddy/Podchaser body text, and STT sources have no per-segment
+timing, so no file is written and `readSegments` returns `undefined` — the
+same additive, tolerant-absence idiom as `provenance.generation`/`quality`.
+Each entry: `text` (required), plus optional `start`/`end` (raw
+source-format strings) and `startSeconds`/`endSeconds` (parsed seconds — see
+`timecodeToSeconds` — used by corpus export's `approx_start`/`approx_end`).
 
 #### `provenance.generation` fields (local Whisper only, issue #54)
 

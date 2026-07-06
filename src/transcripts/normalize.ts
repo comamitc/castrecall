@@ -8,6 +8,10 @@ export type TranscriptFormat = "txt" | "html" | "vtt" | "srt" | "json";
 export type TranscriptSegment = {
   start?: string;
   end?: string;
+  /** Parsed `start`, in seconds, when the raw timecode/value was parseable — see `timecodeToSeconds`. */
+  startSeconds?: number;
+  /** Parsed `end`, in seconds, when the raw timecode/value was parseable — see `timecodeToSeconds`. */
+  endSeconds?: number;
   speaker?: string;
   text: string;
 };
@@ -55,6 +59,30 @@ export function detectFormat(options: {
   return "txt";
 }
 
+/**
+ * Parse a VTT/SRT-style timecode (`HH:MM:SS.mmm`, `MM:SS.mmm`, or bare
+ * `SS.mmm`; comma or dot decimal separator) into seconds. Only the leading
+ * whitespace-delimited token is parsed, so trailing SRT cue settings/position
+ * coordinates (e.g. `00:00:02,000 X1:40 X2:600`) are ignored rather than
+ * corrupting the result. Returns `undefined` for unparseable input.
+ */
+export function timecodeToSeconds(value: string): number | undefined {
+  const token = value.trim().split(/\s+/)[0];
+  if (!token) return undefined;
+  const hms = token.match(/^(\d+):(\d+):(\d+)(?:[.,](\d+))?$/);
+  if (hms) return toSeconds(hms[1], hms[2], hms[3], hms[4]);
+  const ms = token.match(/^(\d+):(\d+)(?:[.,](\d+))?$/);
+  if (ms) return toSeconds("0", ms[1], ms[2], ms[3]);
+  const s = token.match(/^(\d+)(?:[.,](\d+))?$/);
+  if (s) return toSeconds("0", "0", s[1], s[2]);
+  return undefined;
+}
+
+function toSeconds(hours: string, minutes: string, seconds: string, fraction?: string): number {
+  const fractionValue = fraction ? Number(`0.${fraction}`) : 0;
+  return Number(hours) * 3600 + Number(minutes) * 60 + Number(seconds) + fractionValue;
+}
+
 export function normalizeTranscript(body: string, format: TranscriptFormat): NormalizedTranscript {
   switch (format) {
     case "vtt":
@@ -87,10 +115,12 @@ function parseVtt(body: string): { text: string; segments: TranscriptSegment[] }
     const timing = lines[index];
     if (!timing?.includes("-->")) continue;
     const [start, end] = timing.split("-->").map((part) => part.trim().split(" ")[0]);
+    const startSeconds = timecodeToSeconds(start);
+    const endSeconds = timecodeToSeconds(end);
     const textLines = lines.slice(index + 1);
     for (const line of textLines) {
       const { speaker, text } = stripCueTags(line);
-      if (text) segments.push({ start, end, speaker, text });
+      if (text) segments.push({ start, end, startSeconds, endSeconds, speaker, text });
     }
   }
   return { text: joinSegments(segments), segments };
@@ -108,7 +138,16 @@ function parseSrt(body: string): { text: string; segments: TranscriptSegment[] }
     if (cueLines.length === 0) continue;
     const speaker = cueLines.find((line) => line.speaker)?.speaker;
     const text = cueLines.map((line) => line.text).join(" ");
-    if (text) segments.push({ start, end, speaker, text });
+    if (text) {
+      segments.push({
+        start,
+        end,
+        startSeconds: timecodeToSeconds(start),
+        endSeconds: timecodeToSeconds(end),
+        speaker,
+        text,
+      });
+    }
   }
   return { text: joinSegments(segments), segments };
 }
@@ -153,14 +192,14 @@ function parseJsonTranscript(body: string): { text: string; segments: Transcript
     const record = raw as Record<string, unknown>;
     const text = firstString(record, ["body", "text", "line", "caption"]);
     if (!text) continue;
+    const startKeys = ["startTime", "start", "startTimecode"];
+    const endKeys = ["endTime", "end", "endTimecode"];
     segments.push({
       // whisper.cpp nests timing under "offsets"/"timestamps" instead of flat keys.
-      start:
-        firstDefined(record, ["startTime", "start", "startTimecode"]) ??
-        nestedTimestamp(record, ["offsets", "timestamps"], "from"),
-      end:
-        firstDefined(record, ["endTime", "end", "endTimecode"]) ??
-        nestedTimestamp(record, ["offsets", "timestamps"], "to"),
+      start: firstDefined(record, startKeys) ?? nestedTimestamp(record, ["offsets", "timestamps"], "from"),
+      end: firstDefined(record, endKeys) ?? nestedTimestamp(record, ["offsets", "timestamps"], "to"),
+      startSeconds: jsonSegmentSeconds(record, startKeys, "from"),
+      endSeconds: jsonSegmentSeconds(record, endKeys, "to"),
       speaker: firstString(record, ["speaker", "speakerName", "speakerLabel"]),
       text: text.trim(),
     });
@@ -262,6 +301,42 @@ function nestedTimestamp(
       const value = (container as Record<string, unknown>)[subKey];
       if (value !== undefined && value !== null && value !== "") return String(value);
     }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve a JSON segment's start/end to seconds, given the unit context of
+ * where the raw value came from: flat podcast-namespace keys (`startTime`
+ * etc.) and whisper.cpp's nested `timestamps` are already seconds/timecodes,
+ * while whisper.cpp's nested `offsets` are milliseconds and must be divided.
+ * That unit context is only known here, at the source of the raw value — not
+ * downstream, where `start`/`end` are already flattened to plain strings.
+ */
+function jsonSegmentSeconds(
+  record: Record<string, unknown>,
+  flatKeys: string[],
+  subKey: "from" | "to",
+): number | undefined {
+  for (const key of flatKeys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) {
+      const parsed = timecodeToSeconds(value);
+      if (parsed !== undefined) return parsed;
+    }
+  }
+  const offsets = record.offsets;
+  if (offsets && typeof offsets === "object") {
+    const value = (offsets as Record<string, unknown>)[subKey];
+    const ms = typeof value === "number" ? value : typeof value === "string" ? Number(value) : undefined;
+    if (ms !== undefined && Number.isFinite(ms)) return ms / 1000;
+  }
+  const timestamps = record.timestamps;
+  if (timestamps && typeof timestamps === "object") {
+    const value = (timestamps as Record<string, unknown>)[subKey];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "string" && value.trim()) return timecodeToSeconds(value);
   }
   return undefined;
 }
