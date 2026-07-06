@@ -672,22 +672,30 @@ export class Storage {
    * `moved: false` (instead of throwing) when there is nothing pending for
    * this episode — either it was never generated, or a prior resolve
    * already moved it — so the caller can surface an actionable error rather
-   * than silently no-op.
+   * than silently no-op. Uses link+unlink rather than rename so an existing
+   * resolved candidate at the destination is never silently clobbered —
+   * `fs.rename` would replace it outright; `alreadyResolved: true` lets the
+   * caller surface that conflict instead.
    */
   async resolvePendingReview(
     episodeUuid: string,
-  ): Promise<{ moved: boolean; resolvedPath: string }> {
+  ): Promise<{ moved: boolean; resolvedPath: string; alreadyResolved: boolean }> {
     await this.init();
     const resolvedPath = this.resolvedCandidatePath(episodeUuid);
+    const pendingPath = this.reviewCandidatePath(episodeUuid);
     try {
-      await fs.rename(this.reviewCandidatePath(episodeUuid), resolvedPath);
-      return { moved: true, resolvedPath };
+      await fs.link(pendingPath, resolvedPath);
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        return { moved: false, resolvedPath, alreadyResolved: true };
+      }
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-        return { moved: false, resolvedPath };
+        return { moved: false, resolvedPath, alreadyResolved: false };
       }
       throw error;
     }
+    await fs.unlink(pendingPath);
+    return { moved: true, resolvedPath, alreadyResolved: false };
   }
 
   /**

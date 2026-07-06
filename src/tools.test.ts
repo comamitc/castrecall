@@ -1505,6 +1505,22 @@ describe("tools", () => {
       expect(state.episodes["ep-1"].promotedNotePath).toBe(result.promotedNotePath);
     });
 
+    it("promote writes content verbatim, without trimming leading/trailing whitespace", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      await seedPendingReview(cfg);
+      const content = "  Keep the indentation on this line.\n\nSecond paragraph.\n  ";
+
+      const result = (await resolveReview(
+        cfg,
+        { episodeUuid: "ep-1", disposition: "promote", content },
+        { now: () => new Date("2026-07-06T12:00:00.000Z") },
+      )) as Record<string, any>;
+
+      const note = await fs.readFile(result.promotedNotePath, "utf8");
+      expect(note).toContain(content);
+    });
+
     it("promote auto-creates a not-yet-existing notesDir", async () => {
       const notesDir = path.join(dir, "does", "not", "exist", "yet");
       const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
@@ -1633,6 +1649,24 @@ describe("tools", () => {
       await expect(
         resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
       ).rejects.toThrow(/no pending review/i);
+    });
+
+    it("rejects re-resolving an episode whose pending candidate reappears after resolution", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+
+      await resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" });
+      // Simulate a pending candidate reappearing for an already-resolved episode
+      // (e.g. regenerated or restored out-of-band).
+      await storage.writeReviewCandidate("ep-1", "# Review\n");
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }),
+      ).rejects.toThrow(/already (been )?resolved|already resolved/i);
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("discard");
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
     });
 
     it("setup_status reports the notes destination and a reviewsResolved count from state", async () => {

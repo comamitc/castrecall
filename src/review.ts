@@ -102,7 +102,7 @@ export function buildPromotedNote(options: {
     "",
     `# ${heading}`,
     "",
-    content.trim(),
+    content,
     "",
   ];
   return `${lines.filter((line) => line !== undefined).join("\n")}\n`;

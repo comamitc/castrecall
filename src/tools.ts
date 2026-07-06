@@ -710,9 +710,24 @@ export async function resolveReview(
         "(run castrecall_generate_review first) or has already been resolved.",
     );
   }
+  if (record.reviewDisposition) {
+    throw new CastrecallSetupError(
+      `Episode ${params.episodeUuid} was already resolved as "${record.reviewDisposition}" ` +
+        `at ${record.reviewResolvedAt}. A pending candidate reappeared for it, but ` +
+        "castrecall_resolve_review only resolves an episode once.",
+    );
+  }
 
   if (params.disposition === "discard") {
-    const { resolvedPath } = await storage.resolvePendingReview(params.episodeUuid);
+    const { resolvedPath, alreadyResolved } = await storage.resolvePendingReview(
+      params.episodeUuid,
+    );
+    if (alreadyResolved) {
+      throw new CastrecallSetupError(
+        `A resolved candidate already exists at ${resolvedPath} for episode ` +
+          `${params.episodeUuid}. Remove or archive it before resolving this candidate again.`,
+      );
+    }
     const resolvedAt = now().toISOString();
     await storage.updateEpisode(
       params.episodeUuid,
@@ -732,13 +747,13 @@ export async function resolveReview(
   // throws (surfaced, not silently double-promoted) rather than orphaning
   // state — the same reconciliation stance generateReview takes on its own
   // write/state-update pair (see above).
-  const content = params.content?.trim();
-  if (!content) {
+  if (!params.content?.trim()) {
     throw new CastrecallSetupError(
       "castrecall_resolve_review requires non-empty content when disposition is \"promote\" — " +
         "the exact text the human chose to keep, in their own words where possible.",
     );
   }
+  const content = params.content;
   const notesDir = requireNotesDir(config);
   const provenance = await storage.readProvenance(params.episodeUuid);
   if (!provenance) {
@@ -766,7 +781,17 @@ export async function resolveReview(
         "remove or rename the existing note, or resolve again with a different title.",
     );
   }
-  const { resolvedPath } = await storage.resolvePendingReview(params.episodeUuid);
+  const { resolvedPath, alreadyResolved } = await storage.resolvePendingReview(
+    params.episodeUuid,
+  );
+  if (alreadyResolved) {
+    throw new CastrecallSetupError(
+      `A resolved candidate already exists at ${resolvedPath} for episode ` +
+        `${params.episodeUuid}. The promoted note was written to ${written.path}, but the ` +
+        "pending candidate was left in place — remove or archive the existing resolved " +
+        "candidate before resolving again.",
+    );
+  }
   const resolvedAt = resolvedAtDate.toISOString();
   await storage.updateEpisode(
     params.episodeUuid,

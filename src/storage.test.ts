@@ -141,6 +141,22 @@ describe("Storage", () => {
   it("resolvePendingReview reports moved: false when there is nothing pending", async () => {
     const result = await storage.resolvePendingReview("ep-1");
     expect(result.moved).toBe(false);
+    expect(result.alreadyResolved).toBe(false);
+  });
+
+  it("resolvePendingReview never clobbers an existing resolved candidate", async () => {
+    await fs.mkdir(path.dirname(storage.resolvedCandidatePath("ep-1")), { recursive: true });
+    await fs.writeFile(storage.resolvedCandidatePath("ep-1"), "original resolved\n", "utf8");
+    await storage.writeReviewCandidate("ep-1", "new pending\n");
+
+    const result = await storage.resolvePendingReview("ep-1");
+
+    expect(result.moved).toBe(false);
+    expect(result.alreadyResolved).toBe(true);
+    expect(await fs.readFile(storage.resolvedCandidatePath("ep-1"), "utf8")).toBe(
+      "original resolved\n",
+    );
+    expect(await storage.hasPendingReview("ep-1")).toBe(true);
   });
 
   it("writePromotedNote creates notesDir on demand and never overwrites an existing note", async () => {
