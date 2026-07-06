@@ -582,6 +582,7 @@ export async function fetchTranscript(
     transcriptSourceUrl: result.transcript.sourceUrl,
     format: result.transcript.format,
     provider: result.transcript.provider,
+    generation: result.transcript.generation,
     fetchedAt: now().toISOString(),
     privacyClass: "private-source",
   };

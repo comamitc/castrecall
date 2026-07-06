@@ -339,11 +339,34 @@ can be repaired or removed manually; it never deletes them silently.
 | `listenTimestamp` | When the episode was first seen synced, if known. |
 | `transcriptSource` | `"rss" \| "taddy" \| "podchaser" \| "local-whisper" \| "stt"`. |
 | `transcriptSourceUrl`, `provider` | Optional rung-specific detail. |
+| `generation` | Exact local-transcription provenance (issue #54): only set when `transcriptSource` is `"local-whisper"`. See below. |
 | `format` | Raw transcript format (`vtt`, `srt`, `json`, `txt`, ...). |
 | `fetchedAt` | ISO timestamp of the fetch that produced this sidecar. |
 | `privacyClass` | Always `"private-source"`. |
 | `contentHash` | sha256 (hex) of the exact bytes written to `transcript.txt` — the normalized transcript text. Computed once, at first write, so it is stable across re-runs; downstream consumers can key idempotency off it. |
 | `schemaVersion` | Data-dir contract version (currently `1`). |
+
+#### `provenance.generation` fields (local Whisper only, issue #54)
+
+`local-whisper:mlx-whisper` alone hides the difference between `whisper-tiny`
+and `large-v3-turbo`; `generation` records the exact backend, model, and
+decode settings a transcript was actually produced with, assembled in
+`local-whisper.ts`'s `buildGeneration` from the same
+`resolveWhisperModel`/`resolveWhisperDecodeArgs` results the run's argv was
+built from, so it can never disagree with what actually executed.
+
+| Field | Notes |
+| --- | --- |
+| `backend` | The detected Whisper flavor (`mlx-whisper`, `whisper.cpp`, `openai-whisper`, `whisper-ctranslate2`, or `custom`). |
+| `model` | Concrete model id/path; `undefined` when the backend ran its own default or the flavor is `custom`. |
+| `modelSource` | `"explicit"` (`CASTRECALL_WHISPER_MODEL`), `"preset"` (`CASTRECALL_LOCAL_WHISPER_PRESET`), `"backend-default"` (no model pinned, backend ran its own default — the auditable "this corpus may have been generated with a poor default model" marker), or `"none"` (custom flavor with no model). |
+| `usesBackendDefault` | `true` only for `modelSource: "backend-default"`. CastRecall never fabricates a concrete default model string here — it genuinely never observes one, since no `--model` flag is passed. |
+| `preset` | The preset name, if one resolved a model. |
+| `outputFormat` | Stored artifact shape: `txt \| json \| vtt \| srt`. |
+| `wordTimestamps` | Whether word-level timing actually survived into the stored artifact — not merely whether it was requested (only `true` for a `json` artifact). |
+| `decode.applied` | Effective option → concrete value, for decode options this run actually applied. |
+| `decode.ignored` | Decode options this run bypassed, with reasons — verbatim from `resolveWhisperDecodeArgs`, so nothing is silently dropped. |
+| `toolVersion` | Best-effort `<tool> --version` output; `undefined` when unavailable, on a non-zero exit, or for the `custom` flavor. Never blocks or fails a transcription. |
 
 ### `state.json` fields
 

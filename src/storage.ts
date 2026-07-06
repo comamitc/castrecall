@@ -22,6 +22,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
+import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
 
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
@@ -143,6 +144,13 @@ export type Provenance = {
   transcriptSourceUrl?: string;
   format: string;
   provider?: string;
+  /**
+   * Exact local-transcription provenance (issue #54): backend, concrete
+   * model/preset, decode settings, output shape. Only set when
+   * `transcriptSource` is `"local-whisper"`; additive, so pre-#54 sidecars
+   * simply lack it.
+   */
+  generation?: LocalWhisperGeneration;
   fetchedAt: string;
   privacyClass: "private-source";
 };
