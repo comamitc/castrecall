@@ -86,7 +86,8 @@ guardrail track above. Order (dependency-driven): #42 loop detection is the bug 
 its detector feeds #41's scoring; #44 speaker turns ride on #43's persisted
 segments; #46 glossary corrections plug into #45's cleanup pass.
 
-- [ ] #42 Whisper repetition-loop detection/quarantine → then #41 transcript quality scoring → release v0.14.0
+- [x] #42 Whisper repetition-loop detection/quarantine — PR #75 squash-merged, issue closed. Clean run to ready-to-deploy (6 transitions, one internal fix round). Loop detection at normalization/storage; quarantined transcripts excluded from trusted corpus paths (search/review/digest/export) with old-state compatibility.
+- [ ] #41 transcript quality scoring → release v0.14.0
 - [ ] #43 timestamped segments through storage/export → then #44 speaker metadata/diarization → release v0.15.0
 - [ ] #45 transcript cleanup pass → then #46 proper-noun glossary → release v0.16.0
 
