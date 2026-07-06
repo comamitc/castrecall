@@ -109,12 +109,15 @@ export function listeningPattern(episodes: DigestEpisodeInput[]): ListeningPatte
   const sourceBreakdown: Record<string, number> = {};
   const showCounts = new Map<string, number>();
   let transcribedCount = 0;
-  for (const { record } of episodes) {
+  for (const { record, transcriptText } of episodes) {
     showCounts.set(record.podcastTitle, (showCounts.get(record.podcastTitle) ?? 0) + 1);
-    if (record.transcriptStatus === "stored") {
+    if (record.transcriptStatus === "stored" && transcriptText !== undefined) {
       transcribedCount++;
       const source = record.transcriptSource ?? "unknown";
       sourceBreakdown[source] = (sourceBreakdown[source] ?? 0) + 1;
+    } else if (record.transcriptStatus === "stored") {
+      // Stale state: marked stored but the transcript file is missing or unreadable.
+      sourceBreakdown["unavailable"] = (sourceBreakdown["unavailable"] ?? 0) + 1;
     } else {
       sourceBreakdown["not-transcribed"] = (sourceBreakdown["not-transcribed"] ?? 0) + 1;
     }
@@ -194,7 +197,7 @@ export function buildDigest(options: {
     "",
     excerpts.length > 0
       ? excerpts
-          .map((e) => `### ${e.podcast} — ${e.episode}\n\n> ${e.excerpt}`)
+          .map((e) => `### ${yamlString(e.podcast)} — ${yamlString(e.episode)}\n\n${blockquote(e.excerpt)}`)
           .join("\n\n")
       : "_No transcribed episodes in this window to excerpt from._",
     "",
@@ -215,6 +218,14 @@ export function buildDigest(options: {
   ];
 
   return { markdown: `${lines.filter((line) => line !== undefined).join("\n")}\n`, summary };
+}
+
+/** Blockquotes untrusted verbatim text line-by-line so an embedded newline can't break out of the quote. */
+function blockquote(text: string): string {
+  return text
+    .split("\n")
+    .map((line) => `> ${line}`)
+    .join("\n");
 }
 
 function formatBreakdown(breakdown: Record<string, number>): string {

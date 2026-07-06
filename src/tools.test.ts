@@ -1543,6 +1543,31 @@ describe("tools", () => {
       expect(markdown).toContain("uniqueterm42");
     });
 
+    it("tolerates a stale stored record whose transcript file is missing: does not abort and does not count it as transcribed", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      const now = () => new Date("2026-07-06T00:00:00.000Z");
+      await storage.recordListens([listen("ep-1"), listen("ep-2")], now);
+
+      await storage.storeTranscript("ep-1", {
+        raw: "raw",
+        ext: "txt",
+        text: longText("uniqueterm42"),
+        provenance: { ...PROVENANCE, episodeUuid: "ep-1" },
+      });
+      await storage.updateEpisode("ep-1", { transcriptStatus: "stored", transcriptSource: "rss" }, now);
+
+      // ep-2: state says "stored" but no transcript file was ever written — a stale/corrupted record.
+      await storage.updateEpisode("ep-2", { transcriptStatus: "stored", transcriptSource: "rss" }, now);
+
+      const result = (await digest(config(), {}, { now })) as Record<string, any>;
+      expect(result.episodes).toBe(2);
+      expect(result.transcribed).toBe(1);
+      const markdown = await fs.readFile(result.path, "utf8");
+      expect(markdown).toContain("uniqueterm42");
+      expect(markdown).toContain("unavailable: 1");
+    });
+
     it("is idempotent: a second run with the same window reports alreadyExists and never overwrites", async () => {
       const storage = new Storage(dir);
       await storage.init();
