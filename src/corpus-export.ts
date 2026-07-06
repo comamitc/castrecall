@@ -235,7 +235,7 @@ function mapOffsetToSeconds(anchors: TimelineAnchor[], targetChar: number): numb
  * Map each section range onto an approximate `{ approxStart, approxEnd }` in
  * seconds, by proportionally scaling the range's position in `text` onto the
  * segment timeline built from `segments`. This is inherently approximate:
- * `text` is the deduped/whitespace-collapsed transcript (see `joinSegments`),
+ * `text` is the deduped/whitespace-collapsed transcript (see `segmentsToText`),
  * so character offsets don't line up exactly with segment boundaries.
  *
  * Contract: never returns `NaN`. Returns all-`undefined` entries when there
@@ -273,6 +273,21 @@ export function sectionTimestamps(
   return results;
 }
 
+/**
+ * Distinct, ordered, non-empty speaker labels carried by `segments` (issue
+ * #44) — provider-given labels only, never invented. `[]` when no segment
+ * carries a speaker (e.g. local Whisper), so callers can omit the frontmatter
+ * line entirely rather than emit an empty array.
+ */
+export function distinctSpeakers(segments: TranscriptSegment[] | undefined): string[] {
+  const seen = new Set<string>();
+  for (const segment of segments ?? []) {
+    const speaker = segment.speaker?.trim();
+    if (speaker) seen.add(speaker);
+  }
+  return [...seen];
+}
+
 type PageMeta = {
   show: string;
   episode: string;
@@ -283,6 +298,8 @@ type PageMeta = {
   contentHash: string;
   generation?: LocalWhisperGeneration;
   quality?: TranscriptQuality;
+  /** Distinct speaker labels present in this episode's segments (issue #44); omitted from frontmatter when empty. */
+  speakers?: string[];
 };
 
 function frontmatterLines(title: string, meta: PageMeta, timing?: SectionTiming): string[] {
@@ -314,6 +331,7 @@ function frontmatterLines(title: string, meta: PageMeta, timing?: SectionTiming)
     meta.quality ? `transcript_quality_score: ${meta.quality.score}` : undefined,
     meta.quality ? `transcript_quality_tier: ${yamlString(meta.quality.tier)}` : undefined,
     meta.quality ? `transcript_quality_reasons: ${JSON.stringify(meta.quality.reasons)}` : undefined,
+    meta.speakers && meta.speakers.length > 0 ? `speakers: ${JSON.stringify(meta.speakers)}` : undefined,
     timing?.approxStart !== undefined ? `approx_start: ${yamlString(formatTimecode(timing.approxStart))}` : undefined,
     timing?.approxEnd !== undefined ? `approx_end: ${yamlString(formatTimecode(timing.approxEnd))}` : undefined,
     "---",
@@ -356,6 +374,7 @@ export function buildCorpusPages(options: {
     contentHash,
     generation: provenance.generation,
     quality: provenance.quality,
+    speakers: distinctSpeakers(segments),
   };
 
   const pages: CorpusPage[] = [];
@@ -411,8 +430,14 @@ const QUALITY_SCORE_LINE = /^transcript_quality_score: (\d+)$/m;
 const QUALITY_TIER_LINE = /^transcript_quality_tier: "([^"]*)"$/m;
 const QUALITY_REASONS_LINE = /^transcript_quality_reasons: (\[[^\]]*\])$/m;
 const APPROX_START_LINE = /^approx_start: "([^"]*)"$/m;
+const SPEAKERS_LINE = /^speakers: (\[[^\]]*\])$/m;
 
-type ExistingExportMeta = { contentHash?: string; quality?: TranscriptQuality; hasTimestamps: boolean };
+type ExistingExportMeta = {
+  contentHash?: string;
+  quality?: TranscriptQuality;
+  hasTimestamps: boolean;
+  hasSpeakers: boolean;
+};
 
 async function readExistingExportMeta(episodeDir: string): Promise<ExistingExportMeta | undefined> {
   try {
@@ -435,6 +460,7 @@ async function readExistingExportMeta(episodeDir: string): Promise<ExistingExpor
       // reconciliation signal itself — see buildCorpusPages' episodeTiming,
       // which emits approx_start/approx_end on index.md together or not at all.
       hasTimestamps: APPROX_START_LINE.test(indexContent),
+      hasSpeakers: SPEAKERS_LINE.test(indexContent),
     };
   } catch {
     return undefined;
@@ -494,7 +520,15 @@ export class CorpusExporter {
     // would re-run forever.
     const canEmitTimestamps = buildSegmentTimeline(options.segments).anchors.length > 0;
     const timestampsStale = existing !== undefined && canEmitTimestamps && !existing.hasTimestamps;
-    if (existing?.contentHash === options.contentHash && !qualityStale && !timestampsStale) {
+    // Same idea for speaker labels (issue #44): an episode exported before
+    // segments carried speakers lacks the `speakers:` line on index.md; once
+    // segments carry at least one non-empty speaker, re-export once to
+    // backfill it, then settle. Gated the same both-or-neither way as
+    // timestamps so a speaker-less transcript never triggers a perpetual
+    // re-export loop.
+    const speakersStale =
+      existing !== undefined && distinctSpeakers(options.segments).length > 0 && !existing.hasSpeakers;
+    if (existing?.contentHash === options.contentHash && !qualityStale && !timestampsStale && !speakersStale) {
       return { exported: 0, skipped: true, dir: targetDir };
     }
 

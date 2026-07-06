@@ -232,6 +232,44 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
     expect(sttRung.detail).toContain("retry budget exhausted");
   });
 
+  it("propagates diarized segments from an STT hit onto transcript.segments (issue #44)", async () => {
+    const fetchImpl = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("api.deepgram.com")) {
+        return new Response(
+          JSON.stringify({
+            results: {
+              utterances: [
+                { speaker: 0, transcript: "hi there", start: 1, end: 2 },
+                { speaker: 1, transcript: "hello back", start: 2, end: 4 },
+              ],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await runTranscriptLadder(
+      config({
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "deepgram",
+        DEEPGRAM_API_KEY: "dg-key",
+      }),
+      RECORD,
+      { fetchImpl, env: { PATH: binDir } },
+    );
+
+    const sttRung = result.rungs.find((r) => r.rung === "stt")!;
+    expect(sttRung.outcome).toBe("hit");
+    expect(result.transcript?.source).toBe("stt");
+    expect(result.transcript?.segments).toEqual([
+      { speaker: "Speaker 0", text: "hi there", startSeconds: 1, endSeconds: 2, start: "1", end: "2" },
+      { speaker: "Speaker 1", text: "hello back", startSeconds: 2, endSeconds: 4, start: "2", end: "4" },
+    ]);
+  });
+
   it("still returns an RSS hit before reaching the local-whisper rung when skipLocalWhisper is set (free rungs unaffected)", async () => {
     const feedXml =
       '<?xml version="1.0"?>' +

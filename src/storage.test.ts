@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
+import { normalizeTranscript } from "./transcripts/normalize.js";
 import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
@@ -120,6 +121,25 @@ describe("Storage", () => {
     });
     expect(storedEmpty.segmentsPath).toBeUndefined();
     expect(await storage.readSegments("ep-2")).toBeUndefined();
+  });
+
+  it("round-trips VTT-parsed speaker labels through storeTranscript/readSegments (issue #44)", async () => {
+    const vtt =
+      "WEBVTT\n\n" +
+      "00:00:00.000 --> 00:00:02.000\n<v Alice>Hi there.\n\n" +
+      "00:00:02.000 --> 00:00:04.000\n<v Bob>Hey, thanks for having me.\n";
+    const normalized = normalizeTranscript(vtt, "vtt");
+    const stored = await storage.storeTranscript("ep-1", {
+      raw: vtt,
+      ext: "vtt",
+      text: normalized.text,
+      provenance: { ...PROVENANCE, format: "vtt" },
+      segments: normalized.segments,
+    });
+    expect(stored.segmentsPath).toBeDefined();
+    const segments = await storage.readSegments("ep-1");
+    expect(segments?.[0]).toMatchObject({ speaker: "Alice", text: "Hi there." });
+    expect(segments?.[1]).toMatchObject({ speaker: "Bob", text: "Hey, thanks for having me." });
   });
 
   it("derives segments from the raw artifact for a transcript stored before segments.json existed (issue #43)", async () => {

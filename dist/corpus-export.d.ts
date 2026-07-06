@@ -51,7 +51,7 @@ export type SectionTiming = {
  * Map each section range onto an approximate `{ approxStart, approxEnd }` in
  * seconds, by proportionally scaling the range's position in `text` onto the
  * segment timeline built from `segments`. This is inherently approximate:
- * `text` is the deduped/whitespace-collapsed transcript (see `joinSegments`),
+ * `text` is the deduped/whitespace-collapsed transcript (see `segmentsToText`),
  * so character offsets don't line up exactly with segment boundaries.
  *
  * Contract: never returns `NaN`. Returns all-`undefined` entries when there
@@ -61,6 +61,13 @@ export type SectionTiming = {
  * defined.
  */
 export declare function sectionTimestamps(segments: TranscriptSegment[] | undefined, ranges: Range[], textLength: number): SectionTiming[];
+/**
+ * Distinct, ordered, non-empty speaker labels carried by `segments` (issue
+ * #44) — provider-given labels only, never invented. `[]` when no segment
+ * carries a speaker (e.g. local Whisper), so callers can omit the frontmatter
+ * line entirely rather than emit an empty array.
+ */
+export declare function distinctSpeakers(segments: TranscriptSegment[] | undefined): string[];
 /**
  * Build the full set of markdown pages for one episode: one page per
  * transcript section plus an episode index page. Pure — no filesystem

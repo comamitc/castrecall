@@ -11,11 +11,40 @@
  *   utterances.
  */
 import { CastrecallSetupError } from "../config.js";
+import { segmentsToText } from "./normalize.js";
 const OPENAI_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2";
 const DEEPGRAM_BASE = "https://api.deepgram.com/v1/listen";
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 15 * 60_000;
+/** `` `Speaker ${raw}` `` — never dropped by a falsy check, so a numeric `0` speaker still renders. */
+function speakerLabel(raw) {
+    return `Speaker ${raw}`;
+}
+/**
+ * Build `TranscriptSegment[]` from provider utterances, given each
+ * utterance's raw speaker label and its start/end already converted to
+ * seconds. Timing fields (`start`/`end`/`startSeconds`/`endSeconds`) are
+ * emitted only when a finite numeric time exists, matching the
+ * `parseJsonTranscript` convention of a bare-seconds string.
+ */
+function utterancesToSegments(utterances) {
+    return utterances.map((u) => {
+        const hasTiming = u.startSeconds !== undefined && u.endSeconds !== undefined;
+        return {
+            speaker: u.speaker !== undefined ? speakerLabel(u.speaker) : undefined,
+            text: u.text,
+            ...(hasTiming
+                ? {
+                    startSeconds: u.startSeconds,
+                    endSeconds: u.endSeconds,
+                    start: String(u.startSeconds),
+                    end: String(u.endSeconds),
+                }
+                : {}),
+        };
+    });
+}
 /**
  * Thrown for provider failures that are transient (rate limits, timeouts,
  * upstream 5xx) rather than a fundamental rejection of the request. Callers
@@ -107,14 +136,19 @@ async function transcribeWithAssemblyAi(config, audioUrl, fetchImpl, sleep) {
         }
         const status = (await pollResponse.json());
         if (status.status === "completed") {
-            const text = status.utterances?.length
-                ? status.utterances
-                    .map((u) => (u.speaker ? `Speaker ${u.speaker}: ${u.text ?? ""}` : (u.text ?? "")))
-                    .join("\n")
-                : (status.text ?? "");
+            // AssemblyAI's utterance start/end are milliseconds.
+            const segments = status.utterances?.length
+                ? utterancesToSegments(status.utterances.map((u) => ({
+                    speaker: u.speaker,
+                    text: u.text ?? "",
+                    startSeconds: u.start !== undefined ? u.start / 1000 : undefined,
+                    endSeconds: u.end !== undefined ? u.end / 1000 : undefined,
+                })))
+                : undefined;
+            const text = segments ? segmentsToText(segments) : (status.text ?? "");
             if (!text.trim())
                 throw new Error("AssemblyAI completed but returned empty text.");
-            return { text: text.trim(), provider: "assemblyai" };
+            return { text: text.trim(), provider: "assemblyai", segments };
         }
         if (status.status === "error") {
             throw new Error(`AssemblyAI transcription failed: ${status.error ?? "unknown error"}.`);
@@ -157,14 +191,19 @@ async function transcribeWithDeepgram(config, audioUrl, fetchImpl) {
         throw new Error(message);
     }
     const body = (await response.json());
-    const text = body.results?.utterances?.length
-        ? body.results.utterances
-            .map((u) => `Speaker ${u.speaker ?? 0}: ${u.transcript ?? ""}`)
-            .join("\n")
-        : (body.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "");
+    // Deepgram's utterance start/end are already seconds (unlike AssemblyAI's milliseconds).
+    const segments = body.results?.utterances?.length
+        ? utterancesToSegments(body.results.utterances.map((u) => ({
+            speaker: u.speaker,
+            text: u.transcript ?? "",
+            startSeconds: u.start,
+            endSeconds: u.end,
+        })))
+        : undefined;
+    const text = segments ? segmentsToText(segments) : (body.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "");
     if (!text.trim())
         throw new Error("Deepgram completed but returned empty text.");
-    return { text: text.trim(), provider: "deepgram", model: config.stt.deepgramModel };
+    return { text: text.trim(), provider: "deepgram", model: config.stt.deepgramModel, segments };
 }
 async function transcribeWithOpenAi(config, audioUrl, fetchImpl) {
     const audioResponse = await fetchImpl(audioUrl);

@@ -123,7 +123,7 @@ function parseVtt(body: string): { text: string; segments: TranscriptSegment[] }
       if (text) segments.push({ start, end, startSeconds, endSeconds, speaker, text });
     }
   }
-  return { text: joinSegments(segments), segments };
+  return { text: segmentsToText(segments), segments };
 }
 
 function parseSrt(body: string): { text: string; segments: TranscriptSegment[] } {
@@ -149,7 +149,7 @@ function parseSrt(body: string): { text: string; segments: TranscriptSegment[] }
       });
     }
   }
-  return { text: joinSegments(segments), segments };
+  return { text: segmentsToText(segments), segments };
 }
 
 /**
@@ -205,7 +205,7 @@ function parseJsonTranscript(body: string): { text: string; segments: Transcript
     });
   }
   if (segments.length === 0) throw new Error("JSON transcript had no usable transcript text.");
-  return { text: joinSegments(segments), segments };
+  return { text: segmentsToText(segments), segments };
 }
 
 export function htmlToText(html: string): string {
@@ -245,9 +245,13 @@ function stripCueTags(line: string): { speaker?: string; text: string } {
 
 /**
  * Join segments into readable text, labeling speaker turns and
- * deduplicating rolling-caption repeats (common in VTT).
+ * deduplicating rolling-caption repeats (common in VTT). The single internal
+ * segment-to-text formatter — any source that produces `TranscriptSegment[]`
+ * (VTT/SRT/JSON here, diarized STT providers in stt.ts) derives its plain
+ * text through this same function, so speaker-turn formatting never diverges
+ * across sources.
  */
-function joinSegments(segments: TranscriptSegment[]): string {
+export function segmentsToText(segments: TranscriptSegment[]): string {
   const parts: string[] = [];
   let lastSpeaker: string | undefined;
   let lastText: string | undefined;

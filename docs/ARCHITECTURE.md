@@ -284,7 +284,7 @@ sources carry segment start/end timing; plain text and other sources don't),
 timeline and adds quoted `approx_start`/`approx_end` (`HH:MM:SS`) to that
 section's frontmatter, plus a ` — HH:MM:SS` suffix on its link in `index.md`.
 The mapping is proportional and therefore approximate — `transcript.txt` is
-deduped/whitespace-collapsed (see `joinSegments` in `normalize.ts`), so char
+deduped/whitespace-collapsed (see `segmentsToText` in `normalize.ts`), so char
 offsets don't line up exactly with segment boundaries — but it is always
 non-decreasing across ordered sections and never renders `NaN`; a section that
 maps into a gap left by an untimed segment simply omits both fields. The
@@ -294,6 +294,18 @@ episode-level span (first section's `approxStart` through the last section's
 `index.md`, so an episode exported before segments existed re-exports once
 (same idempotent backfill idiom as `quality`, issue #41) as soon as segments
 with numeric times become available, then settles.
+
+**Speaker turns (issue #44).** Provider speaker labels — from VTT/SRT/JSON
+(`normalize.ts`) and from AssemblyAI/Deepgram diarization (`stt.ts`, both
+routed through the same `segmentsToText` formatter so speaker-turn text never
+diverges by source) — normalize into one internal `TranscriptSegment.speaker`
+field. `buildCorpusPages` derives `distinctSpeakers(segments)` and, only when
+non-empty, adds a `speakers: [...]` line to both the section and index
+frontmatter — provider-given labels only, never invented, so a speaker-less
+source (local Whisper, plain text) emits no line at all. `speakers:` on
+`index.md` reconciles the same both-or-neither way as timestamps: an episode
+exported before segments carried speakers re-exports once to backfill it, then
+settles.
 
 ### Search over the corpus
 
@@ -389,13 +401,17 @@ can be repaired or removed manually; it never deletes them silently.
 
 An optional sidecar: the exact `TranscriptSegment[]` the ladder produced
 (`normalize.ts`), written atomically alongside `transcript.txt`/
-`provenance.json` only when non-empty. VTT/SRT/JSON sources populate it; plain
-text, HTML, Taddy/Podchaser body text, and STT sources have no per-segment
-timing, so no file is written and `readSegments` returns `undefined` — the
-same additive, tolerant-absence idiom as `provenance.generation`/`quality`.
-Each entry: `text` (required), plus optional `start`/`end` (raw
-source-format strings) and `startSeconds`/`endSeconds` (parsed seconds — see
-`timecodeToSeconds` — used by corpus export's `approx_start`/`approx_end`).
+`provenance.json` only when non-empty. VTT/SRT/JSON sources populate it, as
+does diarized cloud STT (AssemblyAI/Deepgram, issue #44 — `speaker` plus
+timing when the provider returns utterance start/end); plain text, HTML,
+Taddy/Podchaser body text, local Whisper, and OpenAI's flat-text STT response
+have no per-segment data, so no file is written and `readSegments` returns
+`undefined` — the same additive, tolerant-absence idiom as
+`provenance.generation`/`quality`. Each entry: `text` (required), plus
+optional `speaker` (provider-given label, normalized to `Speaker <id>` for
+numeric provider ids), `start`/`end` (raw source-format strings) and
+`startSeconds`/`endSeconds` (parsed seconds — see `timecodeToSeconds` — used
+by corpus export's `approx_start`/`approx_end`).
 
 #### `provenance.generation` fields (local Whisper only, issue #54)
 
