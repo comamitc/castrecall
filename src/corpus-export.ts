@@ -14,6 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ListenRecord, Provenance } from "./storage.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
+import type { TranscriptQuality } from "./transcripts/quality.js";
 
 const DEFAULT_TARGET_WORDS = 1500;
 const DEFAULT_MAX_WORDS = 2000;
@@ -162,6 +163,7 @@ type PageMeta = {
   transcriptSource: string;
   contentHash: string;
   generation?: LocalWhisperGeneration;
+  quality?: TranscriptQuality;
 };
 
 function frontmatterLines(title: string, meta: PageMeta): string[] {
@@ -190,6 +192,9 @@ function frontmatterLines(title: string, meta: PageMeta): string[] {
       ? `transcript_decode_ignored: ${yamlString(JSON.stringify(gen.decode.ignored.map((entry) => entry.option)))}`
       : undefined,
     gen?.toolVersion ? `transcript_tool_version: ${yamlString(gen.toolVersion)}` : undefined,
+    meta.quality ? `transcript_quality_score: ${meta.quality.score}` : undefined,
+    meta.quality ? `transcript_quality_tier: ${yamlString(meta.quality.tier)}` : undefined,
+    meta.quality ? `transcript_quality_reasons: ${JSON.stringify(meta.quality.reasons)}` : undefined,
     "---",
   ];
   return lines.filter((line): line is string => line !== undefined);
@@ -225,6 +230,7 @@ export function buildCorpusPages(options: {
     transcriptSource: provenance.transcriptSource,
     contentHash,
     generation: provenance.generation,
+    quality: provenance.quality,
   };
 
   const pages: CorpusPage[] = [];

@@ -379,6 +379,20 @@ its own default), `transcript_model_source`, `transcript_preset`,
 `transcript_tool_version` — each omitted cleanly rather than emitted empty
 when not applicable.
 
+**Transcript quality score (issue #41).** Every stored transcript's
+provenance carries a deterministic quality score so downstream consumers can
+tell whether it's safe to quote, worth a review pass, or search-only —
+factoring in empty/short output, repetition loops, lexical variety,
+suspicious segment lengths, source confidence (machine transcription rungs
+like local Whisper/cloud STT score lower than a published RSS/Taddy/Podchaser
+transcript), and whether timestamps/speaker labels are present. It rides
+along in corpus export as `transcript_quality_score` (0-100),
+`transcript_quality_tier` (`quote-safe`/`reviewable`/`search-only`), and
+`transcript_quality_reasons` (a JSON-encoded array of machine-readable codes,
+e.g. `["no-timestamps","low-source-confidence"]` — empty array when nothing
+was flagged). See `docs/ARCHITECTURE.md`'s `provenance.quality` fields for
+the full scoring rules.
+
 Export is idempotent: an episode whose transcript content hash hasn't changed
 re-exports nothing. It only ever reads a stored transcript + its provenance
 sidecar — review candidates and `state.json` are never exported.
@@ -405,7 +419,7 @@ sidecar — review candidates and `state.json` are never exported.
 │   ├── raw.<ext>                 # transcript exactly as fetched/generated
 │   ├── transcript.txt            # normalized plain text
 │   └── provenance.json           # platform, feed, URLs, timestamps, source, privacy class,
-│                                  # contentHash, schemaVersion
+│                                  # quality score/tier/reasons, contentHash, schemaVersion
 ├── review/pending/<episodeUuid>.md   # approval-gated review candidates
 ├── review/resolved/<episodeUuid>.md  # candidates moved out by castrecall_resolve_review
 ├── .staging/                     # reserved scratch for atomic writes — ignore it

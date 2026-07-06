@@ -26,6 +26,7 @@ import {
 } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { detectRepetitionLoop } from "./transcripts/loop-detection.js";
+import { scoreTranscriptQuality } from "./transcripts/quality.js";
 import {
   detectLocalWhisper,
   localWhisperReadiness,
@@ -654,6 +655,11 @@ export async function fetchTranscript(
     };
   }
 
+  const quality = scoreTranscriptQuality({
+    text: result.transcript.text,
+    source: result.transcript.source,
+    segments: result.transcript.segments,
+  });
   const provenance: Provenance = {
     platform: "pocketcasts",
     podcastTitle: record.podcastTitle,
@@ -669,6 +675,7 @@ export async function fetchTranscript(
     format: result.transcript.format,
     provider: result.transcript.provider,
     generation: result.transcript.generation,
+    quality,
     fetchedAt: now().toISOString(),
     privacyClass: "private-source",
   };
@@ -697,6 +704,7 @@ export async function fetchTranscript(
     format: result.transcript.format,
     transcriptPath: stored.textPath,
     provenancePath: stored.provenancePath,
+    quality,
     ladder: result.rungs,
     export: exportResult,
     note:

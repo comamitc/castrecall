@@ -266,6 +266,37 @@ describe("buildCorpusPages", () => {
       expect(page.content).not.toContain("transcript_tool_version:");
     }
   });
+
+  it("surfaces transcript quality score/tier/reasons in frontmatter when present (issue #41)", () => {
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: {
+        ...PROVENANCE,
+        quality: { score: 82, tier: "reviewable", reasons: ["no-speaker-labels", "no-timestamps"] },
+      },
+      text: "Body text.",
+      contentHash: "hash",
+    });
+    for (const page of pages) {
+      expect(page.content).toContain("transcript_quality_score: 82");
+      expect(page.content).toContain('transcript_quality_tier: "reviewable"');
+      expect(page.content).toContain('transcript_quality_reasons: ["no-speaker-labels","no-timestamps"]');
+    }
+  });
+
+  it("omits every transcript_quality_* line for a legacy provenance with no quality", () => {
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Body text.",
+      contentHash: "hash",
+    });
+    for (const page of pages) {
+      expect(page.content).not.toContain("transcript_quality_score:");
+      expect(page.content).not.toContain("transcript_quality_tier:");
+      expect(page.content).not.toContain("transcript_quality_reasons:");
+    }
+  });
 });
 
 describe("CorpusExporter", () => {

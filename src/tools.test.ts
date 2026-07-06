@@ -1400,6 +1400,11 @@ describe("tools", () => {
     expect(result.status).toBe("stored");
     expect(JSON.stringify(result)).not.toContain("Private transcript text");
     expect(result.note).toContain("castrecall_generate_review");
+
+    const provenance = await storage.readProvenance("ep-1");
+    expect(typeof provenance?.quality?.score).toBe("number");
+    expect(["quote-safe", "reviewable", "search-only"]).toContain(provenance?.quality?.tier);
+    expect(Array.isArray(provenance?.quality?.reasons)).toBe(true);
   });
 
   describe("fetch_transcript repetition-loop quarantine (issue #42)", () => {

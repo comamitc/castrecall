@@ -23,6 +23,7 @@ import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
+import type { TranscriptQuality } from "./transcripts/quality.js";
 
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
@@ -196,6 +197,12 @@ export type Provenance = {
    * simply lack it.
    */
   generation?: LocalWhisperGeneration;
+  /**
+   * Deterministic transcript quality score (issue #41): score, tier
+   * (`quote-safe`/`reviewable`/`search-only`), and machine-readable reasons.
+   * Additive; pre-#41 sidecars simply lack it.
+   */
+  quality?: TranscriptQuality;
   fetchedAt: string;
   privacyClass: "private-source";
 };

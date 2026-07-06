@@ -360,6 +360,7 @@ can be repaired or removed manually; it never deletes them silently.
 | `transcriptSource` | `"rss" \| "taddy" \| "podchaser" \| "local-whisper" \| "stt"`. |
 | `transcriptSourceUrl`, `provider` | Optional rung-specific detail. |
 | `generation` | Exact local-transcription provenance (issue #54): only set when `transcriptSource` is `"local-whisper"`. See below. |
+| `quality` | Deterministic transcript quality score (issue #41): `score` (0-100), `tier` (`quote-safe`/`reviewable`/`search-only`), and machine-readable `reasons`. See below. |
 | `format` | Raw transcript format (`vtt`, `srt`, `json`, `txt`, ...). |
 | `fetchedAt` | ISO timestamp of the fetch that produced this sidecar. |
 | `privacyClass` | Always `"private-source"`. |
@@ -387,6 +388,29 @@ built from, so it can never disagree with what actually executed.
 | `decode.applied` | Effective option → concrete value, for decode options this run actually applied. |
 | `decode.ignored` | Decode options this run bypassed, with reasons — verbatim from `resolveWhisperDecodeArgs`, so nothing is silently dropped. |
 | `toolVersion` | Best-effort `<tool> --version` output; `undefined` when unavailable, on a non-zero exit, or for the `custom` flavor. Never blocks or fails a transcription. |
+
+#### `provenance.quality` fields (issue #41)
+
+A stored transcript's `quality` is computed once, at store time, by
+`scoreTranscriptQuality` (`transcripts/quality.ts`) — a pure, deterministic
+classifier with no I/O. It considers empty/short output, repetition loops
+(composing the same `detectRepetitionLoop` used for #42 quarantine, so the two
+signals never disagree), lexical variety, suspicious segment lengths, the
+source rung as a source-class proxy (no independent provider-confidence
+metadata exists, so `local-whisper`/`stt` are treated as lower-confidence than
+a published RSS/Taddy/Podchaser transcript), and whether segment-level
+timestamps/speaker labels are present.
+
+| Field | Notes |
+| --- | --- |
+| `score` | Integer 0-100, clamped. Starts at 100 and loses points per triggered reason. |
+| `tier` | `"quote-safe"` (score ≥ 90, no repetition loop), `"reviewable"` (score ≥ 60), or `"search-only"` (below that, or a repetition loop was detected — a loop always forces `search-only` regardless of score). |
+| `reasons` | Machine-readable codes for every rule that fired: `empty`, `too-short`, `repetition-loop`, `low-lexical-variety`, `suspicious-segment-lengths`, `low-source-confidence`, `no-timestamps`, `no-speaker-labels`. Empty array when nothing fired. |
+
+Additive to `Provenance`; pre-#41 sidecars simply lack `quality`. Corpus
+export renders it as `transcript_quality_score`/`transcript_quality_tier`/
+`transcript_quality_reasons` frontmatter (see "Corpus export" in the README),
+omitted entirely when absent.
 
 ### `state.json` fields
 
