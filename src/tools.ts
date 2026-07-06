@@ -394,12 +394,13 @@ export async function fetchTranscript(
     env: deps.env,
   });
   if (!result.transcript) {
+    const transcriptError = result.rungs.map((r) => `${r.rung}: ${r.detail}`).join(" | ");
+    // A retryable STT failure (rate limit, timeout, upstream 5xx) leaves transcriptStatus
+    // untouched instead of "failed" so the episode stays eligible for the next scheduled run.
+    const retryable = result.rungs.some((r) => r.retryable);
     await storage.updateEpisode(
       record.uuid,
-      {
-        transcriptStatus: "failed",
-        transcriptError: result.rungs.map((r) => `${r.rung}: ${r.detail}`).join(" | "),
-      },
+      retryable ? { transcriptError } : { transcriptStatus: "failed", transcriptError },
       now,
     );
     return {

@@ -26,6 +26,25 @@ export type SttResult = {
   model?: string;
 };
 
+/**
+ * Thrown for provider failures that are transient (rate limits, timeouts,
+ * upstream 5xx) rather than a fundamental rejection of the request. Callers
+ * can use this to keep the episode eligible for the next scheduled retry
+ * instead of recording a terminal failure.
+ */
+export class RetryableSttError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RetryableSttError";
+  }
+}
+
+const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
+
+function isRetryableHttpStatus(status: number): boolean {
+  return RETRYABLE_HTTP_STATUSES.has(status) || status >= 500;
+}
+
 export function sttAvailability(config: ResolvedConfig): { ok: boolean; reason?: string } {
   if (!config.stt.enabled) {
     return {
@@ -158,10 +177,13 @@ async function transcribeWithDeepgram(
     throw new CastrecallSetupError("Deepgram rejected DEEPGRAM_API_KEY.");
   }
   if (!response.ok) {
-    throw new Error(
+    const message =
       `Deepgram transcription failed with HTTP ${response.status}. Long episodes can time out on ` +
-        "the prerecorded endpoint; retry later.",
-    );
+      "the prerecorded endpoint; retry later.";
+    if (isRetryableHttpStatus(response.status)) {
+      throw new RetryableSttError(message);
+    }
+    throw new Error(message);
   }
   const body = (await response.json()) as {
     results?: {

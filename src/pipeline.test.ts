@@ -244,6 +244,68 @@ describe("runPipeline", () => {
     expect(state.episodes["ep-1"].transcriptStatus).toBe("failed");
   });
 
+  it("leaves an episode retryable after a transient Deepgram failure, and resumes it on the next run", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+
+    // Every rung ahead of stt misses (no RSS transcript, taddy/whisper unconfigured), and Deepgram
+    // returns a transient 429 rather than succeeding or rejecting the key.
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+      if (url.endsWith("/user/history")) {
+        return new Response(JSON.stringify({ episodes: [HISTORY_EPISODE] }), { status: 200 });
+      }
+      if (url.startsWith("https://api.deepgram.com/")) {
+        return new Response("too many requests", { status: 429 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const sttConfig = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "deepgram",
+      DEEPGRAM_API_KEY: "dg-key",
+    });
+
+    const result = (await runPipeline(sttConfig, {}, { fetchImpl, env: { PATH: "" } })) as Record<
+      string,
+      any
+    >;
+    expect(result.transcripts).toEqual({ stored: 0, failed: 1 });
+
+    const stateAfterFailure = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(stateAfterFailure.episodes["ep-1"].transcriptStatus).toBe("none");
+    expect(stateAfterFailure.episodes["ep-1"].transcriptError).toContain("429");
+
+    // A later scheduled run, once Deepgram recovers, should pick the episode back up because it
+    // was never marked terminally failed.
+    const recoveredFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+      if (url.endsWith("/user/history")) {
+        return new Response(JSON.stringify({ episodes: [HISTORY_EPISODE] }), { status: 200 });
+      }
+      if (url.startsWith("https://api.deepgram.com/")) {
+        return new Response(
+          JSON.stringify({ results: { channels: [{ alternatives: [{ transcript: "recovered" }] }] } }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const secondResult = (await runPipeline(
+      sttConfig,
+      {},
+      { fetchImpl: recoveredFetchImpl, env: { PATH: "" } },
+    )) as Record<string, any>;
+    expect(secondResult.transcripts).toEqual({ stored: 1, failed: 0 });
+
+    const stateAfterRecovery = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+    expect(stateAfterRecovery.episodes["ep-1"].transcriptStatus).toBe("stored");
+  });
+
   it("picks up stored-but-unreviewed episodes from prior runs; skips those already reviewed", async () => {
     const storage = new Storage(dir);
     await storage.init();

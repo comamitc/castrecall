@@ -15,7 +15,7 @@ import type { ListenRecord } from "../storage.js";
 import { fetchRssTranscript } from "./rss.js";
 import { fetchTaddyTranscript, taddyConfigured } from "./taddy.js";
 import { detectLocalWhisper, transcribeWithLocalWhisper } from "./local-whisper.js";
-import { sttAvailability, transcribeAudio } from "./stt.js";
+import { RetryableSttError, sttAvailability, transcribeAudio } from "./stt.js";
 
 export type LadderRung = "rss" | "taddy" | "local-whisper" | "stt";
 
@@ -23,6 +23,8 @@ export type RungOutcome = {
   rung: LadderRung;
   outcome: "hit" | "miss" | "skipped" | "failed";
   detail: string;
+  /** Set on a "failed" stt rung when the provider failure is transient (rate limit, timeout, 5xx). */
+  retryable?: boolean;
 };
 
 export type LadderResult = {
@@ -204,7 +206,12 @@ export async function runTranscriptLadder(
         rungs,
       };
     } catch (error) {
-      rungs.push({ rung: "stt", outcome: "failed", detail: describeError(error) });
+      rungs.push({
+        rung: "stt",
+        outcome: "failed",
+        detail: describeError(error),
+        retryable: error instanceof RetryableSttError,
+      });
     }
   }
 
