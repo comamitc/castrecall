@@ -34,9 +34,9 @@ export type RungOutcome = {
   retryable?: boolean;
   /** Set on a "miss" rung when the transcript may simply not be available yet (worth polling again later). */
   recheckable?: boolean;
-  /** Set on the "skipped" local-whisper rung when the corpus-scale preflight (issue #55), not a
-   * real failure, is why this rung didn't run — this is a reversible policy gate, not evidence
-   * the episode is untranscribable. */
+  /** Set on the "skipped" local-whisper or stt rung when the corpus-scale preflight (issue #55),
+   * not a real failure, is why this rung didn't run — this is a reversible policy gate, not
+   * evidence the episode is untranscribable. */
   preflightBlocked?: boolean;
 };
 
@@ -62,6 +62,10 @@ export async function runTranscriptLadder(
     fetchImpl?: FetchLike;
     env?: NodeJS.ProcessEnv;
     skipStt?: boolean;
+    /** `skipStt` is true because the corpus-scale preflight (issue #55) blocked local Whisper for
+     * this run and STT would otherwise run as the very next rung — never set for the unrelated
+     * STT-retry-budget-exhausted skip, which uses its own detail message below. */
+    skipSttPreflightBlocked?: boolean;
     /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run. */
     skipLocalWhisper?: boolean;
   } = {},
@@ -298,8 +302,13 @@ export async function runTranscriptLadder(
     rungs.push({
       rung: "stt",
       outcome: "skipped",
-      detail:
-        "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
+      detail: options.skipSttPreflightBlocked
+        ? "Corpus-scale preflight blocked low-quality local transcription for this run, and paid " +
+          "cloud STT would otherwise run as the next rung (castrecall_transcription_preflight). Run " +
+          "castrecall_fetch_transcript directly for this episode, or opt in for the whole run with " +
+          "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or CASTRECALL_LOCAL_WHISPER_PRESET=best."
+        : "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
+      ...(options.skipSttPreflightBlocked ? { preflightBlocked: true } : {}),
     });
   } else if (!stt.ok) {
     rungs.push({ rung: "stt", outcome: "skipped", detail: stt.reason ?? "STT unavailable." });

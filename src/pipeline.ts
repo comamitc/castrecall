@@ -163,6 +163,10 @@ export async function runPipeline(
     // `blocked` decision can never disagree with what fetchTranscript is
     // about to do. Threading `skipLocalWhisper` only skips the local-Whisper
     // rung — the free RSS/Taddy/Podchaser rungs still run for every episode.
+    // `skipStt` additionally skips the paid cloud-STT rung whenever the local
+    // block is active and STT is enabled/configured, so a corpus-scale run
+    // can never fall through a free quality gate into billed transcription
+    // without that tradeoff having been surfaced in the report first.
     const whisperDetection = await detectLocalWhisper(config, deps.env);
     const preflight = buildTranscriptionPreflight({
       config,
@@ -183,7 +187,12 @@ export async function runPipeline(
       try {
         const result = (await fetchTranscript(
           config,
-          { episodeUuid: episode.uuid, scheduled: true, skipLocalWhisper: preflight.blocked },
+          {
+            episodeUuid: episode.uuid,
+            scheduled: true,
+            skipLocalWhisper: preflight.blocked,
+            skipStt: preflight.sttFallbackBlocked,
+          },
           deps,
         )) as {
           status: "stored" | "already-stored" | "no-transcript" | "preflight-blocked";

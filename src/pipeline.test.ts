@@ -1042,6 +1042,45 @@ describe("runPipeline", () => {
       await expect(fs.access(markerPath)).resolves.toBeUndefined();
     });
 
+    it("also skips the paid STT rung (never bills) when the corpus-scale block is active and STT is enabled/configured (issue #55 review 2)", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      let sttCalls = 0;
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.includes("api.assemblyai.com")) {
+          sttCalls++;
+          return new Response(JSON.stringify({}), { status: 200 });
+        }
+        if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+        if (url.endsWith("/user/history")) return new Response(JSON.stringify({ episodes: [] }), { status: 200 });
+        if (/ep\d+\.mp3$/.test(url)) return new Response("fake audio bytes", { status: 200 });
+        return new Response("nope", { status: 404 });
+      }) as typeof fetch;
+
+      const result = (await runPipeline(
+        config({
+          CASTRECALL_LOCAL_WHISPER_PRESET: "fast",
+          CASTRECALL_ENABLE_STT: "true",
+          ASSEMBLYAI_API_KEY: "key_x",
+        }),
+        {},
+        { fetchImpl, env: { PATH: binDir } },
+      )) as Record<string, any>;
+
+      expect(result.preflight).toMatchObject({
+        blocked: true,
+        sttFallbackBlocked: true,
+        sttFallback: { enabled: true, provider: "assemblyai", available: true },
+      });
+      expect(result.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
+      expect(sttCalls).toBe(0);
+      await expect(fs.access(markerPath)).rejects.toThrow();
+    });
+
     it("does not block below the corpus-scale threshold, and reports corpusScale: false", async () => {
       await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES - 1);
       const result = (await runPipeline(

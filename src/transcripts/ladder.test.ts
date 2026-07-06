@@ -199,6 +199,39 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
     await expect(fs.access(markerPath)).rejects.toThrow();
   });
 
+  it("skips the stt rung with a preflight-blocked message (not the retry-budget one) when skipSttPreflightBlocked is set (issue #55 review 2)", async () => {
+    const result = await runTranscriptLadder(
+      config({ CASTRECALL_ENABLE_STT: "true", ASSEMBLYAI_API_KEY: "key_x" }),
+      RECORD,
+      {
+        fetchImpl: missAll,
+        env: { PATH: binDir },
+        skipStt: true,
+        skipSttPreflightBlocked: true,
+        skipLocalWhisper: true,
+      },
+    );
+
+    const sttRung = result.rungs.find((r) => r.rung === "stt")!;
+    expect(sttRung.outcome).toBe("skipped");
+    expect(sttRung.preflightBlocked).toBe(true);
+    expect(sttRung.detail).toContain("Corpus-scale preflight blocked");
+    expect(sttRung.detail).not.toContain("retry budget exhausted");
+  });
+
+  it("still uses the retry-budget-exhausted message when skipStt is set without skipSttPreflightBlocked", async () => {
+    const result = await runTranscriptLadder(
+      config({ CASTRECALL_ENABLE_STT: "true", ASSEMBLYAI_API_KEY: "key_x" }),
+      RECORD,
+      { fetchImpl: missAll, env: { PATH: binDir }, skipStt: true },
+    );
+
+    const sttRung = result.rungs.find((r) => r.rung === "stt")!;
+    expect(sttRung.outcome).toBe("skipped");
+    expect(sttRung.preflightBlocked).toBeUndefined();
+    expect(sttRung.detail).toContain("retry budget exhausted");
+  });
+
   it("still returns an RSS hit before reaching the local-whisper rung when skipLocalWhisper is set (free rungs unaffected)", async () => {
     const feedXml =
       '<?xml version="1.0"?>' +

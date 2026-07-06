@@ -14,7 +14,7 @@
  * disagree with what runTranscriptLadder would actually do.
  */
 
-import type { ResolvedConfig } from "../config.js";
+import type { ResolvedConfig, SttProvider } from "../config.js";
 import {
   deriveModelSource,
   localWhisperReadiness,
@@ -25,6 +25,7 @@ import {
   type WhisperFlavor,
   type WhisperModelResolution,
 } from "./local-whisper.js";
+import { sttAvailability } from "./stt.js";
 
 /**
  * Corpus-scale threshold (issue #55): below this, a run is a single-episode
@@ -109,6 +110,13 @@ export type TranscriptionPreflight = {
   /** Local audio is always downloaded to a temp dir and removed in a finally block — see transcribeWithLocalWhisper. */
   audioRetention: "temporary";
   lowQualityOptIn: boolean;
+  /** Whether rung 5 (paid cloud STT) is enabled/configured and would otherwise run as the
+   * fallback once local Whisper is blocked or misses — see `sttFallbackBlocked`. */
+  sttFallback: { enabled: boolean; provider: SttProvider; available: boolean };
+  /** True when this run's `blocked` local-Whisper gate ALSO skips the paid STT rung, so a
+   * corpus-scale run can never silently fall through a free local block into billed
+   * transcription without the operator seeing this report first. */
+  sttFallbackBlocked: boolean;
   blocked: boolean;
   reason?: string;
   remediation?: string[];
@@ -135,6 +143,12 @@ export function buildTranscriptionPreflight(params: {
   // actionable message, and blocking here too would double-handle them.
   const blocked = corpusScale && readiness.ready && quality === "low-quality" && !lowQualityOptIn;
   const { runtimeClass, runtimeCaveat } = estimateRuntimeClass(episodesPendingTranscript, flavor ?? null);
+  const sttAvailable = sttAvailability(config).ok;
+  // A blocked run must never silently fall through its free local-Whisper gate into a paid
+  // rung the operator can't see coming — see review 2 finding on issue #55. Only fires when
+  // STT would actually run (enabled AND configured), so this never double-reports rung 5
+  // being unavailable for its own unrelated reasons (sttAvailability already covers those).
+  const sttFallbackBlocked = blocked && sttAvailable;
 
   return {
     episodesPendingTranscript,
@@ -154,6 +168,8 @@ export function buildTranscriptionPreflight(params: {
     },
     audioRetention: "temporary",
     lowQualityOptIn,
+    sttFallback: { enabled: config.stt.enabled, provider: config.stt.provider, available: sttAvailable },
+    sttFallbackBlocked,
     blocked,
     ...(blocked
       ? {
@@ -161,7 +177,11 @@ export function buildTranscriptionPreflight(params: {
             `${episodesPendingTranscript} episode${episodesPendingTranscript === 1 ? "" : "s"} ` +
             `could fall through to local transcription with a low-quality model` +
             (resolved.model ? ` (${resolved.model})` : "") +
-            ". Corpus-scale runs require an explicit opt-in before generating transcripts this way.",
+            ". Corpus-scale runs require an explicit opt-in before generating transcripts this way." +
+            (sttFallbackBlocked
+              ? ` Paid cloud STT (${config.stt.provider}) is also skipped this run — it would ` +
+                "otherwise run as the next rung and start billing without this tradeoff ever being shown."
+              : ""),
           remediation: [
             "Set CASTRECALL_LOCAL_WHISPER_PRESET=best (or balanced) to use the quality-approved model.",
             "Or set CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true to explicitly accept low-quality/fast " +

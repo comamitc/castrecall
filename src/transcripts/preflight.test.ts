@@ -227,4 +227,60 @@ describe("buildTranscriptionPreflight", () => {
     });
     expect(result.lowQualityOptIn).toBe(true);
   });
+
+  describe("sttFallback / sttFallbackBlocked (issue #55 review 2 — cost visibility)", () => {
+    it("blocks STT too when a corpus-scale low-quality run is blocked and STT is enabled and configured", () => {
+      const result = buildTranscriptionPreflight({
+        config: config({
+          CASTRECALL_LOCAL_WHISPER_PRESET: "fast",
+          CASTRECALL_ENABLE_STT: "true",
+          ASSEMBLYAI_API_KEY: "key_x",
+        }),
+        whisper: MLX_DETECTED,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+      });
+      expect(result.blocked).toBe(true);
+      expect(result.sttFallback).toEqual({ enabled: true, provider: "assemblyai", available: true });
+      expect(result.sttFallbackBlocked).toBe(true);
+      expect(result.reason).toContain("Paid cloud STT (assemblyai) is also skipped this run");
+    });
+
+    it("does not report sttFallbackBlocked when STT is enabled but not configured (no API key)", () => {
+      const result = buildTranscriptionPreflight({
+        config: config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast", CASTRECALL_ENABLE_STT: "true" }),
+        whisper: MLX_DETECTED,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+      });
+      expect(result.blocked).toBe(true);
+      expect(result.sttFallback).toEqual({ enabled: true, provider: "assemblyai", available: false });
+      expect(result.sttFallbackBlocked).toBe(false);
+      expect(result.reason).not.toContain("Paid cloud STT");
+    });
+
+    it("does not report sttFallbackBlocked when STT is disabled", () => {
+      const result = buildTranscriptionPreflight({
+        config: config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" }),
+        whisper: MLX_DETECTED,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+      });
+      expect(result.blocked).toBe(true);
+      expect(result.sttFallback).toEqual({ enabled: false, provider: "assemblyai", available: false });
+      expect(result.sttFallbackBlocked).toBe(false);
+    });
+
+    it("never blocks STT when the local-whisper preflight itself is not blocked", () => {
+      const result = buildTranscriptionPreflight({
+        config: config({
+          CASTRECALL_LOCAL_WHISPER_PRESET: "best",
+          CASTRECALL_ENABLE_STT: "true",
+          ASSEMBLYAI_API_KEY: "key_x",
+        }),
+        whisper: MLX_DETECTED,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+      });
+      expect(result.blocked).toBe(false);
+      expect(result.sttFallback.available).toBe(true);
+      expect(result.sttFallbackBlocked).toBe(false);
+    });
+  });
 });

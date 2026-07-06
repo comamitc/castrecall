@@ -428,6 +428,8 @@ export async function fetchTranscript(
     scheduled?: boolean;
     /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run; never set by the castrecall_fetch_transcript tool itself, so a direct single-episode call is never gated. */
     skipLocalWhisper?: boolean;
+    /** Corpus-scale preflight (issue #55) also blocked the paid cloud STT fallback for this run, since it would otherwise run as the very next rung right behind the blocked local Whisper one; never set by the castrecall_fetch_transcript tool itself. */
+    skipStt?: boolean;
   },
   deps: ToolDeps = {},
 ): Promise<unknown> {
@@ -488,7 +490,8 @@ export async function fetchTranscript(
   const result = await runTranscriptLadder(config, record, {
     fetchImpl: deps.fetchImpl,
     env: deps.env,
-    skipStt: sttRetryBudgetSpent,
+    skipStt: sttRetryBudgetSpent || params.skipStt === true,
+    skipSttPreflightBlocked: !sttRetryBudgetSpent && params.skipStt === true,
     skipLocalWhisper: params.skipLocalWhisper,
   });
   if (!result.transcript) {
@@ -501,7 +504,7 @@ export async function fetchTranscript(
     const retryable = result.rungs.some((r) => r.retryable);
     const recheckable = result.rungs.some((r) => r.recheckable);
     const preflightBlocked = result.rungs.some(
-      (r) => r.rung === "local-whisper" && r.preflightBlocked,
+      (r) => (r.rung === "local-whisper" || r.rung === "stt") && r.preflightBlocked,
     );
     const consecutiveFailures = retryable ? (record.transcriptRetry?.consecutiveFailures ?? 0) + 1 : 0;
     const sttExhausted = retryable && consecutiveFailures >= TRANSCRIPT_RETRY_MAX_ATTEMPTS;
