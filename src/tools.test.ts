@@ -10,6 +10,7 @@ import {
   Storage,
   TRANSCRIPT_RECHECK_BASE_MS,
   TRANSCRIPT_RECHECK_MAX_AGE_MS,
+  TRANSCRIPT_RETRY_MAX_ATTEMPTS,
   type Provenance,
 } from "./storage.js";
 import {
@@ -927,6 +928,100 @@ describe("tools", () => {
     const state = await new Storage(dir).loadState();
     expect(state.episodes["ep-1"].transcriptRetry).toBeDefined();
     expect(state.episodes["ep-1"].transcriptRecheck).toBeUndefined();
+  });
+
+  it("keeps polling Taddy availability after the STT retry budget is exhausted, without re-billing STT", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const bothConfig = config({
+      TADDY_API_KEY: "key",
+      TADDY_USER_ID: "user",
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "deepgram",
+      DEEPGRAM_API_KEY: "dg-key",
+    });
+    let sttCalls = 0;
+    const pendingFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "PROCESSING" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith("https://api.deepgram.com/")) {
+        sttCalls += 1;
+        return new Response("bad gateway", { status: 502 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    let last: any;
+    for (let i = 0; i < TRANSCRIPT_RETRY_MAX_ATTEMPTS; i++) {
+      last = await fetchTranscript(
+        bothConfig,
+        { episodeUuid: "ep-1" },
+        { fetchImpl: pendingFetchImpl, env: { PATH: "" } },
+      );
+    }
+    expect(sttCalls).toBe(TRANSCRIPT_RETRY_MAX_ATTEMPTS);
+    expect(last.status).toBe("no-transcript");
+    // The retry budget was just exhausted on this call, but Taddy is still
+    // recheckable — the episode must stay eligible ("none") with a recheck
+    // scheduled, not be marked terminally "failed".
+    expect(last.recheck).toBeDefined();
+    const afterExhaustion = await new Storage(dir).loadState();
+    expect(afterExhaustion.episodes["ep-1"].transcriptStatus).toBe("none");
+    expect(afterExhaustion.episodes["ep-1"].transcriptRecheck).toBeDefined();
+    expect(afterExhaustion.episodes["ep-1"].transcriptRetry?.consecutiveFailures).toBe(
+      TRANSCRIPT_RETRY_MAX_ATTEMPTS,
+    );
+
+    // A further call must not re-bill STT: its retry budget stays permanently
+    // spent for this episode once exhausted.
+    await fetchTranscript(
+      bothConfig,
+      { episodeUuid: "ep-1" },
+      { fetchImpl: pendingFetchImpl, env: { PATH: "" } },
+    );
+    expect(sttCalls).toBe(TRANSCRIPT_RETRY_MAX_ATTEMPTS);
+
+    // Taddy later has the transcript within its own availability window; it's
+    // still ingested even though STT is permanently skipped for this episode.
+    const hitFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({ data: { getPodcastEpisode: { uuid: "ep-1", transcript: "now available" } } }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith("https://api.deepgram.com/")) {
+        throw new Error("STT must not be called once its retry budget is exhausted");
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const final = (await fetchTranscript(
+      bothConfig,
+      { episodeUuid: "ep-1" },
+      { fetchImpl: hitFetchImpl, env: { PATH: "" } },
+    )) as any;
+    expect(final.status).toBe("stored");
+    const finalState = await new Storage(dir).loadState();
+    expect(finalState.episodes["ep-1"].transcriptStatus).toBe("stored");
   });
 
   it("fetch_transcript stores RSS transcripts without returning transcript text", async () => {

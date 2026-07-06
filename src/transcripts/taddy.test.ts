@@ -184,4 +184,33 @@ describe("fetchTaddyTranscript", () => {
     );
     expect(result).toEqual({ status: "miss" });
   });
+
+  it("falls through to the title lookup when the GUID lookup misses", async () => {
+    let calls = 0;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url !== TADDY_ENDPOINT) throw new Error(`unexpected fetch: ${url}`);
+      calls += 1;
+      const body = JSON.parse(String(init?.body)) as { variables: { value: string } };
+      // First attempt is by GUID (declared first in fetchTaddyTranscript's
+      // attempts list) and misses; the second, by title, hits.
+      if (calls === 1) {
+        expect(body.variables.value).toBe("guid-1");
+        return notFoundResponse();
+      }
+      expect(body.variables.value).toBe("Episode One");
+      return episodeResponse({ uuid: "ep-uuid", transcript: "found by title", taddyTranscribeStatus: "COMPLETED" });
+    }) as typeof fetch;
+    const result = await fetchTaddyTranscript(
+      config(),
+      { guid: "guid-1", title: "Episode One" },
+      fetchImpl,
+      RETRY,
+    );
+    expect(result).toEqual({
+      status: "hit",
+      transcript: { text: "found by title", episodeUuid: "ep-uuid" },
+    });
+    expect(calls).toBe(2);
+  });
 });

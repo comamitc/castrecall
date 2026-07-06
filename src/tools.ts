@@ -420,9 +420,16 @@ export async function fetchTranscript(
   }
 
   const now = deps.now ?? (() => new Date());
+  // Once a prior attempt exhausted the STT retry budget for this episode,
+  // never bill it again — the ladder is told to skip straight past that
+  // rung so a still-recheckable rung (e.g. Taddy) can keep being polled
+  // without re-attempting STT on every call.
+  const sttRetryBudgetSpent =
+    (record.transcriptRetry?.consecutiveFailures ?? 0) >= TRANSCRIPT_RETRY_MAX_ATTEMPTS;
   const result = await runTranscriptLadder(config, record, {
     fetchImpl: deps.fetchImpl,
     env: deps.env,
+    skipStt: sttRetryBudgetSpent,
   });
   if (!result.transcript) {
     const transcriptError = result.rungs.map((r) => `${r.rung}: ${r.detail}`).join(" | ");
@@ -430,40 +437,29 @@ export async function fetchTranscript(
     // rejection) leaves transcriptStatus "none" so the episode stays eligible
     // — but under a bounded, backed-off budget: each attempt can bill a paid
     // STT provider, so scheduled runs must never hammer the same episode
-    // every tick or retry it forever. Checked before recheckable so a
-    // transient STT failure is never downgraded into the (cheaper, longer)
-    // availability-poll path — the billing invariant always wins.
+    // every tick or retry it forever.
     const retryable = result.rungs.some((r) => r.retryable);
     const recheckable = result.rungs.some((r) => r.recheckable);
+    const consecutiveFailures = retryable ? (record.transcriptRetry?.consecutiveFailures ?? 0) + 1 : 0;
+    const sttExhausted = retryable && consecutiveFailures >= TRANSCRIPT_RETRY_MAX_ATTEMPTS;
     let retry: ListenRecord["transcriptRetry"];
     let recheck: ListenRecord["transcriptRecheck"];
-    if (retryable) {
-      const consecutiveFailures = (record.transcriptRetry?.consecutiveFailures ?? 0) + 1;
-      if (consecutiveFailures >= TRANSCRIPT_RETRY_MAX_ATTEMPTS) {
-        await storage.updateEpisode(
-          record.uuid,
-          {
-            transcriptStatus: "failed",
-            transcriptError:
-              `${transcriptError} (gave up after ${consecutiveFailures} consecutive transient ` +
-              "failures; run castrecall_fetch_transcript manually to try again)",
-            transcriptRetry: undefined,
-          },
-          now,
-        );
-      } else {
-        const delay = Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_CAP_MS);
-        retry = {
-          consecutiveFailures,
-          nextEligibleAt: new Date(now().getTime() + delay).toISOString(),
-        };
-        await storage.updateEpisode(record.uuid, { transcriptError, transcriptRetry: retry }, now);
-      }
+    if (retryable && !sttExhausted) {
+      const delay = Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_CAP_MS);
+      retry = {
+        consecutiveFailures,
+        nextEligibleAt: new Date(now().getTime() + delay).toISOString(),
+      };
+      await storage.updateEpisode(record.uuid, { transcriptError, transcriptRetry: retry }, now);
     } else if (recheckable) {
       // The transcript may simply not be published/transcribed YET (Taddy
       // still transcribing, or an RSS item with no transcript links
       // declared). Poll again on a longer, uncapped-by-attempt-count horizon
-      // rather than treating the first miss as terminal.
+      // rather than treating the first miss as terminal. If STT's own retry
+      // budget just ran out (sttExhausted), freeze that state instead of
+      // discarding it — `skipStt` above reads it back so STT stays
+      // permanently skipped for this episode while this cheaper rung keeps
+      // being polled.
       const firstDeferredAt = record.transcriptRecheck?.firstDeferredAt ?? now().toISOString();
       const ageMs = now().getTime() - Date.parse(firstDeferredAt);
       if (ageMs > TRANSCRIPT_RECHECK_MAX_AGE_MS) {
@@ -488,14 +484,31 @@ export async function fetchTranscript(
           nextEligibleAt: new Date(now().getTime() + delay).toISOString(),
           firstDeferredAt,
         };
-        await storage.updateEpisode(record.uuid, { transcriptError, transcriptRecheck: recheck }, now);
+        if (sttExhausted) {
+          retry = {
+            consecutiveFailures,
+            nextEligibleAt: record.transcriptRetry?.nextEligibleAt ?? now().toISOString(),
+          };
+        }
+        await storage.updateEpisode(
+          record.uuid,
+          {
+            transcriptError,
+            transcriptRecheck: recheck,
+            ...(sttExhausted ? { transcriptRetry: retry } : {}),
+          },
+          now,
+        );
       }
     } else {
       await storage.updateEpisode(
         record.uuid,
         {
           transcriptStatus: "failed",
-          transcriptError,
+          transcriptError: sttExhausted
+            ? `${transcriptError} (gave up after ${consecutiveFailures} consecutive transient ` +
+              "failures; run castrecall_fetch_transcript manually to try again)"
+            : transcriptError,
           transcriptRetry: undefined,
           transcriptRecheck: undefined,
         },

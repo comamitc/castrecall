@@ -47,7 +47,7 @@ export type LadderResult = {
 export async function runTranscriptLadder(
   config: ResolvedConfig,
   record: ListenRecord,
-  options: { fetchImpl?: FetchLike; env?: NodeJS.ProcessEnv } = {},
+  options: { fetchImpl?: FetchLike; env?: NodeJS.ProcessEnv; skipStt?: boolean } = {},
 ): Promise<LadderResult> {
   const fetchImpl = options.fetchImpl ?? fetch;
   const env = options.env ?? process.env;
@@ -246,7 +246,14 @@ export async function runTranscriptLadder(
 
   // Rung 5: cloud speech-to-text (explicitly enabled only — costs money)
   const stt = sttAvailability(config);
-  if (!stt.ok) {
+  if (options.skipStt) {
+    rungs.push({
+      rung: "stt",
+      outcome: "skipped",
+      detail:
+        "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
+    });
+  } else if (!stt.ok) {
     rungs.push({ rung: "stt", outcome: "skipped", detail: stt.reason ?? "STT unavailable." });
   } else {
     try {
