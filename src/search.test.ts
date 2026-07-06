@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config.js";
 import { Storage, type Provenance } from "./storage.js";
 import { search } from "./tools.js";
@@ -11,6 +11,7 @@ import {
   buildSnippet,
   clampLimit,
   DEFAULT_SEARCH_LIMIT,
+  MAX_CANDIDATES,
   MAX_SEARCH_LIMIT,
   parseQuery,
   phraseBonus,
@@ -245,6 +246,59 @@ describe("SearchIndex", () => {
 
     const result = await index.search("climate", { limit: 5 }, corpus);
     expect(result.hits[0]?.episodeUuid).toBe("high-score");
+  });
+
+  it("bounds phase-2 reads to MAX_CANDIDATES even when a quoted phrase makes nearly every doc phrase-eligible", async () => {
+    const index = new SearchIndex(dir);
+    const text = "the quick fox and the lazy dog ran near the river";
+    const docCount = MAX_CANDIDATES + 10;
+    let readCalls = 0;
+    const corpus = Array.from({ length: docCount }, (_, i) =>
+      entry({
+        uuid: `doc-${i}`,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: `doc-${i}` },
+        text,
+        readText: async () => {
+          readCalls += 1;
+          return text;
+        },
+      }),
+    );
+
+    // Build the index first so the second search's reads are Phase 2 only,
+    // not reconcile-because-new-doc reads.
+    await index.search('"the lazy"', {}, corpus);
+    readCalls = 0;
+
+    const result = await index.search('"the lazy"', {}, corpus);
+    expect(readCalls).toBeLessThanOrEqual(MAX_CANDIDATES);
+    expect(result.droppedCandidates).toBeGreaterThan(0);
+  });
+
+  it("does not throw ENOENT when two searches persist concurrently, since each persist writes a unique temp file", async () => {
+    const index = new SearchIndex(dir);
+    const corpusA = [entry({ uuid: "a", provenance: { ...BASE_PROVENANCE, episodeUuid: "a" }, text: "alpha content here" })];
+    const corpusB = [entry({ uuid: "b", provenance: { ...BASE_PROVENANCE, episodeUuid: "b" }, text: "beta content here" })];
+
+    // Delay every rename so both persists' writeFile calls land before either
+    // rename runs — the interleaving that surfaces ENOENT if both writers
+    // share one fixed temp path.
+    const originalRename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return originalRename(...args);
+    });
+
+    try {
+      const [resultA, resultB] = await Promise.all([
+        index.search("alpha", {}, corpusA),
+        index.search("beta", {}, corpusB),
+      ]);
+      expect(resultA.hits).toHaveLength(1);
+      expect(resultB.hits).toHaveLength(1);
+    } finally {
+      renameSpy.mockRestore();
+    }
   });
 });
 

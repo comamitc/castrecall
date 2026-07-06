@@ -4,14 +4,17 @@
  * score/snippet functions below, `SearchIndex` for the on-disk cache.
  *
  * Two-phase scoring: Phase 1 scores every doc from a persisted term-frequency
- * index (tf-length-normalized + idf-lite) and selects a bounded candidate set
- * — docs matching any bare term, plus docs containing every token of a quoted
- * phrase (always retained, so an exact-phrase doc is never missed). Phase 2
- * re-reads only the capped candidate set's transcript text, applies an exact
- * contiguous-phrase bonus, and builds snippets. The index therefore stores
- * term frequencies only — never prose, never positional data.
+ * index (tf-length-normalized + idf-lite) and selects a candidate set — docs
+ * matching any bare term, plus docs containing every token of a quoted
+ * phrase — then ranks phrase-eligible and bare-term candidates by score and
+ * caps both to MAX_CANDIDATES total, so a broad phrase can't force an
+ * unbounded Phase 2 scan. Phase 2 re-reads only the capped candidate set's
+ * transcript text, applies an exact contiguous-phrase bonus, and builds
+ * snippets. The index therefore stores term frequencies only — never prose,
+ * never positional data.
  */
 
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Provenance } from "./storage.js";
@@ -282,7 +285,9 @@ export class SearchIndex {
 
   private async persist(docs: IndexedDocument[]): Promise<void> {
     await fs.mkdir(this.indexDir, { recursive: true });
-    const tmpPath = `${this.indexPath}.tmp`;
+    // Unique per attempt so concurrent searches reconciling the same index
+    // don't share (and race on) a single fixed temp path.
+    const tmpPath = `${this.indexPath}.${randomUUID()}.tmp`;
     await fs.writeFile(tmpPath, `${JSON.stringify({ docs }, null, 2)}\n`, "utf8");
     await fs.rename(tmpPath, this.indexPath);
   }
@@ -322,11 +327,11 @@ export class SearchIndex {
     const candidateUuids = selectCandidates(query, docs);
     const keywordScores = scoreKeywords(query, docs);
 
-    // Phrase-eligible docs (containing every token of a quoted phrase) are always
-    // retained regardless of the cap, since only Phase 2 can confirm the exact
-    // contiguous match. Remaining bare-term candidates are ranked by their
-    // already-computed keyword score before capping, so the cap drops the
-    // lowest-scoring matches rather than an arbitrary corpus-order tail.
+    // Phrase-eligible docs (containing every token of a quoted phrase) are
+    // prioritized over bare-term matches, since only Phase 2 can confirm the
+    // exact contiguous match — but they are still ranked by keyword score and
+    // subject to the same MAX_CANDIDATES read budget as bare terms, so a broad
+    // phrase (e.g. common words) cannot force an unbounded Phase 2 scan.
     const phraseEligibleUuids = new Set(
       docs
         .filter((doc) =>
@@ -334,11 +339,15 @@ export class SearchIndex {
         )
         .map((doc) => doc.uuid),
     );
+    const rankedPhraseEligible = Array.from(phraseEligibleUuids).sort(
+      (a, b) => (keywordScores.get(b) ?? 0) - (keywordScores.get(a) ?? 0),
+    );
+    const cappedPhraseEligible = rankedPhraseEligible.slice(0, MAX_CANDIDATES);
     const bareTermUuids = candidateUuids
       .filter((uuid) => !phraseEligibleUuids.has(uuid))
       .sort((a, b) => (keywordScores.get(b) ?? 0) - (keywordScores.get(a) ?? 0));
-    const remainingBudget = Math.max(0, MAX_CANDIDATES - phraseEligibleUuids.size);
-    const cappedCandidates = [...phraseEligibleUuids, ...bareTermUuids.slice(0, remainingBudget)];
+    const remainingBudget = Math.max(0, MAX_CANDIDATES - cappedPhraseEligible.length);
+    const cappedCandidates = [...cappedPhraseEligible, ...bareTermUuids.slice(0, remainingBudget)];
     const droppedCandidates = candidateUuids.length - cappedCandidates.length;
 
     const scored: Array<{ uuid: string; score: number; text: string }> = [];
