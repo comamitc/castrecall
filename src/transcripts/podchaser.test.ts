@@ -451,6 +451,38 @@ describe("fetchPodchaserTranscript", () => {
     }
   });
 
+  it("never transmits a URL-like RSS GUID to Podchaser — falls back to title search only", async () => {
+    const urlLikeGuids = [
+      "https://feeds.example.com/private/SECRET-SUBSCRIBER-TOKEN/ep1",
+      "feeds.example.com/private/SECRET-SUBSCRIBER-TOKEN/ep1",
+      "tag:feeds.example.com,2026:SECRET-SUBSCRIBER-TOKEN",
+      "ep1?auth=SECRET-SUBSCRIBER-TOKEN",
+    ];
+    for (const guid of urlLikeGuids) {
+      const requestBodies: string[] = [];
+      const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === GRAPHQL_URL) {
+          requestBodies.push(String(init?.body));
+          return notFoundResponse();
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      await fetchPodchaserTranscript(
+        config(),
+        { guid, title: "Episode One", feedUrl: FEED_URL, podcastTitle: PODCAST_TITLE },
+        fetchImpl,
+        RETRY,
+      );
+
+      // Only the title search reaches Podchaser; the GUID never does.
+      expect(requestBodies).toHaveLength(1);
+      expect(requestBodies[0]).toContain("FindEpisodeByTitle");
+      expect(requestBodies[0]).not.toContain("SECRET-SUBSCRIBER-TOKEN");
+    }
+  });
+
   it("a tokenized feed URL still scopes matching locally: wrong-podcast candidates stay misses", async () => {
     const tokenizedFeedUrl = "https://feeds.example.com/show.xml?auth=SECRET-SUBSCRIBER-TOKEN";
     const fetchImpl = (async (input: RequestInfo | URL) => {

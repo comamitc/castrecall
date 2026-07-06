@@ -27,7 +27,10 @@ export function podchaserConfigured(config) {
  * never placed in a Podchaser request. Feed URLs come from the user's Pocket Casts
  * subscriptions, and private/paid feeds embed subscriber tokens anywhere in the URL
  * (userinfo, query, fragment, or path) with no way to prove a given URL is public —
- * so nothing derived from it may cross the Podchaser trust boundary.
+ * so nothing derived from it may cross the Podchaser trust boundary. The same rule
+ * covers RSS GUIDs: permalink-style GUIDs are URLs from the same private feed and can
+ * carry the same tokens, so only opaque GUIDs (no URL structure) are ever sent; a
+ * URL-like GUID skips straight to title search, which transmits the episode title only.
  *
  * Returns undefined when Podchaser knows the episode but has no usable transcript.
  */
@@ -39,9 +42,10 @@ export async function fetchPodchaserTranscript(config, episode, fetchImpl = fetc
     }
     const expectedPodcast = { feedUrl: episode.feedUrl, podcastTitle: episode.podcastTitle };
     const attempts = [];
-    if (episode.guid) {
+    if (episode.guid && isOpaqueGuid(episode.guid)) {
+        const guid = episode.guid;
         attempts.push(async () => {
-            const found = await lookupByGuid(config, episode.guid, fetchImpl, retry);
+            const found = await lookupByGuid(config, guid, fetchImpl, retry);
             return found ? [found] : [];
         });
     }
@@ -77,6 +81,25 @@ function matchesExpectedPodcast(candidatePodcast, expected) {
         return normalizeTitle(candidatePodcast.title) === normalizeTitle(expected.podcastTitle);
     }
     return false;
+}
+/**
+ * True only for GUIDs with no URL structure at all. RSS permits permalink
+ * GUIDs, and on a private feed those are URLs carrying the same subscriber
+ * tokens as the feed URL (in path, query, userinfo, or fragment) — none of
+ * which can be proven safe. Rejects anything with URL-structural characters
+ * or a parseable scheme (http:, tag:, urn:, ...); such episodes fall back to
+ * title search, which transmits only the episode title.
+ */
+function isOpaqueGuid(guid) {
+    if (/[/?#@]/.test(guid))
+        return false;
+    try {
+        new URL(guid);
+        return false;
+    }
+    catch {
+        return true;
+    }
 }
 function normalizeUrl(url) {
     return url.trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/\/+$/, "");

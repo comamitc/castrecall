@@ -27,7 +27,10 @@ export declare function podchaserConfigured(config: ResolvedConfig): boolean;
  * never placed in a Podchaser request. Feed URLs come from the user's Pocket Casts
  * subscriptions, and private/paid feeds embed subscriber tokens anywhere in the URL
  * (userinfo, query, fragment, or path) with no way to prove a given URL is public —
- * so nothing derived from it may cross the Podchaser trust boundary.
+ * so nothing derived from it may cross the Podchaser trust boundary. The same rule
+ * covers RSS GUIDs: permalink-style GUIDs are URLs from the same private feed and can
+ * carry the same tokens, so only opaque GUIDs (no URL structure) are ever sent; a
+ * URL-like GUID skips straight to title search, which transmits the episode title only.
  *
  * Returns undefined when Podchaser knows the episode but has no usable transcript.
  */
