@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { CastrecallSetupError, resolveConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
-import { sttAvailability, transcribeAudio } from "./stt.js";
+import { RetryableSttError, sttAvailability, transcribeAudio } from "./stt.js";
 
 const AUDIO_URL = "https://example.com/episode.mp3";
 
@@ -59,6 +59,17 @@ describe("transcribeAudio with deepgram", () => {
     }) as FetchLike;
     await expect(transcribeAudio(deepgramConfig(), AUDIO_URL, fetchImpl)).rejects.toThrow(/504/);
     expect(calls).toBe(1);
+  });
+
+  it("converts a rejected fetch (network-level failure) into a RetryableSttError", async () => {
+    const fetchImpl: FetchLike = (async () => {
+      throw new Error("socket hang up (ECONNRESET)");
+    }) as FetchLike;
+    const failure = transcribeAudio(deepgramConfig(), AUDIO_URL, fetchImpl);
+    await expect(failure).rejects.toBeInstanceOf(RetryableSttError);
+    await expect(
+      transcribeAudio(deepgramConfig(), AUDIO_URL, fetchImpl),
+    ).rejects.toThrow(/ECONNRESET/);
   });
 
   it("posts the audio URL with model, diarization, and Token auth header", async () => {

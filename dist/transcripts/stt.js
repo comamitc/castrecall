@@ -16,6 +16,22 @@ const ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2";
 const DEEPGRAM_BASE = "https://api.deepgram.com/v1/listen";
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 15 * 60_000;
+/**
+ * Thrown for provider failures that are transient (rate limits, timeouts,
+ * upstream 5xx) rather than a fundamental rejection of the request. Callers
+ * can use this to keep the episode eligible for the next scheduled retry
+ * instead of recording a terminal failure.
+ */
+export class RetryableSttError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "RetryableSttError";
+    }
+}
+const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
+function isRetryableHttpStatus(status) {
+    return RETRYABLE_HTTP_STATUSES.has(status) || status >= 500;
+}
 export function sttAvailability(config) {
     if (!config.stt.enabled) {
         return {
@@ -110,20 +126,35 @@ async function transcribeWithAssemblyAi(config, audioUrl, fetchImpl, sleep) {
 async function transcribeWithDeepgram(config, audioUrl, fetchImpl) {
     const url = `${DEEPGRAM_BASE}?model=${encodeURIComponent(config.stt.deepgramModel)}` +
         "&smart_format=true&punctuate=true&diarize=true&utterances=true";
-    const response = await fetchImpl(url, {
-        method: "POST",
-        headers: {
-            authorization: `Token ${config.stt.deepgramApiKey ?? ""}`,
-            "content-type": "application/json",
-        },
-        body: JSON.stringify({ url: audioUrl }),
-    });
+    let response;
+    try {
+        response = await fetchImpl(url, {
+            method: "POST",
+            headers: {
+                authorization: `Token ${config.stt.deepgramApiKey ?? ""}`,
+                "content-type": "application/json",
+            },
+            body: JSON.stringify({ url: audioUrl }),
+        });
+    }
+    catch (error) {
+        // A rejected fetch (connection reset, DNS/TLS failure, abort) is just as
+        // transient as a retryable HTTP status — without this, the episode would
+        // be recorded as terminally failed and stranded until a manual fetch.
+        const message = error instanceof Error ? error.message : String(error);
+        throw new RetryableSttError(`Deepgram request failed before a response arrived (${message}); ` +
+            "the episode stays eligible for a later run.");
+    }
     if (response.status === 401) {
         throw new CastrecallSetupError("Deepgram rejected DEEPGRAM_API_KEY.");
     }
     if (!response.ok) {
-        throw new Error(`Deepgram transcription failed with HTTP ${response.status}. Long episodes can time out on ` +
-            "the prerecorded endpoint; retry later.");
+        const message = `Deepgram transcription failed with HTTP ${response.status}. Long episodes can time out on ` +
+            "the prerecorded endpoint; retry later.";
+        if (isRetryableHttpStatus(response.status)) {
+            throw new RetryableSttError(message);
+        }
+        throw new Error(message);
     }
     const body = (await response.json());
     const text = body.results?.utterances?.length

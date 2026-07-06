@@ -165,14 +165,26 @@ async function transcribeWithDeepgram(
   const url =
     `${DEEPGRAM_BASE}?model=${encodeURIComponent(config.stt.deepgramModel)}` +
     "&smart_format=true&punctuate=true&diarize=true&utterances=true";
-  const response = await fetchImpl(url, {
-    method: "POST",
-    headers: {
-      authorization: `Token ${config.stt.deepgramApiKey ?? ""}`,
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ url: audioUrl }),
-  });
+  let response: Response;
+  try {
+    response = await fetchImpl(url, {
+      method: "POST",
+      headers: {
+        authorization: `Token ${config.stt.deepgramApiKey ?? ""}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ url: audioUrl }),
+    });
+  } catch (error) {
+    // A rejected fetch (connection reset, DNS/TLS failure, abort) is just as
+    // transient as a retryable HTTP status — without this, the episode would
+    // be recorded as terminally failed and stranded until a manual fetch.
+    const message = error instanceof Error ? error.message : String(error);
+    throw new RetryableSttError(
+      `Deepgram request failed before a response arrived (${message}); ` +
+        "the episode stays eligible for a later run.",
+    );
+  }
   if (response.status === 401) {
     throw new CastrecallSetupError("Deepgram rejected DEEPGRAM_API_KEY.");
   }

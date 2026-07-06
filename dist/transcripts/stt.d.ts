@@ -17,6 +17,15 @@ export type SttResult = {
     provider: "assemblyai" | "openai" | "deepgram";
     model?: string;
 };
+/**
+ * Thrown for provider failures that are transient (rate limits, timeouts,
+ * upstream 5xx) rather than a fundamental rejection of the request. Callers
+ * can use this to keep the episode eligible for the next scheduled retry
+ * instead of recording a terminal failure.
+ */
+export declare class RetryableSttError extends Error {
+    constructor(message: string);
+}
 export declare function sttAvailability(config: ResolvedConfig): {
     ok: boolean;
     reason?: string;
