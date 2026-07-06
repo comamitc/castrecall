@@ -51,7 +51,7 @@ export type LadderResult = {
     provider?: string;
     /** Exact local-transcription provenance (issue #54); only set on a local-whisper hit. */
     generation?: LocalWhisperGeneration;
-    /** Structured segments (timing, speaker), when the rung parsed them; only set on an RSS hit today. */
+    /** Structured segments (timing, speaker), when the rung parsed them; set on an RSS hit (VTT/SRT/JSON) or a diarized STT hit. */
     segments?: TranscriptSegment[];
   };
   feedItem?: ResolvedFeedItem;
@@ -331,6 +331,7 @@ export async function runTranscriptLadder(
           raw: result.text,
           text: result.text,
           provider: result.model ? `${result.provider}:${result.model}` : result.provider,
+          segments: result.segments,
         },
         feedItem,
         rungs,

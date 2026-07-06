@@ -34,3 +34,12 @@ export declare function detectFormat(options: {
 export declare function timecodeToSeconds(value: string): number | undefined;
 export declare function normalizeTranscript(body: string, format: TranscriptFormat): NormalizedTranscript;
 export declare function htmlToText(html: string): string;
+/**
+ * Join segments into readable text, labeling speaker turns and
+ * deduplicating rolling-caption repeats (common in VTT). The single internal
+ * segment-to-text formatter — any source that produces `TranscriptSegment[]`
+ * (VTT/SRT/JSON here, diarized STT providers in stt.ts) derives its plain
+ * text through this same function, so speaker-turn formatting never diverges
+ * across sources.
+ */
+export declare function segmentsToText(segments: TranscriptSegment[]): string;

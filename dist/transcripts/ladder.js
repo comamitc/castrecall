@@ -261,6 +261,7 @@ export async function runTranscriptLadder(config, record, options = {}) {
                     raw: result.text,
                     text: result.text,
                     provider: result.model ? `${result.provider}:${result.model}` : result.provider,
+                    segments: result.segments,
                 },
                 feedItem,
                 rungs,

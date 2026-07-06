@@ -404,14 +404,23 @@ proportional and therefore approximate — never exact segment boundaries —
 but always non-decreasing across sections; a section is simply left without
 timestamps when the source has no timing signal there.
 
+**Speaker labels (issue #44).** VTT/SRT/JSON sources and diarized cloud STT
+(AssemblyAI/Deepgram) carry per-segment speaker labels in the same
+`segments.json` sidecar. When at least one segment carries a non-empty
+speaker, both the section and index frontmatter get a `speakers` line — a
+JSON array of the distinct speaker labels in order of first appearance, e.g.
+`speakers: ["Speaker A","Speaker B"]`. Labels are provider-given only, never
+invented: a source with no speaker metadata (local Whisper, plain text) omits
+the line entirely rather than fabricate a `Speaker 1`/`Speaker 2` split.
+
 Export is idempotent: an episode whose transcript content hash hasn't changed
-re-exports nothing — unless provenance now carries a quality score, or
-segments now carry timing, that the existing export predates, in which case
-it re-exports once to backfill the `transcript_quality_*`/`approx_start`/
-`approx_end` frontmatter even though the transcript text itself is unchanged.
-It only ever reads a stored transcript + its provenance sidecar (and the
-optional segments sidecar) — review candidates and `state.json` are never
-exported.
+re-exports nothing — unless provenance now carries a quality score, segments
+now carry timing, or segments now carry speaker labels, that the existing
+export predates, in which case it re-exports once to backfill the
+`transcript_quality_*`/`approx_start`/`approx_end`/`speakers` frontmatter even
+though the transcript text itself is unchanged. It only ever reads a stored
+transcript + its provenance sidecar (and the optional segments sidecar) —
+review candidates and `state.json` are never exported.
 
 **Two ways to point gbrain at it:**
 

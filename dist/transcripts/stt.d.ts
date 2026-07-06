@@ -12,10 +12,13 @@
  */
 import { type ResolvedConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
+import { type TranscriptSegment } from "./normalize.js";
 export type SttResult = {
     text: string;
     provider: "assemblyai" | "openai" | "deepgram";
     model?: string;
+    /** Diarized speaker turns (issue #44), when the provider returned per-utterance speaker labels. */
+    segments?: TranscriptSegment[];
 };
 /**
  * Thrown for provider failures that are transient (rate limits, timeouts,

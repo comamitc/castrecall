@@ -7,6 +7,7 @@ import type { TranscriptSegment } from "./transcripts/normalize.js";
 import {
   CorpusExporter,
   buildCorpusPages,
+  distinctSpeakers,
   formatTimecode,
   sectionTimestamps,
   slugify,
@@ -462,6 +463,54 @@ describe("buildCorpusPages", () => {
   });
 });
 
+describe("distinctSpeakers", () => {
+  it("returns ordered, de-duplicated speaker labels", () => {
+    const segments: TranscriptSegment[] = [
+      { text: "a", speaker: "Alice" },
+      { text: "b", speaker: "Bob" },
+      { text: "c", speaker: "Alice" },
+    ];
+    expect(distinctSpeakers(segments)).toEqual(["Alice", "Bob"]);
+  });
+
+  it("excludes empty/whitespace speaker strings and returns [] for undefined/speaker-less segments", () => {
+    expect(distinctSpeakers(undefined)).toEqual([]);
+    expect(distinctSpeakers([{ text: "a" }, { text: "b", speaker: "   " }])).toEqual([]);
+  });
+});
+
+describe("buildCorpusPages speaker frontmatter (issue #44)", () => {
+  it("emits a speakers: line on both a section page and index.md when segments carry distinct speakers", () => {
+    const segments: TranscriptSegment[] = [
+      { text: "Hello.", speaker: "Alice" },
+      { text: "Hi back.", speaker: "Bob" },
+    ];
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Hello. Hi back.",
+      contentHash: "hash",
+      segments,
+    });
+    for (const page of pages) {
+      expect(page.content).toContain('speakers: ["Alice","Bob"]');
+    }
+  });
+
+  it("omits the speakers: line entirely when segments carry no speaker labels", () => {
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "hash",
+      segments: [{ text: "Some transcript text." }],
+    });
+    for (const page of pages) {
+      expect(page.content).not.toContain("speakers:");
+    }
+  });
+});
+
 describe("CorpusExporter", () => {
   let dir: string;
 
@@ -684,6 +733,67 @@ describe("CorpusExporter", () => {
       segments: partialSegments,
     });
     expect(third.skipped).toBe(true);
+  });
+
+  it("re-exports on an unchanged content hash to backfill speakers once segments carry them, then settles (issue #44)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    const beforeIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(beforeIndex).not.toContain("speakers:");
+
+    const segments: TranscriptSegment[] = [{ text: "Some transcript text.", speaker: "Alice" }];
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments,
+    });
+    expect(second.skipped).toBe(false);
+    expect(second.exported).toBeGreaterThan(0);
+
+    const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(afterIndex).toContain('speakers: ["Alice"]');
+
+    const third = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments,
+    });
+    expect(third.skipped).toBe(true);
+  });
+
+  it("stays idempotent on an unchanged content hash when segments carry no speaker labels (local Whisper — issue #44)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+
+    const speakerlessSegments: TranscriptSegment[] = [{ text: "Some transcript text." }];
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments: speakerlessSegments,
+    });
+    expect(second.skipped).toBe(true);
+
+    const indexContent = await fs.readFile(
+      path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"),
+      "utf8",
+    );
+    expect(indexContent).not.toContain("speakers:");
   });
 
   it("replaces the episode dir with no stale files when the content hash changes", async () => {
