@@ -158,7 +158,8 @@ Taddy's `taddyTranscribeStatus` plus an RSS "transcript may appear later" re-che
 - No dist regressions: only additive rung insertion; `ladder.ts`/`config.js`/`setup.js`/`tools.js`/`storage.d.ts` diffs are the renumbering + new field/step, no unrelated changes.
 
 ### v0.10.0 — memory-curation lane
-- [ ] #1 review disposition tool · [ ] release v0.10.0
+- [x] #1 review disposition tool — PR #60 squash-merged, issue closed. `castrecall_resolve_review` (promote-with-content / discard; conversation-as-UI, contractual gate). Three review rounds: manifest drift (new tool changes generated metadata — regenerated); link/unlink move left half-done on pending-unlink failure → compensating cleanup; compensation itself could delete the only copy on concurrent ENOENT → treat as completed move. 456 tests green on main. Ran in PARALLEL with the whisper lane (#51/#52).
+- [x] release v0.10.0 — PR #66 merged, version 0.9.0→0.10.0 (manifest regenerated), tag pushed, GitHub release published, milestone closed.
 
 ## Dependencies (verified)
 - #15 → #14 (content hash before export idempotency). No other hard edges.
