@@ -455,6 +455,7 @@ normalized title.
 | Scheduler hammers a down/broken Pocket Casts API | `castrecall_run_pipeline`'s cooldown gate: capped exponential backoff after login/history failures, cleared on the next success; a run inside the window makes zero Pocket Casts calls. Documented in README; never bypass via `force: true` in a recipe. |
 | Overlapping scheduled runs | `.staging/pipeline.lock` (exclusive-create, TTL-based stale reclaim, token-checked release) ensures at most one run reaches the Pocket Casts API at a time; the underlying storage writes (`recordListens`, `storeTranscript`, `writeReviewCandidate`) are independently idempotent, so even a bypassed lock cannot corrupt state. |
 | Silent corpus-scale low-quality transcription (issue #55) | `castrecall_run_pipeline` computes a preflight from the same detection/resolvers the ladder uses and blocks the local-Whisper rung for a corpus-scale run (5+ episodes pending, model resolves low-quality, no opt-in) — reported via the run's `preflight` field and `castrecall_transcription_preflight`. Single-episode `castrecall_fetch_transcript` is never gated. See "Periodic sync" above. |
+| Whisper repetition loops poisoning the corpus (issue #42) | `transcripts/loop-detection.ts` flags repeated phrase/word loops in ladder output before it is ever stored; a hit sets `transcriptStatus: "quarantined"` and writes no transcript artifact, so search/export/review (all filter on `"stored"`) and scheduled auto-retry (`selectPendingTranscripts` only re-queues `"none"`) both exclude it automatically. See "Repetition-loop quarantine" below. |
 
 ## Rung 3: local Whisper design notes
 
@@ -504,6 +505,40 @@ can never disagree with what the ladder would actually do.
   (`unknown` with no backend detected, `none` with zero pending, then
   widening buckets), always paired with an explicit "rough estimate, no
   audio durations known" caveat — it never claims precision it doesn't have.
+
+### Repetition-loop quarantine (issue #42)
+
+Local Whisper (and, less often, other STT-based rungs like Taddy/Podchaser)
+can degenerate into repeating the same phrase or single word for the rest of
+a transcript. `transcripts/loop-detection.ts`'s `detectRepetitionLoop` is a
+pure classifier, run in `fetchTranscript` on every ladder source's output
+right before it would otherwise be stored:
+
+- **Phrase loop:** a repeated 1..10-word n-gram flags when it repeats
+  consecutively at least `MIN_REPEATS` (6) times **and** either covers at
+  least `MIN_LOOP_TOKENS` (30) tokens or `COVERAGE_THRESHOLD` (35%) of the
+  transcript.
+- **Single-token flood:** a run of one identical word `>= WORD_RUN_THRESHOLD`
+  (20) flags on its own, even when too small a fraction of a long transcript
+  to satisfy the phrase rule — real speech essentially never repeats one
+  word this many times in a row.
+- Transcripts under `MIN_TOKENS` (60) are never flagged — too short to
+  distinguish a loop from legitimate brevity.
+
+A hit sets `transcriptStatus: "quarantined"` and `transcriptError` to the
+detector's human-readable reason, and — deliberately — `storeTranscript` is
+never called, so no `sources/<uuid>/` artifact exists for the episode.
+Because every trusted reader (search, corpus export, review generation,
+digest) filters on `transcriptStatus === "stored"`, a quarantined episode is
+excluded from all of them by construction, with no extra guard needed at
+those call sites. `selectPendingTranscripts` only re-queues `"none"`, so
+scheduled runs never re-run the same looping model and re-loop — mirroring
+the terminal-`"failed"` and STT-retry-exhausted precedents that also stop
+futile re-attempts once an outcome is known. Regeneration is
+operator-initiated: since no `transcript.txt` exists, `hasTranscript` stays
+false, so changing `CASTRECALL_LOCAL_WHISPER_PRESET` or the STT provider and
+calling `castrecall_fetch_transcript` again re-runs the full ladder; clean
+output then stores normally and clears `transcriptError`.
 
 ## Future rungs / ideas (not in v0)
 

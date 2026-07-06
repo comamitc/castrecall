@@ -177,6 +177,7 @@ export async function runPipeline(
     let stored = 0;
     let failed = 0;
     let preflightDeferred = 0;
+    let quarantined = 0;
     const errors: Array<{
       stage: "transcript" | "export" | "review";
       episodeUuid: string;
@@ -195,7 +196,7 @@ export async function runPipeline(
           },
           deps,
         )) as {
-          status: "stored" | "already-stored" | "no-transcript" | "preflight-blocked";
+          status: "stored" | "already-stored" | "no-transcript" | "preflight-blocked" | "quarantined";
         };
         if (result.status === "stored" || result.status === "already-stored") {
           stored += 1;
@@ -205,6 +206,11 @@ export async function runPipeline(
           // as `failed` here either — that would make the quality gate look
           // like a source failure in scheduled-run reporting.
           preflightDeferred += 1;
+        } else if (result.status === "quarantined") {
+          // A loop-corrupted transcript is a quality reject, not a source
+          // failure (see fetchTranscript's loop-detection branch) — mirrors
+          // preflightDeferred above, so it must not be counted as `failed`.
+          quarantined += 1;
         } else {
           failed += 1;
         }
@@ -275,6 +281,7 @@ export async function runPipeline(
         failed,
         ...(deferred > 0 ? { deferred } : {}),
         ...(preflightDeferred > 0 ? { preflightDeferred } : {}),
+        ...(quarantined > 0 ? { quarantined } : {}),
       },
       preflight,
       ...(config.exportDir ? { exports: { exported } } : {}),

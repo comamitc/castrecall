@@ -20,6 +20,7 @@ import {
   generateReview,
   listRecent,
   resolveReview,
+  search,
   setup,
   setupStatus,
   syncHistory,
@@ -1399,6 +1400,111 @@ describe("tools", () => {
     expect(result.status).toBe("stored");
     expect(JSON.stringify(result)).not.toContain("Private transcript text");
     expect(result.note).toContain("castrecall_generate_review");
+  });
+
+  describe("fetch_transcript repetition-loop quarantine (issue #42)", () => {
+    function rssFetchImpl(transcriptText: string): typeof fetch {
+      return (async (input: any) => {
+        const url = String(input);
+        if (url.includes("export_feed_urls")) {
+          return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+            status: 200,
+          });
+        }
+        if (url === "https://example.com/feed.xml") {
+          return new Response(
+            `<?xml version="1.0"?>
+            <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>ep-1</guid>
+                  <enclosure url="https://cdn.example.com/ep1.mp3" />
+                  <podcast:transcript url="https://cdn.example.com/ep1.txt" type="text/plain" />
+                </item>
+              </channel>
+            </rss>`,
+            { status: 200 },
+          );
+        }
+        if (url === "https://cdn.example.com/ep1.txt") {
+          return new Response(transcriptText, { status: 200, headers: { "content-type": "text/plain" } });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+    }
+
+    async function seedEpisode() {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+      return storage;
+    }
+
+    const LOOPED_TEXT = Array.from({ length: 40 }, () => "Thank you for watching.").join(" ");
+    const CLEAN_TEXT =
+      "This is a normal, clean transcript with plenty of real content and no looping issues at all. " +
+      "The host and guest cover several distinct topics across the episode.";
+
+    it("quarantines a loop-corrupted transcript instead of storing it", async () => {
+      const storage = await seedEpisode();
+      const result = (await fetchTranscript(
+        config(),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: rssFetchImpl(LOOPED_TEXT) },
+      )) as Record<string, any>;
+
+      expect(result.status).toBe("quarantined");
+      expect(result.loop.looped).toBe(true);
+      expect(result.loop.phrase).toBe("thank you for watching");
+      expect(result.episode.transcriptStatus).toBe("quarantined");
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].transcriptStatus).toBe("quarantined");
+      expect(state.episodes["ep-1"].transcriptError).toContain("thank you for watching");
+      expect(await storage.hasTranscript("ep-1")).toBe(false);
+      expect(await storage.readProvenance("ep-1")).toBeUndefined();
+
+      const searchResult = (await search(config(), { query: "watching" })) as { results: unknown[] };
+      expect(searchResult.results).toEqual([]);
+    });
+
+    it("reports a quarantined episode in setup_status counts and pipelineErrors", async () => {
+      await seedEpisode();
+      await fetchTranscript(config(), { episodeUuid: "ep-1" }, { fetchImpl: rssFetchImpl(LOOPED_TEXT) });
+
+      const status = (await setupStatus(config(), { env: { PATH: "" } })) as Record<string, any>;
+      expect(status.counts.transcriptsQuarantined).toBe(1);
+      expect(status.pipelineErrors).toContainEqual(
+        expect.objectContaining({ stage: "transcript", episodeUuid: "ep-1" }),
+      );
+    });
+
+    it("regenerates cleanly: a quarantined episode that later ladders clean text stores normally", async () => {
+      const storage = await seedEpisode();
+      await fetchTranscript(config(), { episodeUuid: "ep-1" }, { fetchImpl: rssFetchImpl(LOOPED_TEXT) });
+      expect((await storage.loadState()).episodes["ep-1"].transcriptStatus).toBe("quarantined");
+
+      const result = (await fetchTranscript(
+        config(),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: rssFetchImpl(CLEAN_TEXT) },
+      )) as Record<string, any>;
+
+      expect(result.status).toBe("stored");
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].transcriptStatus).toBe("stored");
+      expect(state.episodes["ep-1"].transcriptError).toBeUndefined();
+      expect(await storage.hasTranscript("ep-1")).toBe(true);
+    });
   });
 
   it("does not create an export directory when CASTRECALL_EXPORT_DIR is unset", async () => {

@@ -24,7 +24,19 @@ import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
  * major version — see docs/ARCHITECTURE.md.
  */
 export declare const SCHEMA_VERSION = 1;
-export type TranscriptStatus = "none" | "stored" | "failed";
+/**
+ * "quarantined" (issue #42): the transcript ladder produced text but a
+ * repetition-loop check (see `transcripts/loop-detection.ts`) flagged it as
+ * likely Whisper/STT corruption. No transcript artifact is written for a
+ * quarantined episode — `hasTranscript` stays false — so it is excluded from
+ * search/export/review (all of which filter on `"stored"`) and from
+ * scheduled auto-retry (`selectPendingTranscripts` only re-queues `"none"`,
+ * which avoids re-running the same looping model forever), while remaining
+ * eligible for an operator-initiated regeneration: change
+ * `CASTRECALL_LOCAL_WHISPER_PRESET`/provider and call
+ * `castrecall_fetch_transcript` again.
+ */
+export type TranscriptStatus = "none" | "stored" | "failed" | "quarantined";
 /** Capped exponential backoff for the periodic-sync cooldown gate. */
 export declare const BACKOFF_BASE_MS: number;
 export declare const BACKOFF_CAP_MS: number;
