@@ -2,7 +2,7 @@
   "id": "castrecall",
   "name": "CastRecall",
   "description": "Turn podcast listening into retrievable memory: sync Pocket Casts listen history (read-only), fetch or generate episode transcripts, store them privately with provenance, and create approval-gated review candidates. Never writes to durable memory itself.",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "icon": "https://raw.githubusercontent.com/comamitc/castrecall/main/assets/icon.svg",
   "configSchema": {
     "type": "object",

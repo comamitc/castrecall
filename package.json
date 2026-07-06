@@ -1,6 +1,6 @@
 {
   "name": "@comamitc/castrecall",
-  "version": "0.14.0",
+  "version": "0.15.0",
   "description": "CastRecall — turn podcast listening into retrievable memory. An OpenClaw tool plugin that ingests Pocket Casts listens, finds or generates transcripts, and creates approval-gated review candidates.",
   "type": "module",
   "license": "MIT",
