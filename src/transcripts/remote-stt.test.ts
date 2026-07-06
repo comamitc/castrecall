@@ -471,6 +471,40 @@ describe("transcribeWithRemoteStt — async job resume (issue #61 review)", () =
     expect(submits).toBe(2);
   });
 
+  it("keeps the saved job id when a resumed poll fails auth (401/403) so a fixed token can still resume (issue #61 review 3)", async () => {
+    const slowFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        return new Response(JSON.stringify({ job_id: "job-auth", status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    }) as FetchLike;
+    const clock1 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: slowFetch, sleep: clock1.sleep, now: clock1.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(RetryableSttError);
+    expect(await jobStateFiles()).toHaveLength(1);
+
+    for (const status of [401, 403]) {
+      const authFail: FetchLike = (async (url: string) => {
+        if (String(url).endsWith("/transcribe")) {
+          throw new Error("must not resubmit while auth is broken");
+        }
+        return new Response("forbidden", { status });
+      }) as FetchLike;
+      const clock = fakeClock();
+      await expect(
+        transcribeWithRemoteStt(config(), AUDIO_URL, {
+          fetchImpl: authFail, sleep: clock.sleep, now: clock.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+        }),
+      ).rejects.toThrow(CastrecallSetupError);
+      // The job handle survives: once the operator fixes the token, the
+      // running remote job is resumed, not duplicated.
+      expect(await jobStateFiles()).toHaveLength(1);
+    }
+  });
+
   it("clears job state when the job fails terminally", async () => {
     const failFetch: FetchLike = (async (url: string) => {
       if (String(url).endsWith("/transcribe")) {

@@ -77,8 +77,13 @@ async function fetchClassified(fetchImpl, url, init, step) {
         throw new RetryableSttError(`Remote STT ${step} request failed before a response arrived (${message}); ` +
             "the episode stays eligible for a later run.");
     }
-    if (response.status === 401) {
-        throw new CastrecallSetupError("Remote STT provider rejected CASTRECALL_REMOTE_STT_TOKEN.");
+    if (response.status === 401 || response.status === 403) {
+        // Both are auth/permission problems with OUR credentials, not evidence
+        // about the job or the audio: classified as setup errors so callers
+        // (including the async-job resume path) keep durable state — after the
+        // operator fixes CASTRECALL_REMOTE_STT_TOKEN, a still-running remote
+        // job can be resumed instead of resubmitted.
+        throw new CastrecallSetupError(`Remote STT provider rejected CASTRECALL_REMOTE_STT_TOKEN (HTTP ${response.status}).`);
     }
     if (!response.ok) {
         const message = `Remote STT ${step} request failed with HTTP ${response.status}.`;
