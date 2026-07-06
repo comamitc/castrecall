@@ -5,7 +5,7 @@ import entry from "./index.js";
 describe("castrecall plugin entry", () => {
   const metadata = getToolPluginMetadata(entry);
 
-  it("declares the ten v0 tools", () => {
+  it("declares the eleven v0 tools", () => {
     expect(metadata?.tools.map((tool) => tool.name)).toEqual([
       "castrecall_setup_status",
       "castrecall_setup",
@@ -16,6 +16,7 @@ describe("castrecall plugin entry", () => {
       "castrecall_resolve_review",
       "castrecall_search",
       "castrecall_digest",
+      "castrecall_transcription_preflight",
       "castrecall_run_pipeline",
     ]);
   });

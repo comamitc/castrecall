@@ -7,6 +7,7 @@ import { runPipeline } from "./pipeline.js";
 import { clearPocketCastsSessionCache } from "./pocketcasts/session.js";
 import { setupStatus } from "./tools.js";
 import { LOCK_TTL_MS, Storage, TRANSCRIPT_RECHECK_BASE_MS } from "./storage.js";
+import { CORPUS_SCALE_MIN_EPISODES } from "./transcripts/preflight.js";
 
 const HISTORY_EPISODE = {
   uuid: "ep-1",
@@ -901,5 +902,195 @@ describe("runPipeline", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("corpus-scale transcription preflight gate (issue #55)", () => {
+    let binDir: string;
+    let markerPath: string;
+
+    beforeEach(async () => {
+      binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+      markerPath = path.join(binDir, "invoked.marker");
+      // Touches a marker only if actually invoked, proving via the real
+      // (non-injectable) exec path whether the executable ran.
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), `#!/bin/sh\ntouch '${markerPath}'\n`, {
+        mode: 0o755,
+      });
+    });
+
+    afterEach(async () => {
+      await fs.rm(binDir, { recursive: true, force: true });
+    });
+
+    async function seedPendingEpisodes(count: number) {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens(
+        Array.from({ length: count }, (_, i) => ({
+          uuid: `ep-${i}`,
+          title: `Episode ${i}`,
+          url: `https://cdn.example.com/ep${i}.mp3`,
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        })),
+      );
+    }
+
+    // Sync reports zero new listens (all episodes pre-seeded); RSS/Taddy/
+    // Podchaser all miss (404), but audio downloads succeed, so a run that
+    // reaches local-whisper actually invokes the executable rather than
+    // failing earlier on the download.
+    function fetchImplNoNewListensPlusAudio() {
+      return (async (input: any) => {
+        const url = String(input);
+        if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+        if (url.endsWith("/user/history")) {
+          return new Response(JSON.stringify({ episodes: [] }), { status: 200 });
+        }
+        if (/ep\d+\.mp3$/.test(url)) return new Response("fake audio bytes", { status: 200 });
+        return new Response("nope", { status: 404 });
+      }) as typeof fetch;
+    }
+
+    it("blocks corpus-scale low-quality local generation, reports preflight.blocked, and never invokes the executable", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const result = (await runPipeline(
+        config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+
+      expect(result.preflight).toMatchObject({
+        blocked: true,
+        corpusScale: true,
+        quality: "low-quality",
+        ready: true,
+        lowQualityOptIn: false,
+      });
+      expect(result.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
+      await expect(fs.access(markerPath)).rejects.toThrow();
+    });
+
+    it("does not advance retry/failure state when a run is preflight-blocked, so episodes are stored immediately once the operator opts in (issue #55 review)", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const blockedResult = (await runPipeline(
+        config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+      expect(blockedResult.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
+
+      const stateAfterBlock = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+      for (let i = 0; i < CORPUS_SCALE_MIN_EPISODES; i++) {
+        const episode = stateAfterBlock.episodes[`ep-${i}`];
+        expect(episode.transcriptStatus).toBe("none");
+        expect(episode.transcriptError).toBeUndefined();
+        expect(episode.transcriptRetry).toBeUndefined();
+        expect(episode.transcriptRecheck).toBeUndefined();
+      }
+
+      // No backoff was recorded, so every episode is immediately re-attempted
+      // on the very next tick rather than deferred or permanently failed —
+      // the same count is preflight-blocked again, none silently dropped.
+      const secondBlockedResult = (await runPipeline(
+        config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+      expect(secondBlockedResult.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
+      await expect(fs.access(markerPath)).rejects.toThrow();
+
+      // Once the operator opts in, the executable is actually invoked for
+      // every episode instead of the run being stuck deferred/failed.
+      const recoveredResult = (await runPipeline(
+        config({
+          CASTRECALL_LOCAL_WHISPER_PRESET: "fast",
+          CASTRECALL_WHISPER_ALLOW_LOW_QUALITY: "true",
+        }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+      expect(recoveredResult.preflight).toMatchObject({ blocked: false, lowQualityOptIn: true });
+      expect(recoveredResult.transcripts.preflightDeferred).toBeUndefined();
+      await expect(fs.access(markerPath)).resolves.toBeUndefined();
+    });
+
+    it("does not block once CASTRECALL_WHISPER_ALLOW_LOW_QUALITY opts in, and the executable is invoked", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const result = (await runPipeline(
+        config({
+          CASTRECALL_LOCAL_WHISPER_PRESET: "fast",
+          CASTRECALL_WHISPER_ALLOW_LOW_QUALITY: "true",
+        }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+
+      expect(result.preflight).toMatchObject({ blocked: false, lowQualityOptIn: true });
+      await expect(fs.access(markerPath)).resolves.toBeUndefined();
+    });
+
+    it("also skips the paid STT rung (never bills) when the corpus-scale block is active and STT is enabled/configured (issue #55 review 2)", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      let sttCalls = 0;
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.includes("api.assemblyai.com")) {
+          sttCalls++;
+          return new Response(JSON.stringify({}), { status: 200 });
+        }
+        if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+        if (url.endsWith("/user/history")) return new Response(JSON.stringify({ episodes: [] }), { status: 200 });
+        if (/ep\d+\.mp3$/.test(url)) return new Response("fake audio bytes", { status: 200 });
+        return new Response("nope", { status: 404 });
+      }) as typeof fetch;
+
+      const result = (await runPipeline(
+        config({
+          CASTRECALL_LOCAL_WHISPER_PRESET: "fast",
+          CASTRECALL_ENABLE_STT: "true",
+          ASSEMBLYAI_API_KEY: "key_x",
+        }),
+        {},
+        { fetchImpl, env: { PATH: binDir } },
+      )) as Record<string, any>;
+
+      expect(result.preflight).toMatchObject({
+        blocked: true,
+        sttFallbackBlocked: true,
+        sttFallback: { enabled: true, provider: "assemblyai", available: true },
+      });
+      expect(result.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
+      expect(sttCalls).toBe(0);
+      await expect(fs.access(markerPath)).rejects.toThrow();
+    });
+
+    it("does not block below the corpus-scale threshold, and reports corpusScale: false", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES - 1);
+      const result = (await runPipeline(
+        config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+
+      expect(result.preflight).toMatchObject({ blocked: false, corpusScale: false });
+      await expect(fs.access(markerPath)).resolves.toBeUndefined();
+    });
   });
 });

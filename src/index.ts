@@ -22,6 +22,7 @@ import {
   setup,
   setupStatus,
   syncHistory,
+  transcriptionPreflight,
 } from "./tools.js";
 
 const configSchema = Type.Object(
@@ -239,14 +240,39 @@ export default defineToolPlugin({
       execute: async (params, settings: PluginSettings) => digest(resolveConfig(settings), params),
     }),
     tool({
+      name: "castrecall_transcription_preflight",
+      description:
+        "Read-only preflight for corpus-scale local transcription (issue #55) — call this BEFORE " +
+        "castrecall_run_pipeline on a large batch. Reports how many synced episodes are still " +
+        "missing a transcript and could fall through to local Whisper generation, the selected " +
+        "backend and concrete model, whether that model is quality-approved / low-quality / " +
+        "unknown, a rough runtime class, whether timestamps/segments survive, whether local " +
+        "audio is retained (it never is — always a temp download, removed after), and whether " +
+        "paid cloud STT is enabled/configured as the fallback rung. Never mutates state. A " +
+        "corpus-scale batch (several episodes needing local generation) with a low-quality model " +
+        "(e.g. tiny/small, or CASTRECALL_LOCAL_WHISPER_PRESET=fast) is blocked by " +
+        "castrecall_run_pipeline unless CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true is set — when " +
+        "paid STT is also enabled, that same block skips it too (sttFallbackBlocked), so the run " +
+        "never falls through into billed transcription instead. This tool shows that decision " +
+        "before compute starts. Single-episode castrecall_fetch_transcript calls are never gated.",
+      parameters: Type.Object({}),
+      execute: async (_params, settings: PluginSettings) =>
+        transcriptionPreflight(resolveConfig(settings)),
+    }),
+    tool({
       name: "castrecall_run_pipeline",
       description:
         "Chained pipeline for scheduled/background runs: sync history → fetch transcripts for " +
         "newly seen listens → generate review candidates for episodes newly stored this run → " +
         "corpus export (when CASTRECALL_EXPORT_DIR is set). Safe under overlapping/concurrent " +
         "invocations (lock) and stays quiet on failure with a bounded, backed-off retry (no " +
-        "hammering the unofficial Pocket Casts API). This is the tool a scheduler recipe should " +
-        "call — see README 'Scheduled / periodic sync'.",
+        "hammering the unofficial Pocket Casts API). Runs a corpus-scale transcription preflight " +
+        "(issue #55) before generating any transcript and blocks local generation with a low-" +
+        "quality model for that run unless CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true is set — " +
+        "when paid cloud STT is also enabled, the same block skips it too so the run never falls " +
+        "through into billed transcription instead. See castrecall_transcription_preflight to " +
+        "inspect this before running. This is the tool a scheduler recipe should call — see " +
+        "README 'Scheduled / periodic sync'.",
       parameters: Type.Object({
         limit: Type.Optional(
           Type.Number({ description: "Max history entries to ingest this run (default 100)." }),

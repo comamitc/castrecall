@@ -14,10 +14,11 @@ import { SearchIndex } from "./search.js";
 import { buildSetupPlan, classifyExportDir, classifyNotesDir, detectGbrain, PRIVACY_DEFAULTS, } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { detectLocalWhisper, localWhisperReadiness, resolveWhisperDecodeArgs, resolveWhisperModel, } from "./transcripts/local-whisper.js";
+import { buildTranscriptionPreflight } from "./transcripts/preflight.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { podchaserConfigured } from "./transcripts/podchaser.js";
-import { BACKOFF_BASE_MS, BACKOFF_CAP_MS, Storage, TRANSCRIPT_RECHECK_BASE_MS, TRANSCRIPT_RECHECK_CAP_MS, TRANSCRIPT_RECHECK_MAX_AGE_MS, TRANSCRIPT_RETRY_MAX_ATTEMPTS, } from "./storage.js";
+import { BACKOFF_BASE_MS, BACKOFF_CAP_MS, selectPendingTranscripts, Storage, TRANSCRIPT_RECHECK_BASE_MS, TRANSCRIPT_RECHECK_CAP_MS, TRANSCRIPT_RECHECK_MAX_AGE_MS, TRANSCRIPT_RETRY_MAX_ATTEMPTS, } from "./storage.js";
 function storageFor(config) {
     return new Storage(config.dataDir);
 }
@@ -267,6 +268,26 @@ export async function setup(config, params = {}, deps = {}) {
         ...(verify ? { verify } : {}),
     };
 }
+/**
+ * Read-only corpus-scale transcription preflight (issue #55): the "look
+ * before you leap" surface for a large batch — run this before
+ * castrecall_run_pipeline. Reads synced state and detects the local Whisper
+ * CLI, but never writes to storage; the pipeline itself computes the same
+ * report and enforces the block (see runPipeline), so a corpus run can never
+ * silently generate transcripts with a low-quality model.
+ */
+export async function transcriptionPreflight(config, deps = {}) {
+    const storage = storageFor(config);
+    const state = await storage.loadState();
+    const now = deps.now ?? (() => new Date());
+    const { pending } = selectPendingTranscripts(Object.values(state.episodes), now().getTime());
+    const whisper = await detectLocalWhisper(config, deps.env);
+    return buildTranscriptionPreflight({
+        config,
+        whisper,
+        episodesPendingTranscript: pending.length,
+    });
+}
 export async function syncHistory(config, params, deps = {}) {
     const history = await fetchHistoryWithSession(config, deps);
     const limit = params.limit && params.limit > 0 ? params.limit : config.historyLimit;
@@ -341,7 +362,9 @@ export async function fetchTranscript(config, params, deps = {}) {
     const result = await runTranscriptLadder(config, record, {
         fetchImpl: deps.fetchImpl,
         env: deps.env,
-        skipStt: sttRetryBudgetSpent,
+        skipStt: sttRetryBudgetSpent || params.skipStt === true,
+        skipSttPreflightBlocked: !sttRetryBudgetSpent && params.skipStt === true,
+        skipLocalWhisper: params.skipLocalWhisper,
     });
     if (!result.transcript) {
         const transcriptError = result.rungs.map((r) => `${r.rung}: ${r.detail}`).join(" | ");
@@ -352,11 +375,27 @@ export async function fetchTranscript(config, params, deps = {}) {
         // every tick or retry it forever.
         const retryable = result.rungs.some((r) => r.retryable);
         const recheckable = result.rungs.some((r) => r.recheckable);
+        const preflightBlocked = result.rungs.some((r) => (r.rung === "local-whisper" || r.rung === "stt") && r.preflightBlocked);
         const consecutiveFailures = retryable ? (record.transcriptRetry?.consecutiveFailures ?? 0) + 1 : 0;
         const sttExhausted = retryable && consecutiveFailures >= TRANSCRIPT_RETRY_MAX_ATTEMPTS;
         let retry;
         let recheck;
-        if (retryable && !sttExhausted) {
+        let preflightDeferred = false;
+        if (preflightBlocked) {
+            // The corpus-scale preflight (issue #55) blocked a transcription tier
+            // for this run — a reversible policy gate, not evidence about the
+            // episode. It takes precedence over EVERY state transition below:
+            // advancing retry/recheck/failure metadata here would let a
+            // quality-gate block masquerade as a source failure and keep the
+            // episode deferred (or terminally failed) even after the operator
+            // fixes the config (CASTRECALL_LOCAL_WHISPER_PRESET or
+            // CASTRECALL_WHISPER_ALLOW_LOW_QUALITY). No storage write at all:
+            // transcriptStatus stays "none" and any persisted retry/recheck
+            // state is left exactly as it was, so the episode is immediately
+            // eligible the moment the gate lifts.
+            preflightDeferred = true;
+        }
+        else if (retryable && !sttExhausted) {
             const delay = Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_CAP_MS);
             retry = {
                 consecutiveFailures,
@@ -416,7 +455,7 @@ export async function fetchTranscript(config, params, deps = {}) {
             }, now);
         }
         return {
-            status: "no-transcript",
+            status: preflightDeferred ? "preflight-blocked" : "no-transcript",
             episode: summarizeListen(record),
             ladder: result.rungs,
             ...(retry

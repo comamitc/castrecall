@@ -186,6 +186,17 @@ export async function runTranscriptLadder(config, record, options = {}) {
     else if (!whisperReadiness.ready) {
         rungs.push({ rung: "local-whisper", outcome: "skipped", detail: whisperReadiness.reason });
     }
+    else if (options.skipLocalWhisper) {
+        rungs.push({
+            rung: "local-whisper",
+            outcome: "skipped",
+            detail: "Corpus-scale preflight blocked low-quality local transcription for this run " +
+                "(castrecall_transcription_preflight). Run castrecall_fetch_transcript directly for this " +
+                "episode, or opt in for the whole run with CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or " +
+                "CASTRECALL_LOCAL_WHISPER_PRESET=best.",
+            preflightBlocked: true,
+        });
+    }
     else {
         try {
             const result = await transcribeWithLocalWhisper(config, record.audioUrl, { fetchImpl, env });
@@ -222,7 +233,13 @@ export async function runTranscriptLadder(config, record, options = {}) {
         rungs.push({
             rung: "stt",
             outcome: "skipped",
-            detail: "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
+            detail: options.skipSttPreflightBlocked
+                ? "Corpus-scale preflight blocked low-quality local transcription for this run, and paid " +
+                    "cloud STT would otherwise run as the next rung (castrecall_transcription_preflight). Run " +
+                    "castrecall_fetch_transcript directly for this episode, or opt in for the whole run with " +
+                    "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or CASTRECALL_LOCAL_WHISPER_PRESET=best."
+                : "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
+            ...(options.skipSttPreflightBlocked ? { preflightBlocked: true } : {}),
         });
     }
     else if (!stt.ok) {
