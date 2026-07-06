@@ -28,9 +28,16 @@ export function buildReviewCandidate(options) {
         gen ? `transcript_backend: ${gen.backend}` : undefined,
         gen?.model ? `transcript_model: ${yamlString(gen.model)}` : undefined,
         gen ? `transcript_model_source: ${gen.modelSource}` : undefined,
+        gen?.preset ? `transcript_preset: ${yamlString(gen.preset)}` : undefined,
+        gen ? `transcript_output_format: ${gen.outputFormat}` : undefined,
+        gen ? `transcript_word_timestamps: ${gen.wordTimestamps}` : undefined,
+        gen && Object.keys(gen.decode.applied).length > 0
+            ? `transcript_decode_options: ${yamlString(JSON.stringify(gen.decode.applied))}`
+            : undefined,
         gen && gen.decode.ignored.length > 0
             ? `transcript_decode_ignored: ${yamlString(JSON.stringify(gen.decode.ignored.map((entry) => entry.option)))}`
             : undefined,
+        gen?.toolVersion ? `transcript_tool_version: ${yamlString(gen.toolVersion)}` : undefined,
         `generated_at: ${generatedAt.toISOString()}`,
         "---",
         "",
