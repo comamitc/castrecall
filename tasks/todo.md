@@ -53,7 +53,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
       installable. (PR #37 squash-merged 2026-07-06 and auto-closed this issue; reopened with a
       comment pointing at the remaining maintainer steps.)
 - [ ] release v0.6.1 (maintainer: tag, gh release, then `clawhub package publish` + README flip)
-- [ ] #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
+- [x] #5 corpus search — PR #38 squash-merged, issue closed. SEVEN pre-merge review rounds converged on the final design: `castrecall_search` with ranking settled entirely from a versioned on-disk index (`search-index.v1.json`) — tf/idf-lite term scoring + exact phrase confirmation from positional postings keyed by one-way term hashes, walked from the rarest term. Round-by-round: candidate-cap dropped exact matches → bounded scan; unbounded scan → bigram fingerprints + hard cap; cap hides matches behind bigram false positives → exact occurrence fingerprints; CPU-unbounded positional probing → rarest-term postings walk; weak schema guard → schemaVersion + structural validation; rollback skew + per-list-only validation → version-scoped filename + pigeonhole coverage check. Also fixed: dist drift, stray NUL bytes. 357 tests green on main. GitHub milestone note: created milestone v0.6.1 and moved reopened #8 into it (mirrors the v0.6.1 release line above), so milestone v0.7.0 closed cleanly with #5.
+- [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
 
 > HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resumed from #9 on the new machine 2026-07-06.
 
