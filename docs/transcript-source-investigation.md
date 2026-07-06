@@ -33,36 +33,44 @@ RSS.
 
 ## Question 2: is that generated-transcript source reachable through a stable, read-only API path?
 
-**No — not through anything documented or known to exist today.**
+**Yes, technically — but only by bypassing the paywall that gates the feature.**
 
-- Pocket Casts generated transcripts are gated to **Plus/Patron
-  subscribers only**, for a curated subset of "most-followed" podcasts, and
-  only for episodes under 2 hours. This is a paid-tier product feature, not
-  open data.
+- alansmodic/pocketcasts-mcp's `pocketcasts.ts` (source inspected directly)
+  calls `GET https://podcast-api.pocketcasts.com/show_notes/full/{podcastUuid}`
+  with only a `User-Agent`/`Referer` header — **no bearer token, no login,
+  no account required**. The response's `podcast.episodes[]` entries carry
+  two transcript fields, and the client explicitly prefers the Pocket
+  Casts-generated one over the RSS-sourced one:
+  ```ts
+  if (episode.pocket_casts_transcripts?.length) return episode.pocket_casts_transcripts;
+  if (episode.transcripts?.length) return episode.transcripts;
+  ```
+  This corrects an earlier draft of this investigation, which claimed no
+  community project exposes a Pocket Casts-native transcript endpoint — this
+  one does, and it's a distinct domain (`podcast-api.pocketcasts.com`) from
+  the `api.pocketcasts.com/user/*` login/history endpoints this codebase's
+  `client.ts` already uses.
+- That the endpoint needs **no authentication at all** is the disqualifying
+  fact, not a mitigating one. Pocket Casts gates generated transcripts to
+  Plus/Patron subscribers inside the app, but `show_notes/full` serves the
+  same `pocket_casts_transcripts` data to any anonymous caller who knows the
+  podcast UUID. A rung built on it would mean CastRecall systematically
+  circumventing a paid-feature gate for every user — a materially different
+  (and worse) situation than rung 1 (RSS) or this codebase's existing Pocket
+  Casts history integration, both of which only ever return data the
+  querying account already has legitimate access to.
 - The feature ships in the **mobile apps** (iOS/Android). Pocket Casts'
   own blog confirms synced/highlighted transcript playback is
-  mobile-only; the web player (`play.pocketcasts.com`, the surface
-  `client.ts` mirrors) can read and search transcripts but the post makes no
-  mention of a documented endpoint backing it.
-- Neither of the two community reverse-engineering projects this codebase
-  already leans on for `api.pocketcasts.com` endpoints
-  (essoen/PocketCasts-mcp, alansmodic/pocketcasts-mcp) exposes a Pocket
-  Casts–native transcript endpoint. Both instead fall back to **their own
-  AssemblyAI transcription** when no RSS transcript exists — i.e. the
-  community that has already reverse-engineered `api.pocketcasts.com`'s
-  history/login/episode endpoints has not found (or has not published) a
-  working endpoint for the generated-transcript feature either.
-- No `api.pocketcasts.com` transcript-specific endpoint appears in any
-  public reverse-engineering write-up found (Mike Street's PHP client, the
+  mobile-only, with no mention of a documented endpoint backing it —
+  consistent with `show_notes/full` being an internal implementation detail
+  never intended for external, subscription-free consumption.
+- No official Pocket Casts documentation describes this endpoint or the
+  `pocket_casts_transcripts` field; nor does any of the older public
+  reverse-engineering write-ups (Mike Street's PHP client, the
   `furgoose/Pocket-Casts` and `pocketcasts-api` PyPI projects, the 2022 HN
-  thread on the `/user/history` endpoint). All of them predate or omit the
-  generated-transcript feature.
-
-Discovering such an endpoint from scratch would require live traffic
-capture from an authenticated Plus/Patron mobile session — a materially
-different and heavier undertaking than replicating the already-published,
-already-reverse-engineered read endpoints `client.ts` uses today, and one
-this investigation has no tooling or test account to perform safely.
+  thread on the `/user/history` endpoint) — all of those predate or omit the
+  generated-transcript feature. It is known only through alansmodic's
+  since-published client.
 
 ## Apple Podcasts
 
@@ -83,22 +91,28 @@ management, with no third-party access path.
 
 ## Gate evaluation
 
-A rung ships only if **all three** hold. Neither candidate clears the gate:
+A rung ships only if **all three** hold. Neither candidate clears the gate
+in full — Pocket Casts now clears criterion 2 but still fails criterion 3:
 
 | Criterion | Pocket Casts generated transcripts | Apple Podcasts transcripts |
 |---|---|---|
 | 1. Distinct from RSS rung 1 | **Yes** — separate server-side source | **Yes** — separate server-side source |
-| 2. Stable, read-only, non-scraping path | **No** — no known/published endpoint; would require fresh live reverse-engineering of a paid mobile feature | **No** — requires reverse-engineered cryptographic request signing; no documented API |
-| 3. Legally/ToS acceptable | **Doubtful** — undocumented access to a paid subscription feature | **No** — explicitly unsanctioned reverse-engineering per the only known write-up |
+| 2. Stable, read-only, non-scraping path | **Yes, technically** — `podcast-api.pocketcasts.com/show_notes/full/{podcastUuid}` is unauthenticated and already reverse-engineered by an independent open-source project (alansmodic/pocketcasts-mcp) | **No** — requires reverse-engineered cryptographic request signing; no documented API |
+| 3. Legally/ToS acceptable | **No** — the endpoint serves a Plus/Patron-gated feature to unauthenticated callers; consuming it means bypassing Pocket Casts' subscription paywall, a clearer ToS problem than plain "undocumented access" | **No** — explicitly unsanctioned reverse-engineering per the only known write-up |
 
 ## Decision: **no-go**
 
 No rung ships. Runtime code is unchanged: the ladder still has exactly four
-rungs (`rss`, `taddy`, `local-whisper`, `stt`). This is a desk-research
-no-go, not a "we tried and it 404'd" no-go — revisit if either platform
-publishes a documented transcript API, or if a community reverse-engineering
-project surfaces a stable Pocket Casts generated-transcript endpoint that
-clears criterion 2 above.
+rungs (`rss`, `taddy`, `local-whisper`, `stt`). Apple remains no-go on
+technical grounds (no documented API, requires reverse-engineered request
+signing). Pocket Casts now clears criterion 2 — a stable, unauthenticated,
+reverse-engineered endpoint does exist — but fails criterion 3: it returns a
+Plus/Patron-gated feature to anonymous callers, so building on it means
+circumventing Pocket Casts' subscription paywall rather than merely
+depending on an unofficial API. That is a worse legal/ToS position than "no
+known endpoint," not a better one. Revisit if Pocket Casts publishes a
+documented transcript API or adds an auth/entitlement check to
+`show_notes/full`, or if Apple publishes a documented transcript API.
 
 ## Sources
 
@@ -106,7 +120,9 @@ clears criterion 2 above.
 - [Pocket Casts support: Episode Transcripts](https://support.pocketcasts.com/knowledge-base/episode-transcripts/)
 - [Pocket Casts: Web Player Is Now Available to All](https://blog.pocketcasts.com/2025/03/11/webplayer/)
 - [essoen/PocketCasts-mcp](https://github.com/essoen/PocketCasts-mcp)
-- [alansmodic/pocketcasts-mcp](https://github.com/alansmodic/pocketcasts-mcp)
+- [alansmodic/pocketcasts-mcp](https://github.com/alansmodic/pocketcasts-mcp) — see
+  `pocketcasts.ts`'s `getPodcastTranscript` for the unauthenticated
+  `show_notes/full/{podcastUuid}` call and `pocket_casts_transcripts` field
 - [Mike Street: Get your Pocket Casts data using the unofficial API and PHP](https://www.mikestreety.co.uk/blog/get-your-pocket-casts-data-using-the-unofficial-api-and-php/)
 - [Apple Podcasts for Creators: Transcripts on Apple Podcasts](https://podcasters.apple.com/support/5316-transcripts-on-apple-podcasts)
 - [blog.alexbeals.com: Downloading arbitrary Apple Podcast episode transcripts](https://blog.alexbeals.com/posts/downloading-arbitrary-apple-podcast-episode-transcripts)

@@ -304,9 +304,13 @@ any custom command with an `{input}` placeholder (stdout = transcript).
   directory (still never directly into OpenClaw memory).
 - Platform-caption sources (Apple / Pocket Casts generated transcripts) were
   investigated for issue #13 and closed as **no-go**: both are real sources
-  distinct from RSS rung 1, but neither has a stable, documented, read-only
-  endpoint available today (Apple requires reverse-engineered request
-  signing; Pocket Casts' generated transcripts are a Plus/Patron-only mobile
-  feature with no known public endpoint). See
-  `docs/transcript-source-investigation.md`. Revisit if either platform
-  publishes an API or a stable community endpoint surfaces.
+  distinct from RSS rung 1. Apple requires reverse-engineered cryptographic
+  request signing with no documented API. Pocket Casts' generated
+  transcripts are reachable through a stable, unauthenticated, community
+  reverse-engineered endpoint (`podcast-api.pocketcasts.com/show_notes/full`)
+  — but that same lack of auth means the endpoint serves a Plus/Patron-gated
+  feature to anonymous callers, so using it would mean bypassing Pocket
+  Casts' subscription paywall rather than merely depending on an unofficial
+  API. See `docs/transcript-source-investigation.md`. Revisit if either
+  platform publishes a documented transcript API, or if Pocket Casts adds an
+  auth/entitlement check to `show_notes/full`.
