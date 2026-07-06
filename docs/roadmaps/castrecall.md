@@ -35,7 +35,17 @@
 
 16. **#1** Review disposition tool: conversational approval, explicit promotion
 
+### v0.11.0–v0.13.0 — transcript quality track (added 2026-07-06)
+
+17. **#42** Detect Whisper repetition loops and quarantine bad transcripts — v0.11.0 (bug; its detector feeds #41's scoring)
+18. **#41** Transcript quality scoring in stored provenance — v0.11.0
+19. **#43** Timestamped transcript segments through storage and corpus export — v0.12.0
+20. **#44** Speaker metadata and diarization across transcript sources — v0.12.0 (speaker turns ride on #43's segments)
+21. **#45** Transcript cleanup pass (punctuation, sentence boundaries, formatting) — v0.13.0
+22. **#46** Optional proper-noun correction glossary — v0.13.0 (plugs into #45's cleanup pass)
+
 ## Notes
 
 - Acceptance criteria exist on the v0.1.0/v0.2.0 issues (#15, #14, #16, #3, #2); remaining short tickets get specs via intake when they approach the front of the queue.
-- Only verified dependency: **#15 → #14** (content hash before export idempotency).
+- Only verified dependency in the original set: **#15 → #14** (content hash before export idempotency).
+- Quality-track ordering dependencies: **#42 → #41**, **#43 → #44**, **#45 → #46** (each first issue provides the mechanism its successor consumes).
