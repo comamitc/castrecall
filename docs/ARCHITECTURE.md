@@ -302,3 +302,11 @@ any custom command with an `{input}` placeholder (stdout = transcript).
 - More platforms (Spotify, Apple Podcasts) behind the same `ListenRecord` model.
 - An approval tool that moves a reviewed candidate into a user-designated notes
   directory (still never directly into OpenClaw memory).
+- Platform-caption sources (Apple / Pocket Casts generated transcripts) were
+  investigated for issue #13 and closed as **no-go**: both are real sources
+  distinct from RSS rung 1, but neither has a stable, documented, read-only
+  endpoint available today (Apple requires reverse-engineered request
+  signing; Pocket Casts' generated transcripts are a Plus/Patron-only mobile
+  feature with no known public endpoint). See
+  `docs/transcript-source-investigation.md`. Revisit if either platform
+  publishes an API or a stable community endpoint surfaces.

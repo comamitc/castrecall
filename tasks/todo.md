@@ -33,7 +33,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] release v0.3.0 — PR #29 merged, version 0.2.0→0.3.0, tag pushed, GitHub release published, milestone closed.
 
 ### v0.4.0–v0.9.0 — ladder breadth & distribution
-- [ ] #13, #12 → v0.4.0 · [ ] #10 → v0.5.0 · [ ] #9 → v0.6.0 · [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
+- [x] #13 platform-caption sources (Apple/Pocket Casts) — investigation-only, **no-go**: `docs/transcript-source-investigation.md`. Pocket Casts' generated transcripts are a real second source beyond RSS, but gated to Plus/Patron subscribers with no known/published read-only endpoint; Apple's transcript API requires reverse-engineered cryptographic request signing with no documented access path. Runtime ladder unchanged (still 4 rungs).
+- [ ] #12 → v0.4.0 · [ ] #10 → v0.5.0 · [ ] #9 → v0.6.0 · [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
 
 ### v0.10.0 — memory-curation lane
 - [ ] #1 review disposition tool · [ ] release v0.10.0
