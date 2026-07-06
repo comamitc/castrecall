@@ -188,6 +188,33 @@ describe("Storage", () => {
     expect(await storage.hasPendingReview("ep-1")).toBe(false);
   });
 
+  it("resolvePendingReview treats ENOENT on the pending unlink as a completed move, never deleting the resolved copy", async () => {
+    await storage.writeReviewCandidate("ep-1", "# Review\n");
+    const pendingPath = storage.reviewCandidatePath("ep-1");
+    const resolvedPath = storage.resolvedCandidatePath("ep-1");
+
+    // Simulate another process removing the pending file between our link
+    // and our unlink: the unlink sees ENOENT. The resolved link is then the
+    // only surviving copy — compensation must NOT delete it.
+    const realUnlink = fs.unlink.bind(fs);
+    const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (target) => {
+      if (String(target) === pendingPath) {
+        await realUnlink(pendingPath);
+        throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+      }
+      return realUnlink(target);
+    });
+    try {
+      const result = await storage.resolvePendingReview("ep-1");
+      expect(result.moved).toBe(true);
+      expect(result.alreadyResolved).toBe(false);
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+    expect(await fs.readFile(resolvedPath, "utf8")).toBe("# Review\n");
+    expect(await storage.hasPendingReview("ep-1")).toBe(false);
+  });
+
   it("writePromotedNote creates notesDir on demand and never overwrites an existing note", async () => {
     const notesDir = path.join(dir, "does", "not", "exist", "yet");
     const first = await storage.writePromotedNote(notesDir, "note.md", "original\n");

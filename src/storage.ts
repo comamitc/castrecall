@@ -697,11 +697,18 @@ export class Storage {
     try {
       await fs.unlink(pendingPath);
     } catch (unlinkError) {
-      // Compensate the half-done move: without this, the resolved link
-      // already exists, so every retry would hit EEXIST → alreadyResolved
-      // while no disposition was ever recorded — a stranded candidate.
-      // Removing the resolved link restores the pre-call state so a retry
-      // can run the whole move again.
+      // ENOENT means someone else already removed the pending entry after
+      // our link succeeded — the move is effectively complete (the resolved
+      // link is the surviving review copy), so compensating here would
+      // delete the only remaining copy and leave nothing to retry from.
+      if ((unlinkError as NodeJS.ErrnoException).code === "ENOENT") {
+        return { moved: true, resolvedPath, alreadyResolved: false };
+      }
+      // Any other failure leaves a genuinely half-done move: the resolved
+      // link already exists, so every retry would hit EEXIST →
+      // alreadyResolved while no disposition was ever recorded — a stranded
+      // candidate. Removing the resolved link restores the pre-call state
+      // so a retry can run the whole move again.
       try {
         await fs.unlink(resolvedPath);
       } catch (cleanupError) {
