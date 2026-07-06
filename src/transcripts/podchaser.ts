@@ -48,8 +48,8 @@ export function podchaserConfigured(config: ResolvedConfig): boolean {
 /**
  * Look an episode up by RSS GUID first (exact), then by title, and return its transcript.
  * Podchaser episode GUIDs and titles are only unique within a podcast, so every candidate
- * is validated against the resolved feed's URL (or podcast title, as a fallback) before its
- * transcript is accepted — an unscoped match is treated as a miss rather than a hit.
+ * is validated against the resolved feed's URL when one is known, or against the podcast
+ * title otherwise — an unscoped or mismatched candidate is treated as a miss rather than a hit.
  * Returns undefined when Podchaser knows the episode but has no usable transcript.
  */
 export async function fetchPodchaserTranscript(
@@ -70,7 +70,7 @@ export async function fetchPodchaserTranscript(
   const attempts: Array<() => Promise<PodchaserEpisode[]>> = [];
   if (episode.guid) {
     attempts.push(async () => {
-      const found = await lookupByGuid(config, episode.guid as string, fetchImpl, retry);
+      const found = await lookupByGuid(config, episode.guid as string, episode.feedUrl, fetchImpl, retry);
       return found ? [found] : [];
     });
   }
@@ -99,8 +99,11 @@ function matchesExpectedPodcast(
   expected: { feedUrl?: string; podcastTitle?: string },
 ): boolean {
   if (!expected.feedUrl && !expected.podcastTitle) return false;
-  if (expected.feedUrl && candidatePodcast?.rssUrl) {
-    return normalizeUrl(candidatePodcast.rssUrl) === normalizeUrl(expected.feedUrl);
+  if (expected.feedUrl) {
+    return (
+      Boolean(candidatePodcast?.rssUrl) &&
+      normalizeUrl(candidatePodcast!.rssUrl!) === normalizeUrl(expected.feedUrl)
+    );
   }
   if (expected.podcastTitle && candidatePodcast?.title) {
     return normalizeTitle(candidatePodcast.title) === normalizeTitle(expected.podcastTitle);
@@ -119,6 +122,7 @@ function normalizeTitle(title: string): string {
 async function lookupByGuid(
   config: ResolvedConfig,
   guid: string,
+  feedUrl: string | undefined,
   fetchImpl: FetchLike,
   retry: RetryOptions,
 ): Promise<PodchaserEpisode | undefined> {
@@ -129,13 +133,11 @@ async function lookupByGuid(
       podcast { title rssUrl }
     }
   }`;
-  const result = await podchaserRequest(
-    config,
-    query,
-    { identifier: { id: guid, type: "GUID" } },
-    fetchImpl,
-    retry,
-  );
+  const identifier: Record<string, unknown> = { id: guid, type: "GUID" };
+  if (feedUrl) {
+    identifier.podcast = { id: feedUrl, type: "RSS" };
+  }
+  const result = await podchaserRequest(config, query, { identifier }, fetchImpl, retry);
   return (result?.episode as PodchaserEpisode | null | undefined) ?? undefined;
 }
 

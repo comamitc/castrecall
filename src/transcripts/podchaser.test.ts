@@ -364,6 +364,59 @@ describe("fetchPodchaserTranscript", () => {
     expect(result).toEqual({ text: "correct show", sourceUrl: TRANSCRIPT_URL });
   });
 
+  it("title fallback misses a same-title candidate with no rssUrl when a feed URL is expected", async () => {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === GRAPHQL_URL) {
+        const body = JSON.parse(String(init?.body)) as { query: string };
+        if (body.query.includes("GetEpisodeByGuid")) return notFoundResponse();
+        return searchResponse([
+          {
+            title: "Episode One",
+            transcripts: [{ url: "https://transcripts.example.com/wrong.json", transcriptType: "raw_JSON" }],
+            podcast: { title: PODCAST_TITLE },
+          },
+        ]);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await fetchPodchaserTranscript(
+      config(),
+      { guid: "guid-1", title: "Episode One", feedUrl: FEED_URL, podcastTitle: PODCAST_TITLE },
+      fetchImpl,
+      RETRY,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("GUID lookup scopes the identifier to the resolved feed when a feed URL is known", async () => {
+    let capturedVariables: unknown;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === GRAPHQL_URL) {
+        const body = JSON.parse(String(init?.body)) as { query: string; variables: unknown };
+        if (body.query.includes("GetEpisodeByGuid")) {
+          capturedVariables = body.variables;
+          return episodeByGuidResponse([]);
+        }
+        return notFoundResponse();
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    await fetchPodchaserTranscript(
+      config(),
+      { guid: "guid-1", title: "Episode One", feedUrl: FEED_URL, podcastTitle: PODCAST_TITLE },
+      fetchImpl,
+      RETRY,
+    );
+
+    expect(capturedVariables).toEqual({
+      identifier: { id: "guid-1", type: "GUID", podcast: { id: FEED_URL, type: "RSS" } },
+    });
+  });
+
   it("returns undefined (miss) when there is no feed URL or podcast title to scope the match against", async () => {
     const fetchImpl = (async (input: RequestInfo | URL) => {
       const url = String(input);
