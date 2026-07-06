@@ -181,7 +181,6 @@ describe("resolveWhisperDecodeArgs", () => {
     const decode: WhisperDecodeConfig = {
       ...DEFAULT_DECODE,
       wordTimestamps: true,
-      logprobThreshold: -1,
       compressionRatioThreshold: 2.4,
       hallucinationSilenceThreshold: 2,
     };
@@ -191,7 +190,6 @@ describe("resolveWhisperDecodeArgs", () => {
     expect(ignoredOptions).toEqual(
       expect.arrayContaining([
         "wordTimestamps",
-        "logprobThreshold",
         "compressionRatioThreshold",
         "hallucinationSilenceThreshold",
       ]),
@@ -199,6 +197,22 @@ describe("resolveWhisperDecodeArgs", () => {
     for (const ignored of cpp.ignored) {
       expect(ignored.reason).toMatch(/whisper\.cpp/);
     }
+  });
+
+  it("maps wordTimestamps to whisper.cpp's full-JSON -ojf flag when output format is json", () => {
+    const decode: WhisperDecodeConfig = { ...DEFAULT_DECODE, wordTimestamps: true, outputFormat: "json" };
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", decode);
+    expect(cpp.args).toEqual(expect.arrayContaining(["-ojf"]));
+    expect(cpp.applied).toEqual(expect.arrayContaining(["wordTimestamps"]));
+    expect(cpp.ignored).toEqual([]);
+  });
+
+  it("maps logprobThreshold to whisper.cpp's -lpt flag", () => {
+    const decode: WhisperDecodeConfig = { ...DEFAULT_DECODE, logprobThreshold: -1 };
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", decode);
+    expect(cpp.args).toEqual(expect.arrayContaining(["-lpt", "-1"]));
+    expect(cpp.applied).toEqual(expect.arrayContaining(["logprobThreshold"]));
+    expect(cpp.ignored).toEqual([]);
   });
 
   it("falls back to txt and reports the ignored option for an unrecognized output format", () => {

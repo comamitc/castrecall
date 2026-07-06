@@ -187,10 +187,16 @@ export function resolveWhisperDecodeArgs(
 
   if (decode.wordTimestamps) {
     if (flavor === "whisper.cpp") {
-      ignore(
-        "wordTimestamps",
-        "whisper.cpp has no boolean word-timestamps flag (only the full-JSON -ojf output).",
-      );
+      if (outputFormat === "json") {
+        args.push("-ojf");
+        applied.push("wordTimestamps");
+      } else {
+        ignore(
+          "wordTimestamps",
+          "whisper.cpp only carries word-level timing in its full-JSON -ojf output; set " +
+            "CASTRECALL_WHISPER_OUTPUT_FORMAT=json to use this.",
+        );
+      }
     } else if (flavor === "mlx-whisper") {
       args.push("--word-timestamps", "True");
       applied.push("wordTimestamps");
@@ -207,6 +213,7 @@ export function resolveWhisperDecodeArgs(
     "whisper-ctranslate2": "--no_speech_threshold",
   });
   applyThreshold(flavor, decode.logprobThreshold, "logprobThreshold", args, applied, ignore, {
+    "whisper.cpp": "-lpt",
     "mlx-whisper": "--logprob-threshold",
     "openai-whisper": "--logprob_threshold",
     "whisper-ctranslate2": "--logprob_threshold",
