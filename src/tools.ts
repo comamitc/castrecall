@@ -221,7 +221,7 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
   const pendingReviews = await storage.listPendingReviews();
   const stt = sttAvailability(config);
   const remoteSttStatus =
-    config.stt.provider === "remote-stt" ? await remoteSttHealth(config, deps.fetchImpl) : undefined;
+    stt.ok && config.stt.provider === "remote-stt" ? await remoteSttHealth(config, deps.fetchImpl) : undefined;
   const whisper = await detectLocalWhisper(config, deps.env);
   const now = deps.now ?? (() => new Date());
   const exportStatus = classifyExportDir(config.exportDir);

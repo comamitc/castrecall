@@ -93,6 +93,25 @@ describe("tools", () => {
     expect(down.transcriptLadder.stt).toContain("remote NOT ready");
   });
 
+  it("setup_status does not probe remote-stt health when STT is disabled (issue #61)", async () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "false",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://5090-box.internal.example.com",
+      CASTRECALL_REMOTE_STT_TOKEN: "hunter2-token",
+    });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ implementation: "whisperx" }), { status: 200 }));
+
+    const status = (await setupStatus(cfg, {
+      env: { PATH: "" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) as Record<string, any>;
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(status.transcriptLadder.stt).toContain("off");
+    expect(status.transcriptLadder.stt).not.toContain("remote");
+  });
+
   it("setup_status reports whisper.cpp WITHOUT a model as not ready, never as available", async () => {
     const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
     try {
