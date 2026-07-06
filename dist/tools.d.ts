@@ -63,6 +63,8 @@ export declare function fetchTranscript(config: ResolvedConfig, params: {
     scheduled?: boolean;
     /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run; never set by the castrecall_fetch_transcript tool itself, so a direct single-episode call is never gated. */
     skipLocalWhisper?: boolean;
+    /** Corpus-scale preflight (issue #55) also blocked the paid cloud STT fallback for this run, since it would otherwise run as the very next rung right behind the blocked local Whisper one; never set by the castrecall_fetch_transcript tool itself. */
+    skipStt?: boolean;
 }, deps?: ToolDeps): Promise<unknown>;
 export declare function generateReview(config: ResolvedConfig, params: {
     episodeUuid?: string;

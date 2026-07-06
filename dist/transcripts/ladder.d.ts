@@ -22,6 +22,10 @@ export type RungOutcome = {
     retryable?: boolean;
     /** Set on a "miss" rung when the transcript may simply not be available yet (worth polling again later). */
     recheckable?: boolean;
+    /** Set on the "skipped" local-whisper or stt rung when the corpus-scale preflight (issue #55),
+     * not a real failure, is why this rung didn't run — this is a reversible policy gate, not
+     * evidence the episode is untranscribable. */
+    preflightBlocked?: boolean;
 };
 export type LadderResult = {
     transcript?: {
@@ -41,6 +45,10 @@ export declare function runTranscriptLadder(config: ResolvedConfig, record: List
     fetchImpl?: FetchLike;
     env?: NodeJS.ProcessEnv;
     skipStt?: boolean;
+    /** `skipStt` is true because the corpus-scale preflight (issue #55) blocked local Whisper for
+     * this run and STT would otherwise run as the very next rung — never set for the unrelated
+     * STT-retry-budget-exhausted skip, which uses its own detail message below. */
+    skipSttPreflightBlocked?: boolean;
     /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run. */
     skipLocalWhisper?: boolean;
 }): Promise<LadderResult>;

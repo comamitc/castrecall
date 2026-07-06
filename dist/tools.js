@@ -362,7 +362,8 @@ export async function fetchTranscript(config, params, deps = {}) {
     const result = await runTranscriptLadder(config, record, {
         fetchImpl: deps.fetchImpl,
         env: deps.env,
-        skipStt: sttRetryBudgetSpent,
+        skipStt: sttRetryBudgetSpent || params.skipStt === true,
+        skipSttPreflightBlocked: !sttRetryBudgetSpent && params.skipStt === true,
         skipLocalWhisper: params.skipLocalWhisper,
     });
     if (!result.transcript) {
@@ -374,10 +375,12 @@ export async function fetchTranscript(config, params, deps = {}) {
         // every tick or retry it forever.
         const retryable = result.rungs.some((r) => r.retryable);
         const recheckable = result.rungs.some((r) => r.recheckable);
+        const preflightBlocked = result.rungs.some((r) => (r.rung === "local-whisper" || r.rung === "stt") && r.preflightBlocked);
         const consecutiveFailures = retryable ? (record.transcriptRetry?.consecutiveFailures ?? 0) + 1 : 0;
         const sttExhausted = retryable && consecutiveFailures >= TRANSCRIPT_RETRY_MAX_ATTEMPTS;
         let retry;
         let recheck;
+        let preflightDeferred = false;
         if (retryable && !sttExhausted) {
             const delay = Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_CAP_MS);
             retry = {
@@ -426,6 +429,17 @@ export async function fetchTranscript(config, params, deps = {}) {
                 }, now);
             }
         }
+        else if (preflightBlocked && !sttExhausted) {
+            // The corpus-scale preflight (issue #55) blocked local Whisper for this
+            // run only — a reversible policy gate, not evidence the episode is
+            // untranscribable. Never advance retry/failure state here: doing so
+            // would make a quality-gate block behave like a source failure, and the
+            // episode would stay stuck (deferred by backoff, or no longer selected)
+            // even after the operator fixes the config (CASTRECALL_LOCAL_WHISPER_PRESET
+            // or CASTRECALL_WHISPER_ALLOW_LOW_QUALITY). Leaving transcriptStatus
+            // "none" untouched keeps the episode immediately eligible next run.
+            preflightDeferred = true;
+        }
         else {
             await storage.updateEpisode(record.uuid, {
                 transcriptStatus: "failed",
@@ -438,7 +452,7 @@ export async function fetchTranscript(config, params, deps = {}) {
             }, now);
         }
         return {
-            status: "no-transcript",
+            status: preflightDeferred ? "preflight-blocked" : "no-transcript",
             episode: summarizeListen(record),
             ladder: result.rungs,
             ...(retry

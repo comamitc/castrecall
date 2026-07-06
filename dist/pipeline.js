@@ -128,6 +128,10 @@ export async function runPipeline(config, params = {}, deps = {}) {
         // `blocked` decision can never disagree with what fetchTranscript is
         // about to do. Threading `skipLocalWhisper` only skips the local-Whisper
         // rung — the free RSS/Taddy/Podchaser rungs still run for every episode.
+        // `skipStt` additionally skips the paid cloud-STT rung whenever the local
+        // block is active and STT is enabled/configured, so a corpus-scale run
+        // can never fall through a free quality gate into billed transcription
+        // without that tradeoff having been surfaced in the report first.
         const whisperDetection = await detectLocalWhisper(config, deps.env);
         const preflight = buildTranscriptionPreflight({
             config,
@@ -136,14 +140,27 @@ export async function runPipeline(config, params = {}, deps = {}) {
         });
         let stored = 0;
         let failed = 0;
+        let preflightDeferred = 0;
         const errors = [];
         for (const episode of pendingTranscripts) {
             if (lockLost)
                 break;
             try {
-                const result = (await fetchTranscript(config, { episodeUuid: episode.uuid, scheduled: true, skipLocalWhisper: preflight.blocked }, deps));
+                const result = (await fetchTranscript(config, {
+                    episodeUuid: episode.uuid,
+                    scheduled: true,
+                    skipLocalWhisper: preflight.blocked,
+                    skipStt: preflight.sttFallbackBlocked,
+                }, deps));
                 if (result.status === "stored" || result.status === "already-stored") {
                     stored += 1;
+                }
+                else if (result.status === "preflight-blocked") {
+                    // Not a transcript failure (see fetchTranscript): the episode's
+                    // retry/failure state was never advanced, so it must not be counted
+                    // as `failed` here either — that would make the quality gate look
+                    // like a source failure in scheduled-run reporting.
+                    preflightDeferred += 1;
                 }
                 else {
                     failed += 1;
@@ -205,7 +222,12 @@ export async function runPipeline(config, params = {}, deps = {}) {
         }
         return {
             newListens: syncResult.newListens.length,
-            transcripts: { stored, failed, ...(deferred > 0 ? { deferred } : {}) },
+            transcripts: {
+                stored,
+                failed,
+                ...(deferred > 0 ? { deferred } : {}),
+                ...(preflightDeferred > 0 ? { preflightDeferred } : {}),
+            },
             preflight,
             ...(config.exportDir ? { exports: { exported } } : {}),
             reviews: { generated, skipped },

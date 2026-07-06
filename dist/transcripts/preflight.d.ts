@@ -13,7 +13,7 @@
  * resolveWhisperDecodeArgs, localWhisperReadiness), so this report can never
  * disagree with what runTranscriptLadder would actually do.
  */
-import type { ResolvedConfig } from "../config.js";
+import type { ResolvedConfig, SttProvider } from "../config.js";
 import { type LocalWhisperModelSource, type WhisperDetection, type WhisperFlavor, type WhisperModelResolution } from "./local-whisper.js";
 /**
  * Corpus-scale threshold (issue #55): below this, a run is a single-episode
@@ -59,6 +59,17 @@ export type TranscriptionPreflight = {
     /** Local audio is always downloaded to a temp dir and removed in a finally block — see transcribeWithLocalWhisper. */
     audioRetention: "temporary";
     lowQualityOptIn: boolean;
+    /** Whether rung 5 (paid cloud STT) is enabled/configured and would otherwise run as the
+     * fallback once local Whisper is blocked or misses — see `sttFallbackBlocked`. */
+    sttFallback: {
+        enabled: boolean;
+        provider: SttProvider;
+        available: boolean;
+    };
+    /** True when this run's `blocked` local-Whisper gate ALSO skips the paid STT rung, so a
+     * corpus-scale run can never silently fall through a free local block into billed
+     * transcription without the operator seeing this report first. */
+    sttFallbackBlocked: boolean;
     blocked: boolean;
     reason?: string;
     remediation?: string[];
