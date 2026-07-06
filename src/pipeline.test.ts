@@ -1093,4 +1093,62 @@ describe("runPipeline", () => {
       await expect(fs.access(markerPath)).resolves.toBeUndefined();
     });
   });
+
+  describe("repetition-loop quarantine (issue #42)", () => {
+    const LOOPED_TEXT = Array.from({ length: 40 }, () => "Thank you for watching.").join(" ");
+
+    function fetchImplWithTranscript(text: string) {
+      return (async (input: any) => {
+        const url = String(input);
+        if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+        if (url.endsWith("/user/history")) {
+          return new Response(JSON.stringify({ episodes: [HISTORY_EPISODE] }), { status: 200 });
+        }
+        if (url.includes("export_feed_urls")) {
+          return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+            status: 200,
+          });
+        }
+        if (url === "https://example.com/feed.xml") {
+          return new Response(
+            `<?xml version="1.0"?>
+            <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>ep-1</guid>
+                  <enclosure url="https://cdn.example.com/ep1.mp3" />
+                  <podcast:transcript url="https://cdn.example.com/ep1.txt" type="text/plain" />
+                </item>
+              </channel>
+            </rss>`,
+            { status: 200 },
+          );
+        }
+        if (url === "https://cdn.example.com/ep1.txt") {
+          return new Response(text, { status: 200, headers: { "content-type": "text/plain" } });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+    }
+
+    it("counts a looped transcript as quarantined (never stored or failed) and keeps it out of review/export worklists", async () => {
+      const exportDir = path.join(dir, "export");
+      const result = (await runPipeline(
+        config({ CASTRECALL_EXPORT_DIR: exportDir }),
+        {},
+        { fetchImpl: fetchImplWithTranscript(LOOPED_TEXT), env: { PATH: "" } },
+      )) as Record<string, any>;
+
+      expect(result.newListens).toBe(1);
+      expect(result.transcripts).toEqual({ stored: 0, failed: 0, quarantined: 1 });
+      expect(result.reviews).toEqual({ generated: 0, skipped: 0 });
+      expect(result.exports).toEqual({ exported: 0 });
+
+      const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+      expect(state.episodes["ep-1"].transcriptStatus).toBe("quarantined");
+      await expect(fs.access(path.join(dir, "sources", "ep-1", "transcript.txt"))).rejects.toThrow();
+      await expect(fs.access(path.join(dir, "review", "pending", "ep-1.md"))).rejects.toThrow();
+    });
+  });
 });

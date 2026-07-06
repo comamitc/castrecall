@@ -144,7 +144,10 @@ export default defineToolPlugin({
       description:
         "Fetch or generate the transcript for a synced episode via the transcript ladder " +
         "(RSS <podcast:transcript> → Taddy → optional paid speech-to-text) and store it privately " +
-        "with a provenance sidecar. Reports exactly which rung hit, missed, or was skipped and why.",
+        "with a provenance sidecar. Reports exactly which rung hit, missed, or was skipped and why. " +
+        "Output flagged as a Whisper/STT repetition loop is quarantined instead of stored — never " +
+        "treated as trusted corpus — while the episode stays eligible for regeneration with a " +
+        "different model or provider.",
       parameters: Type.Object({
         episodeUuid: Type.String({
           description: "Episode UUID from castrecall_recent or castrecall_sync_history.",

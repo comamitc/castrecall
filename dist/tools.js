@@ -13,6 +13,7 @@ import { buildPromotedNote, buildReviewCandidate } from "./review.js";
 import { SearchIndex } from "./search.js";
 import { buildSetupPlan, classifyExportDir, classifyNotesDir, detectGbrain, PRIVACY_DEFAULTS, } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
+import { detectRepetitionLoop } from "./transcripts/loop-detection.js";
 import { detectLocalWhisper, localWhisperReadiness, resolveWhisperDecodeArgs, resolveWhisperModel, } from "./transcripts/local-whisper.js";
 import { buildTranscriptionPreflight } from "./transcripts/preflight.js";
 import { sttAvailability } from "./transcripts/stt.js";
@@ -188,6 +189,7 @@ export async function setupStatus(config, deps = {}) {
             syncedListens: episodes.length,
             transcriptsStored: episodes.filter((e) => e.transcriptStatus === "stored").length,
             transcriptsFailed: episodes.filter((e) => e.transcriptStatus === "failed").length,
+            transcriptsQuarantined: episodes.filter((e) => e.transcriptStatus === "quarantined").length,
             transcriptsPendingRecheck: episodes.filter((e) => e.transcriptRecheck).length,
             pendingReviews: pendingReviews.length,
             reviewsResolved: episodes.filter((e) => e.reviewDisposition).length,
@@ -476,6 +478,32 @@ export async function fetchTranscript(config, params, deps = {}) {
                 }
                 : {}),
             hint: "Each rung explains why it missed or was skipped. Configure the next rung or enable STT to go further.",
+        };
+    }
+    // Loop detection (issue #42) runs on every ladder source — Taddy/Podchaser
+    // are themselves STT-based and can loop too — before the trusted triad is
+    // ever written. On a hit, deliberately do NOT call storeTranscript: no
+    // artifact is written, so hasTranscript stays false and this episode is
+    // excluded from search/export/review (all filter on transcriptStatus ===
+    // "stored") without any extra guard needed at those call sites.
+    const loop = detectRepetitionLoop(result.transcript.text);
+    if (loop.looped) {
+        await storage.updateEpisode(record.uuid, {
+            transcriptStatus: "quarantined",
+            transcriptSource: result.transcript.source,
+            transcriptError: loop.reason,
+            transcriptRetry: undefined,
+            transcriptRecheck: undefined,
+        }, now);
+        return {
+            status: "quarantined",
+            episode: summarizeListen({ ...record, transcriptStatus: "quarantined" }),
+            source: result.transcript.source,
+            loop,
+            ladder: result.rungs,
+            hint: "Loop-corrupted output was quarantined, not stored — it will not be searched, exported, or " +
+                "reviewed. Change CASTRECALL_LOCAL_WHISPER_PRESET or the STT provider and call " +
+                "castrecall_fetch_transcript again to regenerate.",
         };
     }
     const provenance = {
