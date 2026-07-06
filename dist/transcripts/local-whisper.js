@@ -110,6 +110,12 @@ export function resolveWhisperDecodeArgs(flavor, decode) {
         args.push(...(flavor === "whisper.cpp" ? ["-l", decode.language] : ["--language", decode.language]));
         applied.push("language");
     }
+    else if (flavor === "whisper.cpp") {
+        // whisper.cpp's CLI defaults -l to "en", not auto-detect, so an unset
+        // language hint must explicitly request auto-detect to match the
+        // documented "unset = auto-detect" behavior other flavors get for free.
+        args.push("-l", "auto");
+    }
     // Loop-prevention default for long-form podcasts (issue #53): repeating
     // prior output back as decoding context is a primary driver of Whisper
     // repetition loops, so this is honored (and reported as applied) whenever
@@ -128,7 +134,14 @@ export function resolveWhisperDecodeArgs(flavor, decode) {
     }
     if (decode.wordTimestamps) {
         if (flavor === "whisper.cpp") {
-            ignore("wordTimestamps", "whisper.cpp has no boolean word-timestamps flag (only the full-JSON -ojf output).");
+            if (outputFormat === "json") {
+                args.push("-ojf");
+                applied.push("wordTimestamps");
+            }
+            else {
+                ignore("wordTimestamps", "whisper.cpp only carries word-level timing in its full-JSON -ojf output; set " +
+                    "CASTRECALL_WHISPER_OUTPUT_FORMAT=json to use this.");
+            }
         }
         else if (flavor === "mlx-whisper") {
             args.push("--word-timestamps", "True");
@@ -146,6 +159,7 @@ export function resolveWhisperDecodeArgs(flavor, decode) {
         "whisper-ctranslate2": "--no_speech_threshold",
     });
     applyThreshold(flavor, decode.logprobThreshold, "logprobThreshold", args, applied, ignore, {
+        "whisper.cpp": "-lpt",
         "mlx-whisper": "--logprob-threshold",
         "openai-whisper": "--logprob_threshold",
         "whisper-ctranslate2": "--logprob_threshold",
@@ -155,11 +169,23 @@ export function resolveWhisperDecodeArgs(flavor, decode) {
         "openai-whisper": "--compression_ratio_threshold",
         "whisper-ctranslate2": "--compression_ratio_threshold",
     });
-    applyThreshold(flavor, decode.hallucinationSilenceThreshold, "hallucinationSilenceThreshold", args, applied, ignore, {
-        "mlx-whisper": "--hallucination-silence-threshold",
-        "openai-whisper": "--hallucination_silence_threshold",
-        "whisper-ctranslate2": "--hallucination_silence_threshold",
-    });
+    // mlx-whisper, openai-whisper, and whisper-ctranslate2 only act on
+    // hallucination_silence_threshold inside their word-timestamp decode path;
+    // set without wordTimestamps it would otherwise be a silent no-op, so it's
+    // ignored with an explicit reason instead of being reported as applied.
+    if (decode.hallucinationSilenceThreshold !== undefined &&
+        flavor !== "whisper.cpp" &&
+        !decode.wordTimestamps) {
+        ignore("hallucinationSilenceThreshold", `${flavor} only honors hallucinationSilenceThreshold alongside word timestamps; set ` +
+            "CASTRECALL_WHISPER_WORD_TIMESTAMPS=true to use this.");
+    }
+    else {
+        applyThreshold(flavor, decode.hallucinationSilenceThreshold, "hallucinationSilenceThreshold", args, applied, ignore, {
+            "mlx-whisper": "--hallucination-silence-threshold",
+            "openai-whisper": "--hallucination_silence_threshold",
+            "whisper-ctranslate2": "--hallucination_silence_threshold",
+        });
+    }
     return { args, applied, ignored, outputFormat };
 }
 function applyThreshold(flavor, value, option, args, applied, ignore, flagByFlavor) {
