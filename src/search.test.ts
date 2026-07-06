@@ -300,6 +300,35 @@ describe("SearchIndex", () => {
     expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
   });
 
+  it("does not drop an exact 3-token phrase match behind more than MAX_CANDIDATES chained-bigram false positives", async () => {
+    const index = new SearchIndex(dir);
+    // Every noise doc is phrase-eligible for "alpha beta gamma": it carries
+    // both required adjacent-pair bigrams ("alpha beta" and "beta gamma"),
+    // but only via a chain ("alpha beta filler beta gamma") — the tokens
+    // "alpha beta gamma" never sit contiguously. High term repetition also
+    // gives every noise doc a much higher keyword score than the true match,
+    // so they rank ahead of it in the Phase 2 read order.
+    const noiseEntries = Array.from({ length: MAX_CANDIDATES + 10 }, (_, i) =>
+      entry({
+        uuid: `noise-${i}`,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: `noise-${i}` },
+        text: "alpha beta filler beta gamma ".repeat(5).trim(),
+      }),
+    );
+    // Lower keyword score (each phrase term appears once in a long passage)
+    // but "alpha beta gamma" is truly contiguous, so it deserves the full
+    // phrase bonus and must rank into the results.
+    const trueMatchEntry = entry({
+      uuid: "true-match",
+      provenance: { ...BASE_PROVENANCE, episodeUuid: "true-match" },
+      text: "the show today covered many topics and after a long discussion the host finally got to alpha beta gamma before moving on to other topics entirely",
+    });
+    const corpus = [...noiseEntries, trueMatchEntry];
+
+    const result = await index.search('"alpha beta gamma"', {}, corpus);
+    expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
+  });
+
   it("bounds phase-2 reads to MAX_CANDIDATES even when a quoted phrase makes nearly every doc phrase-eligible", async () => {
     const index = new SearchIndex(dir);
     const text = "the quick fox and the lazy dog ran near the river";

@@ -11,12 +11,16 @@
  * is phrase-eligible only when every adjacent pair of the quoted phrase is
  * present — so docs that merely contain the tokens non-contiguously are
  * excluded without any transcript read. Phase 2 reads phrase-eligible docs
- * in score order under a hard MAX_CANDIDATES budget to confirm true
- * contiguity (bigram chains are necessary, not sufficient) and score the
- * phrase bonus, stopping early once no unread candidate could beat the kept
- * results; anything left unread is reported via `droppedCandidates` rather
- * than silently ignored. The index stores term frequencies and one-way
- * bigram hashes only — never prose, never positional data.
+ * in score order to confirm true contiguity (bigram chains are necessary,
+ * not sufficient) and score the phrase bonus, stopping only once no unread
+ * candidate could beat the kept results — this scan is never cut off by a
+ * blind read cap, so a false-positive bigram chain ranked ahead of a true
+ * exact-phrase match can never hide that match from Phase 2. Bare-term-only
+ * candidates carry no such correctness risk (their score is already final)
+ * and keep a flat MAX_CANDIDATES budget. Anything left unread is reported
+ * via `droppedCandidates` rather than silently ignored. The index stores
+ * term frequencies and one-way bigram hashes only — never prose, never
+ * positional data.
  */
 
 import { randomUUID } from "node:crypto";
@@ -292,7 +296,12 @@ export type SearchOptions = { limit?: number };
 
 export const DEFAULT_SEARCH_LIMIT = 10;
 export const MAX_SEARCH_LIMIT = 25;
-/** Bounds how many candidate transcripts Phase 2 reads for phrase/snippet scoring per search. */
+/**
+ * Bounds how many bare-term (non-phrase) candidate transcripts Phase 2
+ * reads per search. Phrase-eligible candidates are bounded by score
+ * dominance instead of this flat cap, so a false-positive bigram chain can
+ * never rank ahead of and hide a true exact-phrase match.
+ */
 export const MAX_CANDIDATES = 50;
 
 /** `limit && limit > 0 ? … : default` — same guard idiom as tools.ts's listRecent — plus a hard max cap. */
@@ -377,9 +386,12 @@ export class SearchIndex {
     // present, so docs holding the tokens only non-contiguously never enter
     // this loop (they fall through to the capped bare-term pass with their
     // keyword-only score). Eligible docs are read in keyword-score order to
-    // confirm true contiguity and add the phrase bonus, under a hard
-    // MAX_CANDIDATES read budget — a single broad query can never trigger a
-    // full-corpus transcript scan; anything unread is counted in
+    // confirm true contiguity and add the phrase bonus. Bigram-chain
+    // eligibility is necessary but not sufficient for an exact match, so this
+    // read loop has no blind candidate cap — only the score-dominance check
+    // below can stop it — otherwise enough false-positive bigram chains
+    // could rank ahead of a true match and consume a fixed budget before it
+    // is ever read. Anything unread past that point is counted in
     // `droppedCandidates` and surfaced to the caller.
     const phraseEligibleUuids = new Set(
       docs
@@ -397,7 +409,6 @@ export class SearchIndex {
     const scored: Array<{ uuid: string; score: number; text: string }> = [];
     let phraseCandidatesRead = 0;
     for (const uuid of rankedPhraseEligible) {
-      if (phraseCandidatesRead >= MAX_CANDIDATES) break;
       if (scored.length >= limit) {
         const weakestKept = scored[scored.length - 1].score;
         const bestPossibleRemaining = (keywordScores.get(uuid) ?? 0) + maxPhraseBonus;
