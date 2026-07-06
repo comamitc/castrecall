@@ -121,6 +121,39 @@ describe("Storage", () => {
     expect(await fs.readFile(first.path, "utf8")).toBe("original\n");
   });
 
+  it("hasPendingReview reflects whether a pending candidate file exists", async () => {
+    expect(await storage.hasPendingReview("ep-1")).toBe(false);
+    await storage.writeReviewCandidate("ep-1", "# Review\n");
+    expect(await storage.hasPendingReview("ep-1")).toBe(true);
+  });
+
+  it("resolvePendingReview moves a pending candidate into review/resolved/", async () => {
+    const written = await storage.writeReviewCandidate("ep-1", "# Review\n");
+    const result = await storage.resolvePendingReview("ep-1");
+    expect(result.moved).toBe(true);
+    expect(result.resolvedPath).toBe(storage.resolvedCandidatePath("ep-1"));
+    expect(result.resolvedPath).toContain(`${path.sep}review${path.sep}resolved${path.sep}`);
+    await expect(fs.access(written.path)).rejects.toThrow();
+    expect(await fs.readFile(result.resolvedPath, "utf8")).toBe("# Review\n");
+    expect(await storage.hasPendingReview("ep-1")).toBe(false);
+  });
+
+  it("resolvePendingReview reports moved: false when there is nothing pending", async () => {
+    const result = await storage.resolvePendingReview("ep-1");
+    expect(result.moved).toBe(false);
+  });
+
+  it("writePromotedNote creates notesDir on demand and never overwrites an existing note", async () => {
+    const notesDir = path.join(dir, "does", "not", "exist", "yet");
+    const first = await storage.writePromotedNote(notesDir, "note.md", "original\n");
+    expect(first.alreadyExists).toBe(false);
+    expect(await fs.readFile(first.path, "utf8")).toBe("original\n");
+
+    const second = await storage.writePromotedNote(notesDir, "note.md", "replacement\n");
+    expect(second.alreadyExists).toBe(true);
+    expect(await fs.readFile(first.path, "utf8")).toBe("original\n");
+  });
+
   it("sanitizes hostile episode uuids used in paths", async () => {
     const evil = "../../escape";
     await storage.storeTranscript(evil, {

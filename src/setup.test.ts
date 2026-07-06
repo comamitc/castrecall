@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { resolveConfig } from "./config.js";
-import { buildSetupPlan, classifyExportDir, detectGbrain, PRIVACY_DEFAULTS } from "./setup.js";
+import {
+  buildSetupPlan,
+  classifyExportDir,
+  classifyNotesDir,
+  detectGbrain,
+  PRIVACY_DEFAULTS,
+} from "./setup.js";
 import type { WhisperDetection } from "./transcripts/local-whisper.js";
 
 const NO_WHISPER: WhisperDetection = { reason: "No local Whisper CLI detected on PATH." };
@@ -97,6 +103,16 @@ describe("classifyExportDir", () => {
       exportDir: "/home/user/brain/sources",
       mode: "custom",
     });
+  });
+});
+
+describe("classifyNotesDir", () => {
+  it("is null when unset", () => {
+    expect(classifyNotesDir(undefined)).toEqual({ notesDir: null });
+  });
+
+  it("passes through a configured path", () => {
+    expect(classifyNotesDir("/home/user/notes")).toEqual({ notesDir: "/home/user/notes" });
   });
 });
 

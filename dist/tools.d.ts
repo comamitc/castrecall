@@ -56,6 +56,21 @@ export declare function generateReview(config: ResolvedConfig, params: {
     episodeUuid?: string;
 }, deps?: ToolDeps): Promise<unknown>;
 /**
+ * Disposition a pending review candidate. This is the only path in
+ * CastRecall that can promote content anywhere outside the private data
+ * dir — the gate is contractual, not technical: the tool description
+ * instructs callers to invoke this only after explicit human confirmation
+ * in conversation, the same trust model as every other agent tool. A
+ * `promote` requires the exact human-chosen `content`; CastRecall itself
+ * never decides what to keep.
+ */
+export declare function resolveReview(config: ResolvedConfig, params: {
+    episodeUuid: string;
+    disposition: "promote" | "discard";
+    content?: string;
+    title?: string;
+}, deps?: ToolDeps): Promise<unknown>;
+/**
  * Keyword/phrase search over stored transcripts. Read-only: assembles the
  * corpus from state.json + sources/<uuid>/ (mirroring exportIfEnabled's
  * contentHash ?? sha256(text) legacy fallback) and delegates reconciliation,

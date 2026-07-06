@@ -48,6 +48,10 @@ export declare function classifyExportDir(exportDir: string | undefined): {
     exportDir: string | null;
     mode: ExportMode;
 };
+/** Promoted-note destination for castrecall_resolve_review: unconfigured (null) until set. */
+export declare function classifyNotesDir(notesDir: string | undefined): {
+    notesDir: string | null;
+};
 export type SetupCredentialsInfo = {
     source: "env" | "keychain" | "none";
     configured: boolean;

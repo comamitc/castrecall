@@ -91,6 +91,11 @@ export function classifyExportDir(exportDir: string | undefined): {
   return { exportDir, mode: looksLikeGbrainInbox(exportDir) ? "gbrain-inbox" : "custom" };
 }
 
+/** Promoted-note destination for castrecall_resolve_review: unconfigured (null) until set. */
+export function classifyNotesDir(notesDir: string | undefined): { notesDir: string | null } {
+  return { notesDir: notesDir ?? null };
+}
+
 export type SetupCredentialsInfo = { source: "env" | "keychain" | "none"; configured: boolean };
 export type SetupSecretBackendInfo = { available: boolean; kind?: "macos-keychain" | "libsecret" };
 

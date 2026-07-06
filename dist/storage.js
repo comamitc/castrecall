@@ -9,6 +9,10 @@
  *     provenance.json              — where it came from and when
  *   review/pending/<episodeUuid>.md — approval-gated review candidates
  *   review/pending/digest-<slug>.md — approval-gated cross-episode digests
+ *   review/resolved/<episodeUuid>.md — candidates moved out after castrecall_resolve_review
+ *
+ * Promoted note content itself goes to the user-configured notes
+ * destination (CASTRECALL_NOTES_DIR / notesDir), never here.
  *
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
@@ -62,6 +66,9 @@ export class Storage {
     reviewPendingDir() {
         return path.join(this.dataDir, "review", "pending");
     }
+    reviewResolvedDir() {
+        return path.join(this.dataDir, "review", "resolved");
+    }
     /** Private, rebuildable search-index cache — see search.ts. */
     indexDir() {
         return path.join(this.dataDir, ".index");
@@ -69,6 +76,7 @@ export class Storage {
     async init() {
         await fs.mkdir(path.join(this.dataDir, "sources"), { recursive: true });
         await fs.mkdir(this.reviewPendingDir(), { recursive: true });
+        await fs.mkdir(this.reviewResolvedDir(), { recursive: true });
     }
     async loadState() {
         try {
@@ -482,6 +490,59 @@ export class Storage {
     async writeReviewCandidate(episodeUuid, markdown) {
         await this.init();
         const filePath = this.reviewCandidatePath(episodeUuid);
+        try {
+            await fs.writeFile(filePath, markdown, { encoding: "utf8", flag: "wx" });
+            return { path: filePath, alreadyExists: false };
+        }
+        catch (error) {
+            if (error.code === "EEXIST") {
+                return { path: filePath, alreadyExists: true };
+            }
+            throw error;
+        }
+    }
+    resolvedCandidatePath(episodeUuid) {
+        return path.join(this.reviewResolvedDir(), `${safeName(episodeUuid)}.md`);
+    }
+    async hasPendingReview(episodeUuid) {
+        try {
+            await fs.access(this.reviewCandidatePath(episodeUuid));
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+    /**
+     * Move a pending review candidate into review/resolved/. Returns
+     * `moved: false` (instead of throwing) when there is nothing pending for
+     * this episode — either it was never generated, or a prior resolve
+     * already moved it — so the caller can surface an actionable error rather
+     * than silently no-op.
+     */
+    async resolvePendingReview(episodeUuid) {
+        await this.init();
+        const resolvedPath = this.resolvedCandidatePath(episodeUuid);
+        try {
+            await fs.rename(this.reviewCandidatePath(episodeUuid), resolvedPath);
+            return { moved: true, resolvedPath };
+        }
+        catch (error) {
+            if (error.code === "ENOENT") {
+                return { moved: false, resolvedPath };
+            }
+            throw error;
+        }
+    }
+    /**
+     * Write a promoted note once; never overwrite an existing note at the same
+     * path. Creates `notesDir` on demand — same create-on-demand precedent as
+     * `CorpusExporter.exportEpisode` — so a configured-but-not-yet-existing
+     * destination is a normal write, not a failure.
+     */
+    async writePromotedNote(notesDir, filename, markdown) {
+        await fs.mkdir(notesDir, { recursive: true });
+        const filePath = path.join(notesDir, filename);
         try {
             await fs.writeFile(filePath, markdown, { encoding: "utf8", flag: "wx" });
             return { path: filePath, alreadyExists: false };

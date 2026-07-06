@@ -60,6 +60,35 @@ export function buildReviewCandidate(options) {
     return `${lines.filter((line) => line !== undefined).join("\n")}\n`;
 }
 /**
+ * Render a human-chosen promotion into a frontmattered note for the
+ * configured notes destination. The body is exactly the human's `content` —
+ * no heuristic excerpts, no full transcript — but attribution (podcast,
+ * episode, listen date, transcript source, episode UUID) travels with it so
+ * a promoted note is still traceable back to its source.
+ */
+export function buildPromotedNote(options) {
+    const { record, provenance, content, title, resolvedAt } = options;
+    const heading = title?.trim() || record.title;
+    const lines = [
+        "---",
+        `podcast: ${yamlString(record.podcastTitle)}`,
+        `episode: ${yamlString(record.title)}`,
+        `listened: ${record.firstSeenAt}`,
+        `transcript_source: ${provenance.transcriptSource}`,
+        provenance.provider ? `transcript_provider: ${provenance.provider}` : undefined,
+        `episode_uuid: ${record.uuid}`,
+        "promoted_from: castrecall",
+        `resolved_at: ${resolvedAt.toISOString()}`,
+        "---",
+        "",
+        `# ${heading}`,
+        "",
+        content.trim(),
+        "",
+    ];
+    return `${lines.filter((line) => line !== undefined).join("\n")}\n`;
+}
+/**
  * Heuristic excerpt selection: split into paragraph-ish chunks, keep the
  * most substantial ones in original order. Deliberately simple and honest —
  * semantic summarization belongs to the reviewing agent/human, not this plugin.

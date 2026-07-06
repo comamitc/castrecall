@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   CastrecallSetupError,
+  requireNotesDir,
   requirePocketCastsCredentials,
   resolveConfig,
 } from "./config.js";
@@ -105,6 +106,24 @@ describe("resolveConfig", () => {
     expect(config.exportDir).toBe("/from/settings");
   });
 
+  it("leaves notesDir unconfigured (undefined) by default", () => {
+    const config = resolveConfig({}, {});
+    expect(config.notesDir).toBeUndefined();
+  });
+
+  it("lets CASTRECALL_NOTES_DIR override the notesDir plugin setting", () => {
+    const config = resolveConfig(
+      { notesDir: "/from/settings" },
+      { CASTRECALL_NOTES_DIR: "/from/env" },
+    );
+    expect(config.notesDir).toBe("/from/env");
+  });
+
+  it("uses the notesDir plugin setting when the env var is unset", () => {
+    const config = resolveConfig({ notesDir: "/from/settings" }, {});
+    expect(config.notesDir).toBe("/from/settings");
+  });
+
   it("defaults listenFilter to a 0.8 ratio, 300s floor, and recordUnknown off", () => {
     const config = resolveConfig({}, {});
     expect(config.listenFilter).toEqual({ minRatio: 0.8, minSeconds: 300, recordUnknown: false });
@@ -154,5 +173,18 @@ describe("requirePocketCastsCredentials", () => {
       email: "a@b.c",
       password: "hunter2",
     });
+  });
+});
+
+describe("requireNotesDir", () => {
+  it("throws an actionable error mentioning CASTRECALL_NOTES_DIR when unconfigured", () => {
+    const config = resolveConfig({}, {});
+    expect(() => requireNotesDir(config)).toThrowError(CastrecallSetupError);
+    expect(() => requireNotesDir(config)).toThrowError(/CASTRECALL_NOTES_DIR/);
+  });
+
+  it("returns the configured notes dir without requiring it to exist", () => {
+    const config = resolveConfig({}, { CASTRECALL_NOTES_DIR: "/does/not/exist/yet" });
+    expect(requireNotesDir(config)).toBe("/does/not/exist/yet");
   });
 });

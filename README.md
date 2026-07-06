@@ -29,7 +29,7 @@ Use it with those expectations.
 ## Privacy model
 
 - **Full transcripts are source material, not memory.** They live under CastRecall's private data dir with a `provenance.json` sidecar (`privacyClass: "private-source"`).
-- **CastRecall never writes to durable OpenClaw memory.** It generates review candidates in `review/pending/`; a human decides what graduates — ideally rephrased in your own words.
+- **CastRecall never writes to durable OpenClaw memory.** It generates review candidates in `review/pending/`; a human decides what graduates — ideally rephrased in your own words — via `castrecall_resolve_review`, which writes promoted content only to the separately configured notes destination (`CASTRECALL_NOTES_DIR`). See "Resolving reviews" below.
 - **Credentials are keychain-preferred, env-var fallback**: CastRecall reads Pocket Casts email/password from the OS keychain (macOS Keychain / libsecret) when a backend is available and entries exist, otherwise from `POCKETCASTS_EMAIL`/`POCKETCASTS_PASSWORD`. Either way, credentials never pass through plugin config and are never logged or echoed in errors. The Pocket Casts session token is cached (in memory, and in the keychain when available) and reused across syncs instead of re-sending the password every time; `CASTRECALL_DISABLE_KEYCHAIN=1` disables the durable keychain sink only (the in-memory, process-lifetime token cache always applies).
 - Transcripts of published podcasts can still be copyrighted material — keeping them as private source data (rather than republishing or promoting them wholesale) is the intended use.
 
@@ -86,6 +86,7 @@ Ask your agent to run `castrecall_setup` — it walks through everything below i
 | `castrecall_recent` | Lists synced listens with transcript status and episode UUIDs. |
 | `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |
 | `castrecall_generate_review` | Writes approval-gated review candidates for stored transcripts. |
+| `castrecall_resolve_review` | Disposition a pending review candidate (`promote` or `discard`) — call only after explicit human confirmation in conversation. See "Resolving reviews" below. |
 | `castrecall_search` | Keyword/phrase search over stored transcripts. Every result carries provenance and an attributable snippet — see "Search" below. |
 | `castrecall_digest` | Cross-episode digest over a recent time window: listening pattern, recurring topics, and notable excerpts, written as an approval-gated document — see "Cross-episode digest" below. |
 | `castrecall_run_pipeline` | Chains sync → fetch transcripts (new listens only) → generate reviews (episodes newly stored this run) → corpus export. The tool a scheduler recipe should call — see "Scheduled / periodic sync" below. |
@@ -144,6 +145,42 @@ From **Some Great Podcast** by Jane Host.
 
 You (or your agent) read the candidate, keep one durable idea in your own
 words, and delete the rest — nothing here is ever auto-promoted.
+
+## Resolving reviews
+
+CastRecall's plugin has no approve/reject UI — **the conversation is the UI**.
+An agent surfaces a review candidate in chat; you reply in natural language
+with what to keep, rephrase, or discard; the agent then calls
+`castrecall_resolve_review` to record your decision:
+
+```
+castrecall_resolve_review {
+  episodeUuid: "3f9c1e2a-...",
+  disposition: "promote",
+  content: "The one durable idea, in my own words.",
+  title: "Optional custom note title"          // defaults to the episode title
+}
+```
+
+- **`promote`** requires `content` — the exact text you chose to keep.
+  CastRecall writes it, verbatim, as a frontmattered markdown note under the
+  directory set by `CASTRECALL_NOTES_DIR` (or the `notesDir` plugin setting),
+  which is created on demand if it doesn't already exist. The note carries
+  attribution (podcast, episode, listen date, transcript source, episode
+  UUID) but never the full transcript or heuristic excerpts — only what you
+  chose.
+- **`discard`** needs no `content` and writes no note anywhere; it simply
+  retires the candidate.
+
+Either way the candidate moves from `review/pending/` to `review/resolved/`
+and cannot be resolved again — a second call for the same episode throws.
+
+**The gate is contractual, not technical.** CastRecall cannot verify a human
+actually made the call in chat; `castrecall_resolve_review`'s tool
+description instructs the calling agent to invoke it only after explicit
+human confirmation, the same trust model as every other agent tool.
+`castrecall_generate_review` itself remains structurally unable to promote
+anything — it only ever writes to `review/pending/`.
 
 ## The transcript ladder
 
@@ -240,6 +277,7 @@ Pocket Casts' `/user/history` endpoint returns everything you've opened, includi
 | `CASTRECALL_MIN_LISTEN_SECONDS` | no | Minimum `playedUpTo` seconds to accept a listen when duration is missing (default `300`). |
 | `CASTRECALL_RECORD_UNKNOWN_LISTENS` | no | `true` to record episodes with no usable duration/playedUpTo/playingStatus (default off — skipped). |
 | `CASTRECALL_EXPORT_DIR` | no | Enables corpus export (markdown pages) to this directory. Off by default — see "Corpus export" below. |
+| `CASTRECALL_NOTES_DIR` | for `castrecall_resolve_review` promote | Destination for notes promoted via `castrecall_resolve_review`. Created on demand. Not needed for `discard`. See "Resolving reviews" above. |
 | `TADDY_API_KEY` / `TADDY_USER_ID` | no | Enables the Taddy ladder rung. |
 | `PODCHASER_API_KEY` | no | Enables the Podchaser ladder rung. A bearer access token minted via Podchaser's `requestAccessToken` mutation — not a raw client secret. |
 | `LISTENNOTES_API_KEY` | no | Enables the Listen Notes feed-URL discovery fallback (not a ladder rung), used only when Pocket Casts feed export and iTunes Search both miss. |
@@ -254,7 +292,7 @@ Pocket Casts' `/user/history` endpoint returns everything you've opened, includi
 | `DEEPGRAM_API_KEY` | with STT | Deepgram transcription. |
 | `CASTRECALL_DEEPGRAM_STT_MODEL` | no | Default `nova-3`. |
 
-Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`, `exportDir`) can also be set via the plugin's config schema; env vars win when both are set.
+Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`, `exportDir`, `notesDir`) can also be set via the plugin's config schema; env vars win when both are set.
 
 ## Credential storage
 
@@ -333,9 +371,14 @@ sidecar — review candidates and `state.json` are never exported.
 │   └── provenance.json           # platform, feed, URLs, timestamps, source, privacy class,
 │                                  # contentHash, schemaVersion
 ├── review/pending/<episodeUuid>.md   # approval-gated review candidates
+├── review/resolved/<episodeUuid>.md  # candidates moved out by castrecall_resolve_review
 ├── .staging/                     # reserved scratch for atomic writes — ignore it
 └── .index/                       # reserved: castrecall_search's rebuildable index cache — ignore it
 ```
+
+Promoted note *content* itself is written to the separate, user-configured
+`CASTRECALL_NOTES_DIR` (see "Resolving reviews" above) — never into this data
+dir, and never into durable OpenClaw memory.
 
 `state.json` and `provenance.json` are a versioned, machine-readable
 interface — see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#data-dir-versioned-machine-readable-interface)

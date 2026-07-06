@@ -16,12 +16,12 @@ Three invariants shape everything:
 
 ```
 src/
-├── index.ts               # OpenClaw plugin entry: defineToolPlugin + 8 tools
+├── index.ts               # OpenClaw plugin entry: defineToolPlugin + 10 tools
 ├── tools.ts               # Tool implementations, pure over (config, params, deps)
 ├── pipeline.ts            # castrecall_run_pipeline: sync → transcript → review, locked + cooldown-gated
 ├── config.ts              # Env-first config resolution; secrets never in plugin config
 ├── storage.ts             # Data dir layout, state.json, idempotent writes, pipeline lock + sync backoff
-├── review.ts              # Review-candidate markdown generation (heuristic excerpts)
+├── review.ts              # Review-candidate markdown (heuristic excerpts) + promoted-note builder
 ├── corpus-export.ts       # Opt-in export: section-split, frontmattered markdown pages (gbrain, etc.)
 ├── search.ts              # castrecall_search: on-disk term-freq index + keyword/phrase ranking
 ├── resolver.ts            # Pocket Casts listen → RSS feed URL → feed item + transcript links
@@ -59,8 +59,39 @@ Transcript ladder: RSS <podcast:transcript> → Taddy → Podchaser → local Wh
 sources/<uuid>/{raw.<ext>, transcript.txt, provenance.json}   ← private source lane
         │  castrecall_generate_review
         ▼
-review/pending/<uuid>.md   ← approval gate; human promotes (or deletes) manually
+review/pending/<uuid>.md   ← approval gate; conversation is the UI (see below)
+        │  castrecall_resolve_review { disposition, content? }
+        ▼
+review/resolved/<uuid>.md  +  <notes-dir>/*.md (promote only)
 ```
+
+### Resolving reviews: `castrecall_resolve_review`
+
+There is no approve/reject UI in an OpenClaw tool plugin — the conversation
+*is* the UI. An agent surfaces a `review/pending/` candidate in chat; the
+human replies in natural language with what to keep, rephrase, or discard;
+the agent then calls `castrecall_resolve_review` with an explicit
+`disposition` and, for `promote`, the exact `content` the human chose.
+
+The gate is **contractual, not technical** — the same trust model as every
+other agent tool (compare `castrecall_run_pipeline`'s `breakStaleLock`, which
+also relies on an instructive description rather than an enforceable check).
+CastRecall cannot verify a human actually approved in conversation; a
+misbehaving agent could call the tool on its own initiative. The mitigations
+are the explicit-parameters contract (an agent must supply the human-chosen
+`content` verbatim, not just a boolean) and the tool description's
+instruction to call it only after explicit confirmation.
+`castrecall_generate_review` itself is untouched and remains structurally
+unable to promote anything — it only ever writes to `review/pending/`.
+
+`promote` is intentionally **non-atomic**, in this exact order: write the
+note under `notesDir` → move the candidate `pending` → `resolved` → update
+`state.json`. A crash between the write and the move leaves a promoted note
+plus a still-pending candidate; a retry then hits the write-once collision on
+the note path and throws, rather than silently double-promoting or losing
+track of the candidate — the same reconciliation stance
+`generateReview`/`writeReviewCandidate` take on their own write/state-update
+pair. `discard` has no note to write, so it is a single move + state update.
 
 If `CASTRECALL_EXPORT_DIR` is set, `castrecall_fetch_transcript` also projects
 the same source lane out to markdown pages, independently of the review gate:
@@ -271,9 +302,14 @@ sources/<episodeUuid>/
   transcript.txt
   provenance.json
 review/pending/<episodeUuid>.md
+review/resolved/<episodeUuid>.md   # moved here by castrecall_resolve_review; disposition lives in state.json
 .staging/          # reserved: in-flight atomic writes + pipeline.lock — consumers must ignore it
 .index/            # reserved: rebuildable castrecall_search term-freq cache — consumers must ignore it
 ```
+
+Promoted note *content* is written to the separately configured
+`CASTRECALL_NOTES_DIR`/`notesDir` — outside this data dir entirely, and never
+into durable OpenClaw memory.
 
 `.staging/` is CastRecall's private scratch namespace: transcript artifacts are
 assembled there and published into `sources/` with a single atomic rename, so
@@ -323,6 +359,14 @@ sync timestamp.
 failure reason and when), and `nextEligibleAt` (set only while backing off;
 cleared on the next success). `castrecall_setup_status` surfaces this as a
 `sync` block, including a derived `inCooldown` boolean — never with secrets.
+
+`reviewDisposition` (`"promote" | "discard"`), `reviewResolvedAt`, and
+`promotedNotePath` (promote only) are written once per episode by
+`castrecall_resolve_review` and never cleared — they are disposition
+*history*, not a live pointer, so `castrecall_setup_status`'s
+`counts.reviewsResolved` (a count of episodes with `reviewDisposition` set)
+stays accurate even after the underlying `review/resolved/<uuid>.md` file is
+deleted by the user.
 
 ### Stability guarantees
 

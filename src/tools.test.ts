@@ -18,6 +18,7 @@ import {
   fetchTranscript,
   generateReview,
   listRecent,
+  resolveReview,
   setup,
   setupStatus,
   syncHistory,
@@ -1449,6 +1450,211 @@ describe("tools", () => {
     const again = (await generateReview(cfg, { episodeUuid: "ep-1" })) as Record<string, any>;
     expect(again.generated).toHaveLength(0);
     expect(again.skipped[0].reason).toContain("already exists");
+  });
+
+  describe("resolveReview", () => {
+    async function seedPendingReview(cfg: ReturnType<typeof config>): Promise<Storage> {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+      await storage.storeTranscript("ep-1", {
+        raw: "stored",
+        ext: "txt",
+        text: "stored transcript text with enough words to review later, covering a durable idea.",
+        provenance: PROVENANCE,
+      });
+      await storage.updateEpisode("ep-1", { transcriptStatus: "stored" });
+      await generateReview(cfg, { episodeUuid: "ep-1" });
+      return storage;
+    }
+
+    it("promote writes a note, moves the candidate, and records disposition in state", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+
+      const result = (await resolveReview(
+        cfg,
+        { episodeUuid: "ep-1", disposition: "promote", content: "The one durable idea." },
+        { now: () => new Date("2026-07-06T12:00:00.000Z") },
+      )) as Record<string, any>;
+
+      expect(result.disposition).toBe("promote");
+      expect(result.promotedNotePath).toBeTruthy();
+      const note = await fs.readFile(result.promotedNotePath, "utf8");
+      expect(note).toContain("The one durable idea.");
+      expect(note).toContain('episode: "Episode One"');
+      expect(note).toContain('podcast: "Example Show"');
+      expect(note).toContain("episode_uuid: ep-1");
+      expect(note).toContain("transcript_source: rss");
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).rejects.toThrow();
+      await expect(fs.access(result.resolvedPath)).resolves.toBeUndefined();
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("promote");
+      expect(state.episodes["ep-1"].reviewResolvedAt).toBe("2026-07-06T12:00:00.000Z");
+      expect(state.episodes["ep-1"].promotedNotePath).toBe(result.promotedNotePath);
+    });
+
+    it("promote auto-creates a not-yet-existing notesDir", async () => {
+      const notesDir = path.join(dir, "does", "not", "exist", "yet");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      await seedPendingReview(cfg);
+
+      const result = (await resolveReview(cfg, {
+        episodeUuid: "ep-1",
+        disposition: "promote",
+        content: "Body.",
+      })) as Record<string, any>;
+
+      expect(result.disposition).toBe("promote");
+      await expect(fs.access(result.promotedNotePath)).resolves.toBeUndefined();
+    });
+
+    it("promote never leaks secret query params from provenance", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      await seedPendingReview(cfg);
+
+      const result = (await resolveReview(cfg, {
+        episodeUuid: "ep-1",
+        disposition: "promote",
+        content: "Body.",
+      })) as Record<string, any>;
+
+      const note = await fs.readFile(result.promotedNotePath, "utf8");
+      expect(note).not.toContain("secret-audio");
+      expect(note).not.toContain("secret-transcript");
+    });
+
+    it("promote without notesDir throws, writes nothing, and leaves the candidate pending", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }),
+      ).rejects.toThrow(/CASTRECALL_NOTES_DIR/);
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+      await expect(fs.access(path.join(dir, "notes"))).rejects.toThrow();
+    });
+
+    it("promote with empty content throws before any write or move", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "   " }),
+      ).rejects.toThrow(/content/);
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+    });
+
+    it("promote throws on a note-path collision and leaves the candidate pending", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+      const now = () => new Date("2026-07-06T12:00:00.000Z");
+
+      // Pre-create the exact filename resolveReview will compute for this episode/date.
+      await fs.mkdir(notesDir, { recursive: true });
+      const collisionPath = path.join(notesDir, "2026-07-06-episode-one-ep-1.md");
+      await fs.writeFile(collisionPath, "existing note", "utf8");
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }, { now }),
+      ).rejects.toThrow(/already exists/);
+
+      expect(await fs.readFile(collisionPath, "utf8")).toBe("existing note");
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+    });
+
+    it("discard moves the candidate to resolved, records disposition, and writes no note", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+
+      const result = (await resolveReview(
+        cfg,
+        { episodeUuid: "ep-1", disposition: "discard" },
+        { now: () => new Date("2026-07-06T12:00:00.000Z") },
+      )) as Record<string, any>;
+
+      expect(result.disposition).toBe("discard");
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).rejects.toThrow();
+      await expect(fs.access(result.resolvedPath)).resolves.toBeUndefined();
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("discard");
+      expect(state.episodes["ep-1"].reviewResolvedAt).toBe("2026-07-06T12:00:00.000Z");
+      expect(state.episodes["ep-1"].promotedNotePath).toBeUndefined();
+      await expect(fs.access(path.join(dir, "notes"))).rejects.toThrow();
+    });
+
+    it("throws for an episode with no pending candidate (never generated)", async () => {
+      const cfg = config();
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
+      ).rejects.toThrow(/no pending review/i);
+    });
+
+    it("throws on a second resolve of the same episode", async () => {
+      const cfg = config();
+      await seedPendingReview(cfg);
+
+      await resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" });
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
+      ).rejects.toThrow(/no pending review/i);
+    });
+
+    it("setup_status reports the notes destination and a reviewsResolved count from state", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      await seedPendingReview(cfg);
+
+      const before = (await setupStatus(cfg)) as Record<string, any>;
+      expect(before.notes).toEqual({ notesDir });
+      expect(before.counts.reviewsResolved).toBe(0);
+
+      await resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" });
+
+      const after = (await setupStatus(cfg)) as Record<string, any>;
+      expect(after.counts.reviewsResolved).toBe(1);
+    });
+
+    it("setup_status reports notesDir as null when unconfigured", async () => {
+      const cfg = config();
+      const status = (await setupStatus(cfg)) as Record<string, any>;
+      expect(status.notes).toEqual({ notesDir: null });
+    });
   });
 
   describe("digest", () => {
