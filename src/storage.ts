@@ -22,7 +22,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
-import { cleanTranscript } from "./transcripts/cleanup.js";
+import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
 import {
   normalizeTranscript,
@@ -660,12 +660,13 @@ export class Storage {
    * Recover segment timing for a transcript stored before the `segments.json`
    * sidecar existed (issue #43), by re-normalizing the still-present
    * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
-   * freshly normalized text matches `expectedText` exactly, OR the cleanup
-   * pass (issue #45) applied to that normalized text matches it — so a raw
-   * file that has drifted from the recorded transcript.txt can never
-   * contaminate export with mismatched timing, whether or not the stored
-   * text was cleaned. Returns `undefined` when there is no raw artifact, its
-   * format is unrecognized, it fails to parse, or neither form matches.
+   * freshly normalized text matches `expectedText` exactly, OR the stored
+   * provenance proves the cleanup pass (issue #45) ran and applying it to
+   * that normalized text matches — so a raw file that has merely drifted
+   * into cleanup-equivalence, without cleanup ever having run, can never
+   * contaminate export with mismatched timing. Returns `undefined` when
+   * there is no raw artifact, its format is unrecognized, it fails to
+   * parse, or neither form matches.
    */
   async deriveSegmentsFromRaw(
     episodeUuid: string,
@@ -689,8 +690,10 @@ export class Storage {
     } catch {
       return undefined;
     }
+    const cleanupRan = provenance?.cleanup?.version === CLEANUP_VERSION;
     const matches =
-      normalized.text === expectedText || cleanTranscript(normalized.text).text === expectedText;
+      normalized.text === expectedText ||
+      (cleanupRan && cleanTranscript(normalized.text).text === expectedText);
     if (!matches) return undefined;
     return normalized.segments?.length ? normalized.segments : undefined;
   }

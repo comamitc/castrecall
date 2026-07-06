@@ -48,11 +48,28 @@ function stripCaptionMarkers(text) {
         .map((line) => line.replace(/^\s*>+\s*/, "").replace(/^\s*-\s+/, ""))
         .join("\n");
 }
+const TERMINAL_PUNCTUATION = new Set([".", "?", "!"]);
 function fixPunctuationGlue(text) {
     return text
         .replace(/[ \t]+([,.;:?!])/g, "$1")
         .replace(/([.?!])[.?!]+/g, "$1")
-        .replace(/([,.;:?!])(?=[\p{L}\p{N}])/gu, "$1 ");
+        .replace(/([,.;:?!])(?=[\p{L}\p{N}])/gu, (match, punct, offset, str) => {
+        const next = str[offset + 1];
+        if (TERMINAL_PUNCTUATION.has(punct)) {
+            // Only split before an uppercase letter (a real new sentence) — this
+            // avoids splitting decimals ("3.14") and lowercase domain/URL
+            // continuations ("example.com") since neither is followed by an
+            // uppercase letter.
+            return /\p{Lu}/u.test(next) ? `${punct} ` : punct;
+        }
+        // Comma/semicolon/colon: avoid splitting digit-glued tokens like clock
+        // times ("10:30") or thousands separators ("3,000").
+        const prev = str[offset - 1];
+        if (prev !== undefined && /\p{N}/u.test(prev) && /\p{N}/u.test(next)) {
+            return punct;
+        }
+        return `${punct} `;
+    });
 }
 /** A lone `\n` before a `Name:` turn is promoted to a blank-line paragraph break; already-blank-separated turns are left alone. */
 const SPEAKER_TURN_BOUNDARY = /(?<=[^\n])\n(?=[A-Za-z][\w .'-]{0,40}:\s)/g;
@@ -67,12 +84,13 @@ function tokenize(text) {
         .filter(Boolean);
 }
 /**
- * Tokenizes `text` with allowlisted standalone cue lines removed first — the
- * same removal `cleanTranscript` performs — so it can be compared before and
- * after cleanup to prove no spoken word was added, removed, or reordered.
+ * Tokenizes `text` with caption markers stripped and allowlisted standalone
+ * cue lines removed — the same removals `cleanTranscript` performs, in the
+ * same order — so it can be compared before and after cleanup to prove no
+ * spoken word was added, removed, or reordered.
  */
 export function spokenTokens(text, allowlist = STANDALONE_CUE_ALLOWLIST) {
-    return tokenize(stripStandaloneCueLines(text, allowlist));
+    return tokenize(stripStandaloneCueLines(stripCaptionMarkers(text), allowlist));
 }
 /**
  * Applies a conservative, deterministic cleanup pass to already-normalized
@@ -86,8 +104,8 @@ export function cleanTranscript(text, options = {}) {
     const applied = [];
     let out = text;
     const steps = [
-        { name: "strip-standalone-cues", run: (t) => stripStandaloneCueLines(t, opts.cueAllowlist) },
         { name: "strip-caption-markers", run: stripCaptionMarkers },
+        { name: "strip-standalone-cues", run: (t) => stripStandaloneCueLines(t, opts.cueAllowlist) },
         { name: "fix-punctuation-glue", run: fixPunctuationGlue },
         { name: "separate-speaker-turns", run: separateSpeakerTurns },
         { name: "collapse-whitespace", run: collapseWhitespace },

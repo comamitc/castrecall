@@ -26,9 +26,10 @@ export declare const DEFAULT_CLEANUP_OPTIONS: {
     cueAllowlist: readonly ["MUSIC", "APPLAUSE", "LAUGHTER", "INAUDIBLE", "CROSSTALK", "SILENCE", "BACKGROUND NOISE", "UNINTELLIGIBLE", "NOISE", "COUGHING"];
 };
 /**
- * Tokenizes `text` with allowlisted standalone cue lines removed first — the
- * same removal `cleanTranscript` performs — so it can be compared before and
- * after cleanup to prove no spoken word was added, removed, or reordered.
+ * Tokenizes `text` with caption markers stripped and allowlisted standalone
+ * cue lines removed — the same removals `cleanTranscript` performs, in the
+ * same order — so it can be compared before and after cleanup to prove no
+ * spoken word was added, removed, or reordered.
  */
 export declare function spokenTokens(text: string, allowlist?: readonly string[]): string[];
 /**

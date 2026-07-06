@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
-import { cleanTranscript } from "./transcripts/cleanup.js";
+import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
 import { normalizeTranscript } from "./transcripts/normalize.js";
 import {
   BACKOFF_BASE_MS,
@@ -162,20 +162,42 @@ describe("Storage", () => {
   it("derives segments for a cleaned transcript whose text differs from the raw normalization (issue #45)", async () => {
     const raw = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript ,body.";
     const normalized = normalizeTranscript(raw, "vtt");
+    const cleaned = cleanTranscript(normalized.text);
+    expect(cleaned.text).not.toBe(normalized.text);
+    await storage.storeTranscript("ep-1", {
+      raw,
+      ext: "vtt",
+      text: cleaned.text,
+      provenance: {
+        ...PROVENANCE,
+        format: "vtt",
+        cleanup: { version: CLEANUP_VERSION, applied: cleaned.applied },
+      },
+    });
+    expect(await storage.readSegments("ep-1")).toBeUndefined();
+
+    const derived = await storage.deriveSegmentsFromRaw("ep-1", cleaned.text);
+    expect(derived).toEqual([
+      expect.objectContaining({ startSeconds: 0, endSeconds: 2, text: "A short transcript ,body." }),
+    ]);
+  });
+
+  it("refuses to derive segments from cleanup-equivalent raw drift when cleanup never ran (issue #45 review)", async () => {
+    const raw = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript ,body.";
+    const normalized = normalizeTranscript(raw, "vtt");
     const cleanedText = cleanTranscript(normalized.text).text;
     expect(cleanedText).not.toBe(normalized.text);
+    // Stored transcript.txt is the already-clean text, but provenance carries
+    // no `cleanup` field — this is a pre-#45 (or cleanup-disabled) sidecar, so
+    // the raw artifact's cleanup-equivalence must not be trusted.
     await storage.storeTranscript("ep-1", {
       raw,
       ext: "vtt",
       text: cleanedText,
       provenance: { ...PROVENANCE, format: "vtt" },
     });
-    expect(await storage.readSegments("ep-1")).toBeUndefined();
 
-    const derived = await storage.deriveSegmentsFromRaw("ep-1", cleanedText);
-    expect(derived).toEqual([
-      expect.objectContaining({ startSeconds: 0, endSeconds: 2, text: "A short transcript ,body." }),
-    ]);
+    expect(await storage.deriveSegmentsFromRaw("ep-1", cleanedText)).toBeUndefined();
   });
 
   it("refuses to derive segments when the raw artifact no longer normalizes to the stored text", async () => {
