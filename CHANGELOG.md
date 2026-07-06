@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.14.0 — 2026-07-06
+
+The transcript quality track begins: bad transcripts get caught and
+quarantined, good ones get a machine-readable score.
+
+- **Whisper repetition-loop detection and quarantine** (#42, PR #75): local
+  Whisper output is checked for repeated phrase/sentence loops during
+  normalization. A looping transcript is stored but quarantined —
+  excluded from every trusted corpus path (search, review generation,
+  digest, markdown/corpus export) instead of poisoning them — with the
+  detection reason recorded and pre-existing state files loading
+  unchanged.
+- **Transcript quality scoring** (#41, PR #76): every stored transcript's
+  provenance now carries a deterministic quality score, tier
+  (quote-safe / reviewable / search-only), and reasons — considering
+  emptiness/length, repetition and lexical variety, segment shape, and
+  source confidence. Corpus export writes the score into page frontmatter
+  and backfills pre-upgrade exports; rescoring re-exports a same-hash
+  page so frontmatter never goes stale, while legacy provenance without a
+  quality value can never erase an existing score.
+
 ## v0.13.0 — 2026-07-06
 
 Local-Whisper guardrails, part three: look before you transcribe a corpus.
