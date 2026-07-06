@@ -209,6 +209,16 @@ describe("buildSetupPlan", () => {
     expect(withOptIn.find((s) => s.id === "providers.localWhisper")!.status).toBe("configured");
   });
 
+  it("marks mlx-whisper ready via CASTRECALL_LOCAL_WHISPER_PRESET and names the resolved model", () => {
+    const steps = plan(config({ CASTRECALL_LOCAL_WHISPER_PRESET: "best" }), {
+      whisper: WITH_MLX_NO_MODEL,
+    });
+    const step = steps.find((s) => s.id === "providers.localWhisper")!;
+    expect(step.status).toBe("configured");
+    expect(step.explanation).toContain("mlx-community/whisper-large-v3-turbo");
+    expect(step.envVars).toContain("CASTRECALL_LOCAL_WHISPER_PRESET");
+  });
+
   it("flips the stt step to configured only once enabled and a provider key is set", () => {
     const off = plan(config({}));
     expect(off.find((s) => s.id === "providers.stt")!.status).toBe("optional-off");

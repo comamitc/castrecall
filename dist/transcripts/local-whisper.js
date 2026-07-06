@@ -23,28 +23,79 @@ const KNOWN_BINARIES = [
 export const WHISPER_CPP_MODEL_MISSING_MESSAGE = "whisper.cpp needs a ggml model file. Set CASTRECALL_WHISPER_MODEL=/path/to/ggml-<size>.bin " +
     "(download one with whisper.cpp's models script or from Hugging Face ggerganov/whisper.cpp).";
 export const MLX_WHISPER_MODEL_MISSING_MESSAGE = "mlx_whisper defaults to the tiny model, too weak for a transcript corpus. Set " +
-    "CASTRECALL_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo (or another model), or set " +
+    "CASTRECALL_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo (or another model), set " +
+    "CASTRECALL_LOCAL_WHISPER_PRESET=best (or balanced/fast), or set " +
     "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true to accept low-quality/fast transcription.";
+/**
+ * CastRecall-managed quality presets for Apple Silicon local transcription
+ * (mlx-whisper only). `best` is the only #51-quality-approved model; `balanced`
+ * aliases it today and can diverge to a validated mid-tier model later with no
+ * env/API change; `fast` is an explicit, lower-quality opt-in — never an
+ * accidental default.
+ */
+export const WHISPER_PRESETS = {
+    best: "mlx-community/whisper-large-v3-turbo",
+    balanced: "mlx-community/whisper-large-v3-turbo",
+    fast: "mlx-community/whisper-small-mlx",
+};
+export const WHISPER_PRESET_UNKNOWN_MESSAGE = "CASTRECALL_LOCAL_WHISPER_PRESET must be one of: fast, balanced, best.";
+export const WHISPER_PRESET_NON_MLX_MESSAGE = "CASTRECALL_LOCAL_WHISPER_PRESET only resolves a model on Apple Silicon (mlx-whisper); " +
+    "mlx-community models are not valid on other Whisper CLIs/CUDA hosts. Set " +
+    "CASTRECALL_WHISPER_MODEL directly for this flavor instead.";
+/**
+ * Single source of truth for which concrete model a local Whisper run uses:
+ * an explicit CASTRECALL_WHISPER_MODEL always wins; otherwise a
+ * CASTRECALL_LOCAL_WHISPER_PRESET resolves to a concrete mlx-community model,
+ * but only for the mlx-whisper flavor (the presence of the mlx_whisper binary
+ * IS the Apple-Silicon signal here — no separate platform probe). Every
+ * consumer that needs to know or show the concrete model — readiness, setup
+ * output, the provider label, and exec argv — must call this, never read
+ * config.localWhisper.model directly.
+ */
+export function resolveWhisperModel(flavor, localWhisperConfig) {
+    if (localWhisperConfig.model) {
+        return { model: localWhisperConfig.model, source: "explicit" };
+    }
+    const preset = localWhisperConfig.preset;
+    if (!preset)
+        return { source: "none" };
+    if (flavor !== "mlx-whisper") {
+        return { source: "none", preset, reason: WHISPER_PRESET_NON_MLX_MESSAGE };
+    }
+    const presetModel = WHISPER_PRESETS[preset];
+    if (!presetModel) {
+        return { source: "none", preset, reason: WHISPER_PRESET_UNKNOWN_MESSAGE };
+    }
+    return { model: presetModel, source: "preset", preset };
+}
 /**
  * Single source of truth for whether the local Whisper rung can actually RUN
  * at usable quality (not merely whether a binary was detected): whisper.cpp
  * needs a ggml model via CASTRECALL_WHISPER_MODEL or it can't run at all;
  * mlx-whisper can run without one, but silently falls back to Whisper's tiny
- * model, so it additionally needs an explicit model (or an opt-in to accept
- * that low quality) before it's quality-ready. Status surfaces must use this,
- * never raw detection, or they report "ready" for a rung that will throw or
- * quietly produce a toy-quality transcript.
+ * model, so it additionally needs an explicit model or preset (or an opt-in
+ * to accept that low quality) before it's quality-ready. Status surfaces
+ * must use this, never raw detection, or they report "ready" for a rung that
+ * will throw or quietly produce a toy-quality transcript.
  */
 export function localWhisperReadiness(detection, localWhisperConfig) {
     const detected = Boolean(detection.detected);
     const flavor = detection.detected?.flavor;
-    const hasModel = Boolean(localWhisperConfig.model);
+    const resolved = resolveWhisperModel(flavor, localWhisperConfig);
+    const hasModel = Boolean(resolved.model);
+    // A preset that fails to resolve (unknown value, or used on a non-mlx
+    // flavor) is a configuration error, not a "low quality" tradeoff — it must
+    // not be silently bypassed by CASTRECALL_WHISPER_ALLOW_LOW_QUALITY, or
+    // readiness would say "ready" for a preset value that runWhisper rejects.
+    const presetError = Boolean(localWhisperConfig.preset && resolved.reason);
     const needsModel = (flavor === "whisper.cpp" && !hasModel) ||
-        (flavor === "mlx-whisper" && !hasModel && !localWhisperConfig.allowLowQuality);
+        (flavor === "mlx-whisper" && !hasModel && (presetError || !localWhisperConfig.allowLowQuality));
     const reason = needsModel
-        ? flavor === "whisper.cpp"
-            ? WHISPER_CPP_MODEL_MISSING_MESSAGE
-            : MLX_WHISPER_MODEL_MISSING_MESSAGE
+        ? presetError
+            ? resolved.reason
+            : flavor === "whisper.cpp"
+                ? WHISPER_CPP_MODEL_MISSING_MESSAGE
+                : MLX_WHISPER_MODEL_MISSING_MESSAGE
         : undefined;
     return { ready: detected && !needsModel, detected, needsModel, reason };
 }
@@ -121,7 +172,8 @@ async function downloadAudio(fetchImpl, audioUrl, workDir) {
     return audioPath;
 }
 async function runWhisper(detected, config, audioPath, workDir, execImpl, env = process.env) {
-    const model = config.localWhisper.model;
+    const resolved = resolveWhisperModel(detected.flavor, config.localWhisper);
+    const model = resolved.model;
     switch (detected.flavor) {
         case "custom": {
             const command = detected.command
@@ -160,8 +212,13 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
             return readProducedTxt(workDir, audioPath);
         }
         case "mlx-whisper": {
-            if (!model && !config.localWhisper.allowLowQuality) {
-                throw new CastrecallSetupError(MLX_WHISPER_MODEL_MISSING_MESSAGE);
+            if (!model) {
+                if (config.localWhisper.preset && resolved.reason) {
+                    throw new CastrecallSetupError(resolved.reason);
+                }
+                if (!config.localWhisper.allowLowQuality) {
+                    throw new CastrecallSetupError(MLX_WHISPER_MODEL_MISSING_MESSAGE);
+                }
             }
             const argv = [
                 detected.command,
@@ -209,8 +266,8 @@ async function readProducedTxt(workDir, audioPath) {
     }
 }
 function providerLabel(detected, config) {
-    const model = config.localWhisper.model;
-    const modelPart = model ? `:${path.basename(model)}` : "";
+    const resolved = resolveWhisperModel(detected.flavor, config.localWhisper);
+    const modelPart = resolved.model ? `:${path.basename(resolved.model)}` : "";
     return `local-whisper:${detected.flavor}${modelPart}`;
 }
 function assertExitOk(result, label) {

@@ -136,6 +136,16 @@ describe("resolveConfig", () => {
     const overRatio = resolveConfig({}, { CASTRECALL_MIN_LISTEN_RATIO: "2" });
     expect(overRatio.listenFilter.minRatio).toBe(0.8);
   });
+
+  it("normalizes CASTRECALL_LOCAL_WHISPER_PRESET to lowercase", () => {
+    const config = resolveConfig({}, { CASTRECALL_LOCAL_WHISPER_PRESET: "Best" });
+    expect(config.localWhisper.preset).toBe("best");
+  });
+
+  it("leaves localWhisper.preset undefined when unset or blank", () => {
+    expect(resolveConfig({}, {}).localWhisper.preset).toBeUndefined();
+    expect(resolveConfig({}, { CASTRECALL_LOCAL_WHISPER_PRESET: "  " }).localWhisper.preset).toBeUndefined();
+  });
 });
 
 describe("requirePocketCastsCredentials", () => {

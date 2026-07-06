@@ -20,7 +20,11 @@ import { envFlag, type ResolvedConfig } from "./config.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { podchaserConfigured } from "./transcripts/podchaser.js";
 import { sttAvailability } from "./transcripts/stt.js";
-import { localWhisperReadiness, type WhisperDetection } from "./transcripts/local-whisper.js";
+import {
+  localWhisperReadiness,
+  resolveWhisperModel,
+  type WhisperDetection,
+} from "./transcripts/local-whisper.js";
 
 export type SetupStepStatus = "configured" | "missing" | "optional-off";
 
@@ -199,13 +203,21 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
       status: whisperReady ? "configured" : "optional-off",
       envVars: [
         "CASTRECALL_WHISPER_MODEL",
+        "CASTRECALL_LOCAL_WHISPER_PRESET",
         "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY",
         "CASTRECALL_WHISPER_COMMAND",
         "CASTRECALL_DISABLE_LOCAL_WHISPER",
       ],
       explanation: whisperReady
         ? `Detected ${deps.whisper.detected!.flavor} on PATH — transcribes locally at no cost and ` +
-          "nothing leaves your machine."
+          "nothing leaves your machine." +
+          (() => {
+            const resolved = resolveWhisperModel(deps.whisper.detected!.flavor, config.localWhisper);
+            if (!resolved.model) return "";
+            return resolved.source === "preset"
+              ? ` Using ${resolved.model} (preset: ${resolved.preset}).`
+              : ` Using ${resolved.model}.`;
+          })()
         : (whisperReason ?? deps.whisper.reason!),
     },
     {

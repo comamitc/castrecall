@@ -85,6 +85,19 @@ describe("tools", () => {
     }
   });
 
+  it("setup_status names the preset-resolved concrete model for mlx-whisper ready via a preset", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const status = (await setupStatus(config({ CASTRECALL_LOCAL_WHISPER_PRESET: "best" }), {
+        env: { PATH: binDir },
+      })) as Record<string, any>;
+      expect(status.transcriptLadder.localWhisper).toContain("mlx-community/whisper-large-v3-turbo");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
   it("sync_history fails fast with an actionable error when credentials are missing", async () => {
     await expect(syncHistory(config(), {}, { env: { PATH: "" } })).rejects.toThrowError(
       /POCKETCASTS_EMAIL/,

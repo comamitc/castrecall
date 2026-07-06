@@ -4,9 +4,12 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveConfig } from "../config.js";
 import {
+  WHISPER_PRESET_NON_MLX_MESSAGE,
+  WHISPER_PRESET_UNKNOWN_MESSAGE,
   detectLocalWhisper,
   findOnPath,
   localWhisperReadiness,
+  resolveWhisperModel,
   transcribeWithLocalWhisper,
   type WhisperDetection,
 } from "./local-whisper.js";
@@ -74,6 +77,56 @@ describe("findOnPath", () => {
   });
 });
 
+describe("resolveWhisperModel", () => {
+  it("resolves best to the #51-approved large-v3-turbo model", () => {
+    expect(resolveWhisperModel("mlx-whisper", { preset: "best" })).toEqual({
+      model: "mlx-community/whisper-large-v3-turbo",
+      source: "preset",
+      preset: "best",
+    });
+  });
+
+  it("resolves balanced and fast to concrete mlx-community models", () => {
+    expect(resolveWhisperModel("mlx-whisper", { preset: "balanced" })).toMatchObject({
+      model: "mlx-community/whisper-large-v3-turbo",
+      source: "preset",
+    });
+    expect(resolveWhisperModel("mlx-whisper", { preset: "fast" })).toMatchObject({
+      model: "mlx-community/whisper-small-mlx",
+      source: "preset",
+    });
+  });
+
+  it("lets an explicit CASTRECALL_WHISPER_MODEL override the preset", () => {
+    expect(
+      resolveWhisperModel("mlx-whisper", { model: "custom/model", preset: "best" }),
+    ).toEqual({ model: "custom/model", source: "explicit" });
+  });
+
+  it("reports an unknown preset with a reason naming valid values", () => {
+    const result = resolveWhisperModel("mlx-whisper", { preset: "bogus" });
+    expect(result.model).toBeUndefined();
+    expect(result.reason).toBe(WHISPER_PRESET_UNKNOWN_MESSAGE);
+    expect(result.reason).toContain("fast");
+    expect(result.reason).toContain("balanced");
+    expect(result.reason).toContain("best");
+  });
+
+  it("rejects a known preset for non-mlx flavors (whisper.cpp, whisper-ctranslate2)", () => {
+    const cpp = resolveWhisperModel("whisper.cpp", { preset: "best" });
+    expect(cpp.model).toBeUndefined();
+    expect(cpp.reason).toBe(WHISPER_PRESET_NON_MLX_MESSAGE);
+
+    const ctranslate2 = resolveWhisperModel("whisper-ctranslate2", { preset: "best" });
+    expect(ctranslate2.model).toBeUndefined();
+    expect(ctranslate2.reason).toBe(WHISPER_PRESET_NON_MLX_MESSAGE);
+  });
+
+  it("returns source none with no model and no reason when nothing is set", () => {
+    expect(resolveWhisperModel("mlx-whisper", {})).toEqual({ source: "none" });
+  });
+});
+
 describe("localWhisperReadiness", () => {
   const MLX_DETECTED: WhisperDetection = {
     detected: { flavor: "mlx-whisper", command: "/usr/local/bin/mlx_whisper" },
@@ -104,6 +157,26 @@ describe("localWhisperReadiness", () => {
     const result = localWhisperReadiness(WHISPER_CPP_DETECTED, { allowLowQuality: true });
     expect(result).toMatchObject({ ready: false, needsModel: true, detected: true });
     expect(result.reason).toContain("CASTRECALL_WHISPER_MODEL");
+  });
+
+  it("is ready for mlx-whisper via a valid preset with no explicit model", () => {
+    const result = localWhisperReadiness(MLX_DETECTED, { preset: "best" });
+    expect(result).toMatchObject({ ready: true, needsModel: false, detected: true });
+  });
+
+  it("is not ready for mlx-whisper with an unknown preset, and reports the unknown-preset reason", () => {
+    const result = localWhisperReadiness(MLX_DETECTED, { preset: "bogus" });
+    expect(result).toMatchObject({ ready: false, needsModel: true, detected: true });
+    expect(result.reason).toBe(WHISPER_PRESET_UNKNOWN_MESSAGE);
+  });
+
+  it("does not let allowLowQuality bypass an unknown preset (regression)", () => {
+    const result = localWhisperReadiness(MLX_DETECTED, {
+      preset: "bogus",
+      allowLowQuality: true,
+    });
+    expect(result).toMatchObject({ ready: false, needsModel: true, detected: true });
+    expect(result.reason).toBe(WHISPER_PRESET_UNKNOWN_MESSAGE);
   });
 });
 
@@ -195,6 +268,49 @@ describe("transcribeWithLocalWhisper", () => {
       });
       expect(result.provider).toBe("local-whisper:mlx-whisper");
       expect(result.text).toBe("low-quality but private transcript");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolves CASTRECALL_LOCAL_WHISPER_PRESET=best to the concrete mlx model in exec argv", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig({}, { CASTRECALL_LOCAL_WHISPER_PRESET: "best" });
+      let seenArgv: string[] = [];
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          seenArgv = argv;
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "high-quality transcript");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(seenArgv).toContain("--model");
+      expect(seenArgv).toContain("mlx-community/whisper-large-v3-turbo");
+      expect(result.provider).toBe("local-whisper:mlx-whisper:whisper-large-v3-turbo");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an unknown preset with the unknown-preset message and never invokes exec", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig({}, { CASTRECALL_LOCAL_WHISPER_PRESET: "bogus" });
+      await expect(
+        transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+          fetchImpl: audioFetch,
+          env: { PATH: binDir },
+          execImpl: () => {
+            throw new Error("exec must not run for an unknown preset");
+          },
+        }),
+      ).rejects.toThrowError(/must be one of: fast, balanced, best/);
     } finally {
       await fs.rm(binDir, { recursive: true, force: true });
     }

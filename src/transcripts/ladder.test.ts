@@ -113,4 +113,47 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
     expect(whisperRung.outcome).toBe("skipped");
     expect(whisperRung.detail).toContain("CASTRECALL_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo");
   });
+
+  it("names the preset-resolved concrete model in the local-whisper hit detail and transcript provider", async () => {
+    // Real subprocess (mirrors the "custom command" tests elsewhere): a stub
+    // script that mimics mlx_whisper's --output-dir/--output-format txt
+    // contract, so the ladder's real (non-injectable) exec path is exercised.
+    await fs.writeFile(
+      path.join(binDir, "mlx_whisper"),
+      "#!/bin/sh\n" +
+        'audio="$1"; shift\n' +
+        "outdir=\"\"\n" +
+        'while [ "$#" -gt 0 ]; do\n' +
+        '  if [ "$1" = "--output-dir" ]; then outdir="$2"; shift; fi\n' +
+        "  shift\n" +
+        "done\n" +
+        'base=$(basename "$audio")\n' +
+        'name="${base%.*}"\n' +
+        'echo "transcribed via mlx preset" > "$outdir/$name.txt"\n',
+      { mode: 0o755 },
+    );
+
+    const audioFetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("ep1.mp3")) {
+        return new Response("fake audio bytes", { status: 200 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await runTranscriptLadder(
+      config({ CASTRECALL_LOCAL_WHISPER_PRESET: "best" }),
+      RECORD,
+      {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        skipStt: true,
+      },
+    );
+
+    const whisperRung = result.rungs.find((r) => r.rung === "local-whisper")!;
+    expect(whisperRung.outcome).toBe("hit");
+    expect(whisperRung.detail).toContain("whisper-large-v3-turbo");
+    expect(result.transcript?.provider).toBe("local-whisper:mlx-whisper:whisper-large-v3-turbo");
+  });
 });
