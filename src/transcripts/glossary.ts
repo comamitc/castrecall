@@ -216,7 +216,7 @@ export function applyGlossary(text: string, compiled: CompiledGlossary): Glossar
     out += span.canonical;
     cursor = span.end;
     if (matched === span.canonical) continue; // no-op: already canonical, don't record churn
-    const key = `${span.canonical} ${span.variant}`;
+    const key = `${span.canonical}\u0000${span.variant}`;
     const existing = counts.get(key);
     if (existing) {
       existing.count += 1;
