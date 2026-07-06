@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.9.0 — 2026-07-06
+
+Feed discovery gets a third leg: Listen Notes, used only as a verified
+last resort.
+
+- **Listen Notes feed-URL fallback** (#11, PR #49): with
+  `LISTENNOTES_API_KEY` set, feed resolution falls back to Listen Notes'
+  podcast search when both the Pocket Casts feed-export endpoint and
+  iTunes Search miss. Never reached otherwise, and never called without a
+  key.
+- **Wrong-show protection** (same PR, review-driven): podcast titles are
+  not unique, so a title match alone never selects a feed. Each
+  title-matching candidate (bounded at 5) is verified by fetching its feed
+  and requiring the listened episode's enclosure audio URL or GUID to
+  match — the episode-title fallback is never sufficient — and ambiguous
+  or unverifiable candidates fail closed rather than risk attaching
+  another show's transcript. `resolveFeedItem` now reports which signal
+  matched via `matchEvidence`.
+
 ## v0.8.0 — 2026-07-06
 
 The first aggregate view: a cross-episode digest answering "what have I
