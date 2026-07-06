@@ -44,8 +44,18 @@
 21. **#45** Transcript cleanup pass (punctuation, sentence boundaries, formatting) — v0.13.0
 22. **#46** Optional proper-noun correction glossary — v0.13.0 (plugs into #45's cleanup pass)
 
+### v0.14.0–v0.16.0 — local-Whisper quality track (added 2026-07-06)
+
+23. **#51** Require explicit quality-ready model selection for MLX Whisper — v0.14.0 (bug; fail closed instead of silently using whisper-tiny)
+24. **#52** Apple Silicon local transcription preset (MLX large-v3-turbo) — v0.14.0 (the blessed way to satisfy #51's gate)
+25. **#53** Loop-safe Whisper decoding options for local transcription — v0.15.0
+26. **#54** Persist exact local provider, model, and decode settings in provenance — v0.15.0 (records the settings #52/#53 introduce)
+27. **#55** Corpus-scale transcription preflight and quality warning — v0.16.0 (summarizes the #51–#53 config surface)
+28. **#56** Document local Whisper model requirements — v0.16.0 (docs last, covering the whole track)
+
 ## Notes
 
 - Acceptance criteria exist on the v0.1.0/v0.2.0 issues (#15, #14, #16, #3, #2); remaining short tickets get specs via intake when they approach the front of the queue.
 - Only verified dependency in the original set: **#15 → #14** (content hash before export idempotency).
 - Quality-track ordering dependencies: **#42 → #41**, **#43 → #44**, **#45 → #46** (each first issue provides the mechanism its successor consumes).
+- Local-Whisper track ordering dependencies: **#51 → #52**, **#53 → #54**, **#55 → #56** (gate before preset, settings before provenance, features before docs).
