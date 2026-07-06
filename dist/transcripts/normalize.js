@@ -2,6 +2,20 @@
  * Transcript format detection and normalization to plain text.
  * Supported: plain text, HTML, WebVTT, SRT, and podcast-namespace JSON.
  */
+import { createHash } from "node:crypto";
+/**
+ * Hash binding a normalized transcript's text to its cue timing. Used as the
+ * identity proof for cleanup-equivalent segment recovery (issue #45): a raw
+ * artifact re-encoded with identical caption text but drifted start/end
+ * timestamps must hash differently, or a provenance check keyed on text alone
+ * would let recovered segments carry stale timings.
+ */
+export function hashNormalizedTranscript(normalized) {
+    const timing = (normalized.segments ?? [])
+        .map((segment) => `${segment.start ?? ""}|${segment.end ?? ""}|${segment.text}`)
+        .join("\n");
+    return createHash("sha256").update(`${normalized.text}::TIMING::${timing}`, "utf8").digest("hex");
+}
 /** Best-effort format detection from MIME type, URL extension, then content sniffing. */
 export function detectFormat(options) {
     const type = options.contentType?.toLowerCase().split(";")[0]?.trim() ?? "";
@@ -259,7 +273,8 @@ export function segmentsToText(segments) {
     }
     return collapseWhitespace(parts.join(" "));
 }
-function collapseWhitespace(text) {
+/** Exported so `cleanup.ts` can reuse the exact same whitespace rules for its final re-collapse pass. */
+export function collapseWhitespace(text) {
     return text
         .replace(/\r\n/g, "\n")
         .split("\n")

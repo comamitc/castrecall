@@ -20,7 +20,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
-import { normalizeTranscript, } from "./transcripts/normalize.js";
+import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
+import { hashNormalizedTranscript, normalizeTranscript, } from "./transcripts/normalize.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
  * shape). Bump only for breaking changes; new fields are additive within a
@@ -478,11 +479,15 @@ export class Storage {
      * Recover segment timing for a transcript stored before the `segments.json`
      * sidecar existed (issue #43), by re-normalizing the still-present
      * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
-     * freshly normalized text matches `expectedText` exactly, so a raw file
-     * that has drifted from the recorded transcript.txt can never contaminate
-     * export with mismatched timing. Returns `undefined` when there is no raw
-     * artifact, its format is unrecognized, it fails to parse, or its
-     * normalized text no longer matches.
+     * freshly normalized text matches `expectedText` exactly, OR the freshly
+     * normalized text-and-timing hashes (via `hashNormalizedTranscript`) to the
+     * stored `cleanup.rawTextHash` (proving it's the same pre-cleanup text
+     * *and cue timing* the stored `applied` steps actually ran against, not
+     * merely drifted text/timestamps that happen to clean to the same output)
+     * AND cleaning it reproduces `expectedText` with an identical `applied`
+     * step list. Sidecars without a `rawTextHash` (pre-fix) fall back to
+     * exact-match only. Returns `undefined` when there is no raw artifact, its
+     * format is unrecognized, it fails to parse, or neither form matches.
      */
     async deriveSegmentsFromRaw(episodeUuid, expectedText) {
         const provenance = await this.readProvenance(episodeUuid);
@@ -503,7 +508,29 @@ export class Storage {
         catch {
             return undefined;
         }
-        if (normalized.text !== expectedText)
+        const storedApplied = provenance?.cleanup?.applied;
+        const storedRawTextHash = provenance?.cleanup?.rawTextHash;
+        // When a timing-aware identity hash exists in provenance, it gates EVERY
+        // recovery path — including exact-text matches. A raw artifact rewritten
+        // with identical caption text but shifted cue timestamps normalizes to
+        // the same text, so text equality alone cannot prove the timings are the
+        // ones the transcript was stored with. Only hash-less legacy sidecars
+        // fall back to exact-text-only recovery.
+        if (storedRawTextHash && hashNormalizedTranscript(normalized) !== storedRawTextHash) {
+            return undefined;
+        }
+        let cleanupMatches = false;
+        if (provenance?.cleanup?.version === CLEANUP_VERSION && storedApplied?.length && storedRawTextHash) {
+            // Timing hash already verified above; confirm the stored steps
+            // reproduce the exact stored text.
+            const cleaned = cleanTranscript(normalized.text);
+            cleanupMatches =
+                cleaned.text === expectedText &&
+                    cleaned.applied.length === storedApplied.length &&
+                    cleaned.applied.every((step, i) => step === storedApplied[i]);
+        }
+        const matches = normalized.text === expectedText || cleanupMatches;
+        if (!matches)
             return undefined;
         return normalized.segments?.length ? normalized.segments : undefined;
     }

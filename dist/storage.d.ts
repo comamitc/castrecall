@@ -172,6 +172,29 @@ export type Provenance = {
      * Additive; pre-#41 sidecars simply lack it.
      */
     quality?: TranscriptQuality;
+    /**
+     * Deterministic cleanup pass provenance (issue #45): version, the named
+     * transform steps that actually changed the text, and a hash (see
+     * `hashNormalizedTranscript`) of the pre-cleanup normalized text *and cue
+     * timing* the steps were applied to. The hash is the identity proof for
+     * `deriveSegmentsFromRaw`'s cleanup-equivalent recovery path — matching
+     * `applied` step names alone only proves the same steps *would* fire on
+     * some input, and hashing text alone only proves the caption text is
+     * unchanged, not that the raw artifact's cue timestamps are.
+     * Present whenever cleanup ran, even with `applied: []` (ran, no-op) —
+     * omitted entirely when cleanup was disabled
+     * (`CASTRECALL_TRANSCRIPT_CLEANUP=0`), distinguishing "ran, no-op" from
+     * "never ran". Additive; pre-#45 sidecars simply lack it, and sidecars
+     * written before the hash existed carry `version`/`applied` without
+     * `rawTextHash` — the type keeps the field optional so those supported
+     * legacy shapes are representable without casts; new writes always
+     * include it, and recovery falls back to exact-match when it's absent.
+     */
+    cleanup?: {
+        version: number;
+        applied: string[];
+        rawTextHash?: string;
+    };
     fetchedAt: string;
     privacyClass: "private-source";
 };
@@ -323,11 +346,15 @@ export declare class Storage {
      * Recover segment timing for a transcript stored before the `segments.json`
      * sidecar existed (issue #43), by re-normalizing the still-present
      * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
-     * freshly normalized text matches `expectedText` exactly, so a raw file
-     * that has drifted from the recorded transcript.txt can never contaminate
-     * export with mismatched timing. Returns `undefined` when there is no raw
-     * artifact, its format is unrecognized, it fails to parse, or its
-     * normalized text no longer matches.
+     * freshly normalized text matches `expectedText` exactly, OR the freshly
+     * normalized text-and-timing hashes (via `hashNormalizedTranscript`) to the
+     * stored `cleanup.rawTextHash` (proving it's the same pre-cleanup text
+     * *and cue timing* the stored `applied` steps actually ran against, not
+     * merely drifted text/timestamps that happen to clean to the same output)
+     * AND cleaning it reproduces `expectedText` with an identical `applied`
+     * step list. Sidecars without a `rawTextHash` (pre-fix) fall back to
+     * exact-match only. Returns `undefined` when there is no raw artifact, its
+     * format is unrecognized, it fails to parse, or neither form matches.
      */
     deriveSegmentsFromRaw(episodeUuid: string, expectedText: string): Promise<TranscriptSegment[] | undefined>;
     /**

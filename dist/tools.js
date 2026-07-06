@@ -12,8 +12,10 @@ import { buildDigest } from "./digest.js";
 import { buildPromotedNote, buildReviewCandidate } from "./review.js";
 import { SearchIndex } from "./search.js";
 import { buildSetupPlan, classifyExportDir, classifyNotesDir, detectGbrain, PRIVACY_DEFAULTS, } from "./setup.js";
+import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { detectRepetitionLoop } from "./transcripts/loop-detection.js";
+import { hashNormalizedTranscript } from "./transcripts/normalize.js";
 import { scoreTranscriptQuality } from "./transcripts/quality.js";
 import { detectLocalWhisper, localWhisperReadiness, resolveWhisperDecodeArgs, resolveWhisperModel, } from "./transcripts/local-whisper.js";
 import { buildTranscriptionPreflight } from "./transcripts/preflight.js";
@@ -517,6 +519,10 @@ export async function fetchTranscript(config, params, deps = {}) {
         source: result.transcript.source,
         segments: result.transcript.segments,
     });
+    // Cleanup (issue #45) runs after loop detection/quality scoring, both of
+    // which stay on the raw-normalized text so their coverage/quality math is
+    // unchanged either way. Only the stored transcript.txt is affected.
+    const cleaned = config.transcriptCleanup.enabled ? cleanTranscript(result.transcript.text) : undefined;
     const provenance = {
         platform: "pocketcasts",
         podcastTitle: record.podcastTitle,
@@ -533,13 +539,22 @@ export async function fetchTranscript(config, params, deps = {}) {
         provider: result.transcript.provider,
         generation: result.transcript.generation,
         quality,
+        ...(cleaned
+            ? {
+                cleanup: {
+                    version: CLEANUP_VERSION,
+                    applied: cleaned.applied,
+                    rawTextHash: hashNormalizedTranscript(result.transcript),
+                },
+            }
+            : {}),
         fetchedAt: now().toISOString(),
         privacyClass: "private-source",
     };
     const stored = await storage.storeTranscript(record.uuid, {
         raw: result.transcript.raw,
         ext: result.transcript.format,
-        text: result.transcript.text,
+        text: cleaned?.text ?? result.transcript.text,
         provenance,
         segments: result.transcript.segments,
     });

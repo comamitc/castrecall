@@ -14,6 +14,7 @@ import {
   type Provenance,
 } from "./storage.js";
 import { CORPUS_SCALE_MIN_EPISODES } from "./transcripts/preflight.js";
+import { hashNormalizedTranscript, normalizeTranscript } from "./transcripts/normalize.js";
 import {
   digest,
   fetchTranscript,
@@ -1405,6 +1406,120 @@ describe("tools", () => {
     expect(typeof provenance?.quality?.score).toBe("number");
     expect(["quote-safe", "reviewable", "search-only"]).toContain(provenance?.quality?.tier);
     expect(Array.isArray(provenance?.quality?.reasons)).toBe(true);
+  });
+
+  describe("fetch_transcript transcript cleanup pass (issue #45)", () => {
+    function txtFetchImpl(transcriptText: string): typeof fetch {
+      return (async (input: any) => {
+        const url = String(input);
+        if (url.includes("export_feed_urls")) {
+          return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+            status: 200,
+          });
+        }
+        if (url === "https://example.com/feed.xml") {
+          return new Response(
+            `<?xml version="1.0"?>
+            <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>ep-1</guid>
+                  <enclosure url="https://cdn.example.com/ep1.mp3" />
+                  <podcast:transcript url="https://cdn.example.com/ep1.txt" type="text/plain" />
+                </item>
+              </channel>
+            </rss>`,
+            { status: 200 },
+          );
+        }
+        if (url === "https://cdn.example.com/ep1.txt") {
+          return new Response(transcriptText, { status: 200, headers: { "content-type": "text/plain" } });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+    }
+
+    async function seedEpisode() {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+      return storage;
+    }
+
+    // Must not start with "[" — normalize.ts's format sniffing would mistake a
+    // leading "[" for JSON and fail to parse this as plain text.
+    const CAPTION_ARTIFACT_TEXT = "Hello there ,friend.\n[MUSIC]\nGoodbye.";
+    const ALREADY_CLEAN_TEXT = "Hello there, friend.\nGoodbye.";
+
+    it("stores cleaned text, keeps raw verbatim, and records provenance.cleanup.applied", async () => {
+      const storage = await seedEpisode();
+      const result = (await fetchTranscript(
+        config(),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: txtFetchImpl(CAPTION_ARTIFACT_TEXT) },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe("Hello there, friend.\nGoodbye.");
+
+      const raw = await fs.readFile(path.join(storage.sourceDir("ep-1"), "raw.txt"), "utf8");
+      expect(raw).toBe(CAPTION_ARTIFACT_TEXT);
+
+      const provenance = await storage.readProvenance("ep-1");
+      expect(provenance?.cleanup?.applied).toEqual(
+        expect.arrayContaining(["strip-standalone-cues", "fix-punctuation-glue"]),
+      );
+      expect(typeof provenance?.cleanup?.version).toBe("number");
+
+      // The pre-cleanup text is always recoverable by re-normalizing raw.<ext>,
+      // and rawTextHash is the identity proof that recovery ties back to it.
+      const rawNormalized = normalizeTranscript(raw, "txt");
+      expect(rawNormalized.text).toBe(CAPTION_ARTIFACT_TEXT);
+      expect(provenance?.cleanup?.rawTextHash).toBe(hashNormalizedTranscript(rawNormalized));
+    });
+
+    it("stores uncleaned text with provenance.cleanup absent when CASTRECALL_TRANSCRIPT_CLEANUP=0", async () => {
+      const storage = await seedEpisode();
+      const result = (await fetchTranscript(
+        config({ CASTRECALL_TRANSCRIPT_CLEANUP: "0" }),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: txtFetchImpl(CAPTION_ARTIFACT_TEXT) },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe(CAPTION_ARTIFACT_TEXT);
+
+      const provenance = await storage.readProvenance("ep-1");
+      expect(provenance?.cleanup).toBeUndefined();
+    });
+
+    it("records an empty applied list when cleanup runs but the input was already clean", async () => {
+      const storage = await seedEpisode();
+      const result = (await fetchTranscript(
+        config(),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: txtFetchImpl(ALREADY_CLEAN_TEXT) },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const provenance = await storage.readProvenance("ep-1");
+      expect(provenance?.cleanup).toEqual({
+        version: expect.any(Number),
+        applied: [],
+        rawTextHash: expect.any(String),
+      });
+    });
   });
 
   describe("fetch_transcript repetition-loop quarantine (issue #42)", () => {
