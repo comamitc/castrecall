@@ -355,8 +355,26 @@ export async function transcribeWithRemoteStt(
       if (error instanceof UnknownRemoteJobError) {
         // Provider forgot the job — the one case where resubmitting is right.
         await clearJobState(statePath);
-      } else if (error instanceof RetryableSttError || error instanceof CastrecallSetupError) {
-        // Still running / transient / auth: keep the state for the next run.
+      } else if (error instanceof CastrecallSetupError) {
+        // Auth failure on the resume poll: disambiguate GLOBAL auth failure
+        // (token broken everywhere — keep the job handle; a fixed token can
+        // still resume) from a JOB-SCOPED denial (provider healthy under
+        // this token, but this job id is not ours anymore — rotated
+        // account, ACL change; keeping the handle would strand the episode
+        // behind endless 403s). The health endpoint uses the same token, so
+        // it decides which case this is.
+        const health = await remoteSttHealth(config, fetchImpl);
+        if (health.ok) {
+          await clearJobState(statePath);
+          throw new Error(
+            `Remote STT denied access to saved job ${priorJobId} while the service is otherwise ` +
+              "reachable with this token; the saved job was forgotten. " +
+              `(${error.message})`,
+          );
+        }
+        throw error;
+      } else if (error instanceof RetryableSttError) {
+        // Still running / transient: keep the state for the next run.
         throw error;
       } else {
         // Terminal job failure: surface it. Clear the state so the NEXT

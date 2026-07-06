@@ -487,6 +487,9 @@ describe("transcribeWithRemoteStt — async job resume (issue #61 review)", () =
     expect(await jobStateFiles()).toHaveLength(1);
 
     for (const status of [401, 403]) {
+      // GLOBAL auth failure: the health endpoint rejects the same token, so
+      // the job handle survives — once the operator fixes the token, the
+      // running remote job is resumed, not duplicated.
       const authFail: FetchLike = (async (url: string) => {
         if (String(url).endsWith("/transcribe")) {
           throw new Error("must not resubmit while auth is broken");
@@ -499,10 +502,25 @@ describe("transcribeWithRemoteStt — async job resume (issue #61 review)", () =
           fetchImpl: authFail, sleep: clock.sleep, now: clock.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
         }),
       ).rejects.toThrow(CastrecallSetupError);
-      // The job handle survives: once the operator fixes the token, the
-      // running remote job is resumed, not duplicated.
       expect(await jobStateFiles()).toHaveLength(1);
     }
+
+    // JOB-SCOPED denial: the poll 403s but the health endpoint accepts the
+    // token — the saved job is not ours anymore (rotated account/ACL).
+    // Keeping it would strand the episode behind endless 403s; it is
+    // forgotten and the failure surfaces as a terminal error.
+    const jobScoped: FetchLike = (async (url: string) => {
+      if (String(url).includes("/jobs/")) return new Response("forbidden", { status: 403 });
+      if (String(url).endsWith("/health")) return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
+      throw new Error("must not resubmit in the same call");
+    }) as FetchLike;
+    const clock3 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: jobScoped, sleep: clock3.sleep, now: clock3.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(/denied access to saved job/);
+    expect(await jobStateFiles()).toHaveLength(0);
   });
 
   it("clears job state when the job fails terminally", async () => {
