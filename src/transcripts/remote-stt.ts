@@ -31,7 +31,7 @@ import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { isRetryableHttpStatus, RetryableSttError, utterancesToSegments, type SttResult } from "./stt.js";
+import { isRetryableHttpStatus, PollDeadlineError, RetryableSttError, utterancesToSegments, type SttResult } from "./stt.js";
 
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 15 * 60_000;
@@ -279,12 +279,7 @@ function parseRemoteResult(body: RawRemoteResult): NormalizedRemoteResult {
 /** Thrown only when the provider explicitly does not recognize a polled job id (HTTP 404/410). */
 class UnknownRemoteJobError extends Error {}
 
-/**
- * Deadline expiry after a window of SUCCESSFUL (authenticated, 200) polls —
- * distinct from transient RetryableSttError failures so the resume path can
- * treat it as proof the token currently works.
- */
-class PollDeadlineError extends RetryableSttError {}
+
 
 /**
  * Durable async-job state (issue #61 review): when a remote job outlives the

@@ -60,6 +60,16 @@ export class RetryableSttError extends Error {
         this.name = "RetryableSttError";
     }
 }
+/**
+ * Deadline expiry after a window of SUCCESSFUL (authenticated, 200) polls —
+ * distinct from transient RetryableSttError failures so remote-stt's resume
+ * path can treat it as proof the token currently works. Defined here beside
+ * its parent: extending across the stt ↔ remote-stt circular import would
+ * run at module-evaluation time against an uninitialized binding and crash
+ * consumers that load the plugin entry (openclaw plugins build --check).
+ */
+export class PollDeadlineError extends RetryableSttError {
+}
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
 export function isRetryableHttpStatus(status) {
     return RETRYABLE_HTTP_STATUSES.has(status) || status >= 500;

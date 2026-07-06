@@ -47,6 +47,16 @@ export declare function utterancesToSegments(utterances: Array<{
 export declare class RetryableSttError extends Error {
     constructor(message: string);
 }
+/**
+ * Deadline expiry after a window of SUCCESSFUL (authenticated, 200) polls —
+ * distinct from transient RetryableSttError failures so remote-stt's resume
+ * path can treat it as proof the token currently works. Defined here beside
+ * its parent: extending across the stt ↔ remote-stt circular import would
+ * run at module-evaluation time against an uninitialized binding and crash
+ * consumers that load the plugin entry (openclaw plugins build --check).
+ */
+export declare class PollDeadlineError extends RetryableSttError {
+}
 export declare function isRetryableHttpStatus(status: number): boolean;
 export declare function sttAvailability(config: ResolvedConfig): {
     ok: boolean;

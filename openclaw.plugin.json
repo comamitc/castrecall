@@ -32,13 +32,9 @@
           {
             "type": "string",
             "const": "deepgram"
-          },
-          {
-            "type": "string",
-            "const": "remote-stt"
           }
         ],
-        "description": "Speech-to-text provider when sttEnabled is true (default assemblyai). remote-stt calls a self-hosted service via CASTRECALL_REMOTE_STT_BASE_URL/CASTRECALL_REMOTE_STT_TOKEN."
+        "description": "Speech-to-text provider when sttEnabled is true (default assemblyai)."
       },
       "exportDir": {
         "type": "string",
