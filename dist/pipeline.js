@@ -145,7 +145,7 @@ export async function runPipeline(config, params = {}, deps = {}) {
             if (lockLost)
                 break;
             try {
-                const result = (await fetchTranscript(config, { episodeUuid: episode.uuid }, deps));
+                const result = (await fetchTranscript(config, { episodeUuid: episode.uuid, scheduled: true }, deps));
                 if (result.status === "stored" || result.status === "already-stored") {
                     stored += 1;
                 }

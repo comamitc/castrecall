@@ -930,7 +930,7 @@ describe("tools", () => {
     expect(state.episodes["ep-1"].transcriptRecheck).toBeUndefined();
   });
 
-  it("keeps polling Taddy availability after the STT retry budget is exhausted, without re-billing STT", async () => {
+  it("keeps polling Taddy availability after the STT retry budget is exhausted, without re-billing STT on scheduled runs", async () => {
     const storage = new Storage(dir);
     await storage.init();
     await storage.recordListens([
@@ -973,7 +973,7 @@ describe("tools", () => {
     for (let i = 0; i < TRANSCRIPT_RETRY_MAX_ATTEMPTS; i++) {
       last = await fetchTranscript(
         bothConfig,
-        { episodeUuid: "ep-1" },
+        { episodeUuid: "ep-1", scheduled: true },
         { fetchImpl: pendingFetchImpl, env: { PATH: "" } },
       );
     }
@@ -990,11 +990,11 @@ describe("tools", () => {
       TRANSCRIPT_RETRY_MAX_ATTEMPTS,
     );
 
-    // A further call must not re-bill STT: its retry budget stays permanently
+    // A further scheduled call must not re-bill STT: its retry budget stays
     // spent for this episode once exhausted.
     await fetchTranscript(
       bothConfig,
-      { episodeUuid: "ep-1" },
+      { episodeUuid: "ep-1", scheduled: true },
       { fetchImpl: pendingFetchImpl, env: { PATH: "" } },
     );
     expect(sttCalls).toBe(TRANSCRIPT_RETRY_MAX_ATTEMPTS);
@@ -1016,12 +1016,121 @@ describe("tools", () => {
     }) as typeof fetch;
     const final = (await fetchTranscript(
       bothConfig,
-      { episodeUuid: "ep-1" },
+      { episodeUuid: "ep-1", scheduled: true },
       { fetchImpl: hitFetchImpl, env: { PATH: "" } },
     )) as any;
     expect(final.status).toBe("stored");
     const finalState = await new Storage(dir).loadState();
     expect(finalState.episodes["ep-1"].transcriptStatus).toBe("stored");
+  });
+
+  it("manual fetch_transcript re-attempts STT after the retry budget is exhausted", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const bothConfig = config({
+      TADDY_API_KEY: "key",
+      TADDY_USER_ID: "user",
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "deepgram",
+      DEEPGRAM_API_KEY: "dg-key",
+    });
+    let sttCalls = 0;
+    const pendingFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "PROCESSING" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith("https://api.deepgram.com/")) {
+        sttCalls += 1;
+        return new Response("bad gateway", { status: 502 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    // Exhaust the STT retry budget through scheduled runs.
+    for (let i = 0; i < TRANSCRIPT_RETRY_MAX_ATTEMPTS; i++) {
+      await fetchTranscript(
+        bothConfig,
+        { episodeUuid: "ep-1", scheduled: true },
+        { fetchImpl: pendingFetchImpl, env: { PATH: "" } },
+      );
+    }
+    expect(sttCalls).toBe(TRANSCRIPT_RETRY_MAX_ATTEMPTS);
+    const exhausted = await new Storage(dir).loadState();
+    expect(exhausted.episodes["ep-1"].transcriptRetry?.consecutiveFailures).toBe(
+      TRANSCRIPT_RETRY_MAX_ATTEMPTS,
+    );
+
+    // The skipped-STT rung tells the operator to run castrecall_fetch_transcript
+    // manually — so a manual (non-scheduled) call MUST actually attempt STT
+    // again, not silently skip it based on the persisted spent budget.
+    const manual = (await fetchTranscript(
+      bothConfig,
+      { episodeUuid: "ep-1" },
+      { fetchImpl: pendingFetchImpl, env: { PATH: "" } },
+    )) as any;
+    expect(sttCalls).toBe(TRANSCRIPT_RETRY_MAX_ATTEMPTS + 1);
+    expect(manual.status).toBe("no-transcript");
+    // The failed manual attempt keeps the budget spent for scheduled runs.
+    const afterManual = await new Storage(dir).loadState();
+    expect(
+      afterManual.episodes["ep-1"].transcriptRetry?.consecutiveFailures ?? 0,
+    ).toBeGreaterThanOrEqual(TRANSCRIPT_RETRY_MAX_ATTEMPTS);
+    expect(afterManual.episodes["ep-1"].transcriptStatus).toBe("none");
+
+    // A manual attempt where STT succeeds stores the transcript.
+    const sttHitFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "PROCESSING" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith("https://cdn.example.com/")) {
+        return new Response(new ArrayBuffer(8), { status: 200 });
+      }
+      if (url.startsWith("https://api.deepgram.com/")) {
+        return new Response(
+          JSON.stringify({
+            results: {
+              channels: [{ alternatives: [{ transcript: "manual retry transcript" }] }],
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const recovered = (await fetchTranscript(
+      bothConfig,
+      { episodeUuid: "ep-1" },
+      { fetchImpl: sttHitFetchImpl, env: { PATH: "" } },
+    )) as any;
+    expect(recovered.status).toBe("stored");
+    const recoveredState = await new Storage(dir).loadState();
+    expect(recoveredState.episodes["ep-1"].transcriptStatus).toBe("stored");
+    expect(recoveredState.episodes["ep-1"].transcriptRetry).toBeUndefined();
   });
 
   it("fetch_transcript stores RSS transcripts without returning transcript text", async () => {

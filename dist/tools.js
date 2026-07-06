@@ -314,10 +314,14 @@ export async function fetchTranscript(config, params, deps = {}) {
     }
     const now = deps.now ?? (() => new Date());
     // Once a prior attempt exhausted the STT retry budget for this episode,
-    // never bill it again — the ladder is told to skip straight past that
-    // rung so a still-recheckable rung (e.g. Taddy) can keep being polled
-    // without re-attempting STT on every call.
-    const sttRetryBudgetSpent = (record.transcriptRetry?.consecutiveFailures ?? 0) >= TRANSCRIPT_RETRY_MAX_ATTEMPTS;
+    // scheduled runs never bill it again — the ladder is told to skip straight
+    // past that rung so a still-recheckable rung (e.g. Taddy) can keep being
+    // polled without re-attempting STT on every tick. A direct
+    // castrecall_fetch_transcript call is explicit operator intent to spend
+    // money, so it is never gated — that is the manual recovery path the
+    // skipped-rung detail advertises.
+    const sttRetryBudgetSpent = params.scheduled === true &&
+        (record.transcriptRetry?.consecutiveFailures ?? 0) >= TRANSCRIPT_RETRY_MAX_ATTEMPTS;
     const result = await runTranscriptLadder(config, record, {
         fetchImpl: deps.fetchImpl,
         env: deps.env,
@@ -350,9 +354,9 @@ export async function fetchTranscript(config, params, deps = {}) {
             // declared). Poll again on a longer, uncapped-by-attempt-count horizon
             // rather than treating the first miss as terminal. If STT's own retry
             // budget just ran out (sttExhausted), freeze that state instead of
-            // discarding it — `skipStt` above reads it back so STT stays
-            // permanently skipped for this episode while this cheaper rung keeps
-            // being polled.
+            // discarding it — `skipStt` above reads it back so scheduled runs keep
+            // skipping STT for this episode while this cheaper rung keeps being
+            // polled (a manual fetch_transcript call still re-attempts STT).
             const firstDeferredAt = record.transcriptRecheck?.firstDeferredAt ?? now().toISOString();
             const ageMs = now().getTime() - Date.parse(firstDeferredAt);
             if (ageMs > TRANSCRIPT_RECHECK_MAX_AGE_MS) {
