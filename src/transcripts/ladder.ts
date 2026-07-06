@@ -63,6 +63,7 @@ export async function runTranscriptLadder(
       fetchImpl,
       {},
       config.listenNotes.apiKey,
+      { title: record.title, url: record.audioUrl, uuid: record.uuid },
     );
     if (!feedUrl) {
       rungs.push({

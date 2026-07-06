@@ -23,7 +23,7 @@ export async function runTranscriptLadder(config, record, options = {}) {
     let feedUrl;
     // Rung 1: RSS <podcast:transcript>
     try {
-        feedUrl = await resolveFeedUrl(record.podcastUuid, record.podcastTitle, fetchImpl, {}, config.listenNotes.apiKey);
+        feedUrl = await resolveFeedUrl(record.podcastUuid, record.podcastTitle, fetchImpl, {}, config.listenNotes.apiKey, { title: record.title, url: record.audioUrl, uuid: record.uuid });
         if (!feedUrl) {
             rungs.push({
                 rung: "rss",

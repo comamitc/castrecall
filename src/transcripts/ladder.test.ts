@@ -17,8 +17,14 @@ const RECORD: ListenRecord = {
   transcriptStatus: "none",
 };
 
-const EMPTY_FEED_XML = `<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0"><channel><title>Example Show</title></channel></rss>`;
+// Carries the listened episode with a matching enclosure URL: Listen Notes
+// candidates are only accepted after strong episode verification, so the
+// candidate feed must actually contain this episode.
+const CANDIDATE_FEED_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0"><channel><title>Example Show</title>
+<item><title>Episode One</title><guid>ep-1</guid>
+<enclosure url="https://cdn.example.com/ep1.mp3" type="audio/mpeg"/></item>
+</channel></rss>`;
 
 function fetchImplWithListenNotes() {
   const calls = { listenNotes: 0 };
@@ -40,7 +46,7 @@ function fetchImplWithListenNotes() {
       );
     }
     if (url === "https://feeds.example.com/from-listennotes.xml") {
-      return new Response(EMPTY_FEED_XML, { status: 200 });
+      return new Response(CANDIDATE_FEED_XML, { status: 200 });
     }
     return new Response("nope", { status: 404 });
   }) as typeof fetch;

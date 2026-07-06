@@ -18,6 +18,8 @@ export type ResolvedFeedItem = {
     itemLink?: string;
     enclosureUrl?: string;
     transcripts: TranscriptLink[];
+    /** Which signal matched the listened episode — "title" is the weakest and never sufficient to *select* a feed. */
+    matchEvidence: "enclosure" | "guid" | "title";
 };
 /**
  * Resolve a Pocket Casts podcast UUID to its RSS feed URL.
@@ -27,7 +29,7 @@ export type ResolvedFeedItem = {
  * matched by podcast title. Optional last-resort fallback: Listen Notes'
  * podcast search, only used when a Listen Notes API key is supplied.
  */
-export declare function resolveFeedUrl(podcastUuid: string, podcastTitle: string, fetchImpl?: FetchLike, retry?: RetryOptions, listenNotesApiKey?: string): Promise<string | undefined>;
+export declare function resolveFeedUrl(podcastUuid: string, podcastTitle: string, fetchImpl?: FetchLike, retry?: RetryOptions, listenNotesApiKey?: string, episode?: Pick<PocketCastsEpisode, "title" | "url" | "uuid">): Promise<string | undefined>;
 /**
  * Fetch the feed and find the item matching the listened episode.
  * Matching order: enclosure URL, then GUID, then normalized title.
