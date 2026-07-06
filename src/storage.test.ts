@@ -171,7 +171,11 @@ describe("Storage", () => {
       provenance: {
         ...PROVENANCE,
         format: "vtt",
-        cleanup: { version: CLEANUP_VERSION, applied: cleaned.applied },
+        cleanup: {
+          version: CLEANUP_VERSION,
+          applied: cleaned.applied,
+          rawTextHash: createHash("sha256").update(normalized.text, "utf8").digest("hex"),
+        },
       },
     });
     expect(await storage.readSegments("ep-1")).toBeUndefined();
@@ -180,6 +184,39 @@ describe("Storage", () => {
     expect(derived).toEqual([
       expect.objectContaining({ startSeconds: 0, endSeconds: 2, text: "A short transcript ,body." }),
     ]);
+  });
+
+  it("refuses cleanup-equivalent segment recovery when the raw artifact drifted to different pre-cleanup text (issue #45 review 2)", async () => {
+    const raw = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n- Hello world.";
+    const normalized = normalizeTranscript(raw, "vtt");
+    const cleaned = cleanTranscript(normalized.text);
+    expect(cleaned).toEqual({ text: "Hello world.", applied: ["strip-caption-markers"] });
+    const stored = await storage.storeTranscript("ep-1", {
+      raw,
+      ext: "vtt",
+      text: cleaned.text,
+      provenance: {
+        ...PROVENANCE,
+        format: "vtt",
+        cleanup: {
+          version: CLEANUP_VERSION,
+          applied: cleaned.applied,
+          rawTextHash: createHash("sha256").update(normalized.text, "utf8").digest("hex"),
+        },
+      },
+    });
+
+    // raw.vtt is later overwritten with different pre-cleanup content that
+    // happens to run through the *same* cleanup step names and clean to the
+    // same output text — but it is not the pre-cleanup text the stored
+    // `applied` steps actually ran against, so the rawTextHash won't match.
+    const driftedRaw = "WEBVTT\n\n00:00:05.000 --> 00:00:09.000\n>> Hello world.";
+    const driftedNormalized = normalizeTranscript(driftedRaw, "vtt");
+    expect(driftedNormalized.text).not.toBe(normalized.text);
+    expect(cleanTranscript(driftedNormalized.text)).toEqual(cleaned);
+    await fs.writeFile(stored.rawPath, driftedRaw, "utf8");
+
+    expect(await storage.deriveSegmentsFromRaw("ep-1", cleaned.text)).toBeUndefined();
   });
 
   it("refuses to derive segments from cleanup-equivalent raw drift when cleanup never ran (issue #45 review)", async () => {

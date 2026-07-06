@@ -1481,8 +1481,12 @@ describe("tools", () => {
       );
       expect(typeof provenance?.cleanup?.version).toBe("number");
 
-      // The pre-cleanup text is always recoverable by re-normalizing raw.<ext>.
+      // The pre-cleanup text is always recoverable by re-normalizing raw.<ext>,
+      // and rawTextHash is the identity proof that recovery ties back to it.
       expect(normalizeTranscript(raw, "txt").text).toBe(CAPTION_ARTIFACT_TEXT);
+      expect(provenance?.cleanup?.rawTextHash).toBe(
+        createHash("sha256").update(CAPTION_ARTIFACT_TEXT, "utf8").digest("hex"),
+      );
     });
 
     it("stores uncleaned text with provenance.cleanup absent when CASTRECALL_TRANSCRIPT_CLEANUP=0", async () => {
@@ -1511,7 +1515,11 @@ describe("tools", () => {
       expect(result.status).toBe("stored");
 
       const provenance = await storage.readProvenance("ep-1");
-      expect(provenance?.cleanup).toEqual({ version: expect.any(Number), applied: [] });
+      expect(provenance?.cleanup).toEqual({
+        version: expect.any(Number),
+        applied: [],
+        rawTextHash: expect.any(String),
+      });
     });
   });
 

@@ -538,7 +538,15 @@ export async function fetchTranscript(config, params, deps = {}) {
         provider: result.transcript.provider,
         generation: result.transcript.generation,
         quality,
-        ...(cleaned ? { cleanup: { version: CLEANUP_VERSION, applied: cleaned.applied } } : {}),
+        ...(cleaned
+            ? {
+                cleanup: {
+                    version: CLEANUP_VERSION,
+                    applied: cleaned.applied,
+                    rawTextHash: createHash("sha256").update(result.transcript.text, "utf8").digest("hex"),
+                },
+            }
+            : {}),
         fetchedAt: now().toISOString(),
         privacyClass: "private-source",
     };
