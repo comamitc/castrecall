@@ -417,6 +417,64 @@ describe("fetchPodchaserTranscript", () => {
     });
   });
 
+  it("never transmits a tokenized private feed URL to Podchaser (query, userinfo, or fragment)", async () => {
+    const tokenizedUrls = [
+      "https://feeds.example.com/show.xml?auth=SECRET-SUBSCRIBER-TOKEN",
+      "https://user:SECRET-SUBSCRIBER-TOKEN@feeds.example.com/show.xml",
+      "https://feeds.example.com/show.xml#SECRET-SUBSCRIBER-TOKEN",
+    ];
+    for (const tokenizedFeedUrl of tokenizedUrls) {
+      const requestBodies: string[] = [];
+      const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url === GRAPHQL_URL) {
+          requestBodies.push(String(init?.body));
+          return notFoundResponse();
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      await fetchPodchaserTranscript(
+        config(),
+        { guid: "guid-1", title: "Episode One", feedUrl: tokenizedFeedUrl, podcastTitle: PODCAST_TITLE },
+        fetchImpl,
+        RETRY,
+      );
+
+      expect(requestBodies.length).toBeGreaterThan(0);
+      for (const body of requestBodies) {
+        expect(body).not.toContain("SECRET-SUBSCRIBER-TOKEN");
+        expect(body).not.toContain("feeds.example.com");
+      }
+      // The GUID identifier degrades to unscoped; local validation still gates the match.
+      const guidVariables = JSON.parse(requestBodies[0]).variables;
+      expect(guidVariables).toEqual({ identifier: { id: "guid-1", type: "GUID" } });
+    }
+  });
+
+  it("a tokenized feed URL still scopes matching locally: wrong-podcast candidates stay misses", async () => {
+    const tokenizedFeedUrl = "https://feeds.example.com/show.xml?auth=SECRET-SUBSCRIBER-TOKEN";
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === GRAPHQL_URL) {
+        // Unscoped lookup returns a same-guid candidate from a DIFFERENT feed.
+        return episodeByGuidResponse(
+          [{ url: TRANSCRIPT_URL, transcriptType: "raw_JSON" }],
+          { title: "Imposter Show", rssUrl: "https://feeds.other.example/imposter.xml" },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await fetchPodchaserTranscript(
+      config(),
+      { guid: "guid-1", title: "Episode One", feedUrl: tokenizedFeedUrl, podcastTitle: PODCAST_TITLE },
+      fetchImpl,
+      RETRY,
+    );
+    expect(result).toBeUndefined();
+  });
+
   it("returns undefined (miss) when there is no feed URL or podcast title to scope the match against", async () => {
     const fetchImpl = (async (input: RequestInfo | URL) => {
       const url = String(input);

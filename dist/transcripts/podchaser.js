@@ -71,6 +71,27 @@ function matchesExpectedPodcast(candidatePodcast, expected) {
     }
     return false;
 }
+/**
+ * Private/paid podcast feeds commonly embed a subscriber token in the URL's
+ * userinfo, query string, or fragment. Those URLs must never cross the
+ * Podchaser trust boundary (request bodies land in third-party logs), so the
+ * scoped GUID lookup only shares a feed URL with none of those parts; unsafe
+ * URLs still scope the match locally via matchesExpectedPodcast, which never
+ * transmits anything. Path-embedded tokens are indistinguishable from normal
+ * paths and are accepted — this guard covers every detectable token position.
+ */
+function isSafeToShareFeedUrl(url) {
+    let parsed;
+    try {
+        parsed = new URL(url);
+    }
+    catch {
+        return false;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
+        return false;
+    return !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
+}
 function normalizeUrl(url) {
     return url.trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/\/+$/, "");
 }
@@ -86,7 +107,7 @@ async function lookupByGuid(config, guid, feedUrl, fetchImpl, retry) {
     }
   }`;
     const identifier = { id: guid, type: "GUID" };
-    if (feedUrl) {
+    if (feedUrl && isSafeToShareFeedUrl(feedUrl)) {
         identifier.podcast = { id: feedUrl, type: "RSS" };
     }
     const result = await podchaserRequest(config, query, { identifier }, fetchImpl, retry);
