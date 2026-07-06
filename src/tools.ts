@@ -716,12 +716,20 @@ export async function fetchTranscript(
     : undefined;
   // Segments are corrected the same way so stored/exported timed text never
   // shows a mangled variant the top-level transcript.txt has already fixed.
+  // Each segment is cleaned first (mirroring the top-level cleaned/corrected
+  // pass above) since the glossary's whole-token matching depends on the same
+  // token-boundary normalization cleanup provides.
   const correctedSegments =
     compiledGlossary && result.transcript.segments
-      ? result.transcript.segments.map((segment) => ({
-          ...segment,
-          text: applyGlossary(segment.text, compiledGlossary).text,
-        }))
+      ? result.transcript.segments.map((segment) => {
+          const segmentText = config.transcriptCleanup.enabled
+            ? cleanTranscript(segment.text).text
+            : segment.text;
+          return {
+            ...segment,
+            text: applyGlossary(segmentText, compiledGlossary).text,
+          };
+        })
       : result.transcript.segments;
   const provenance: Provenance = {
     platform: "pocketcasts",

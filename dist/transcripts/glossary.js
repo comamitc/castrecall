@@ -85,62 +85,49 @@ export function compileGlossary(entries) {
             return b.variant.length - a.variant.length;
         return a.variant.localeCompare(b.variant);
     });
-    const insensitive = all.filter((v) => !v.matchCase);
-    const sensitive = all.filter((v) => v.matchCase);
-    const byMatch = new Map();
-    for (const v of all) {
-        byMatch.set(v.matchCase ? v.variant : v.variant.toLowerCase(), v);
-    }
-    const toPattern = (variants, flags) => {
-        if (variants.length === 0)
-            return undefined;
-        const alternation = variants.map((v) => escapeRegExp(v.variant)).join("|");
-        return new RegExp(`(?<![\\p{L}\\p{N}])(?:${alternation})(?![\\p{L}\\p{N}])`, flags);
-    };
-    return {
-        insensitivePattern: toPattern(insensitive, "giu"),
-        sensitivePattern: toPattern(sensitive, "gu"),
-        byMatch,
-    };
+    const variants = all.map((v) => ({
+        ...v,
+        pattern: new RegExp(`(?<![\\p{L}\\p{N}])${escapeRegExp(v.variant)}(?![\\p{L}\\p{N}])`, v.matchCase ? "gu" : "giu"),
+    }));
+    return { variants };
 }
+/**
+ * Each variant is scanned independently (its own pattern, its own matchAll
+ * pass) rather than via one combined alternation. A combined pattern's
+ * single non-overlapping scan would consume "new york" and never even
+ * observe "york city" starting inside it — collecting per-variant is what
+ * lets resolveOverlaps see every shifted-overlap candidate, not just the
+ * ones that happen to start where a prior match left off.
+ */
 function collectSpans(text, compiled) {
     const spans = [];
-    const patterns = [compiled.insensitivePattern, compiled.sensitivePattern];
-    for (const pattern of patterns) {
-        if (!pattern)
-            continue;
-        pattern.lastIndex = 0;
-        for (const match of text.matchAll(pattern)) {
-            const matched = match[0];
-            const entry = compiled.byMatch.get(compiled.byMatch.has(matched) ? matched : matched.toLowerCase());
-            if (!entry)
-                continue;
+    for (const v of compiled.variants) {
+        for (const match of text.matchAll(v.pattern)) {
             spans.push({
                 start: match.index,
-                end: match.index + matched.length,
-                canonical: entry.canonical,
-                variant: entry.variant,
+                end: match.index + match[0].length,
+                canonical: v.canonical,
+                variant: v.variant,
             });
         }
     }
     return spans;
 }
-/** Sort by start ascending, then by span length descending, then greedily accept non-overlapping spans (longest-wins on conflict). */
+/** Sort by span length descending (ties broken by start ascending) so the longest match is always considered first, then greedily accept spans that don't overlap an already-accepted one — genuine longest-wins regardless of start position. */
 function resolveOverlaps(spans) {
     const sorted = [...spans].sort((a, b) => {
-        if (a.start !== b.start)
-            return a.start - b.start;
-        return b.end - b.start - (a.end - a.start);
+        const lengthDiff = b.end - b.start - (a.end - a.start);
+        if (lengthDiff !== 0)
+            return lengthDiff;
+        return a.start - b.start;
     });
     const accepted = [];
-    let lastEnd = -1;
     for (const span of sorted) {
-        if (span.start < lastEnd)
+        if (accepted.some((a) => span.start < a.end && a.start < span.end))
             continue;
         accepted.push(span);
-        lastEnd = span.end;
     }
-    return accepted;
+    return accepted.sort((a, b) => a.start - b.start);
 }
 /**
  * Applies compiled glossary corrections to `text` in a single pass over the

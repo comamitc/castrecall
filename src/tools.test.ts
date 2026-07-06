@@ -1713,6 +1713,61 @@ describe("tools", () => {
         expect.objectContaining({ text: "I really love ChatGPT these days." }),
       ]);
     });
+
+    it("corrects a segment whose glossary variant only becomes a whole-token match after cleanup normalization", async () => {
+      const storage = await seedEpisode();
+      const glossaryFile = await writeGlossary([{ canonical: "ChatGPT", variants: ["chat gpt"] }]);
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.includes("export_feed_urls")) {
+          return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+            status: 200,
+          });
+        }
+        if (url === "https://example.com/feed.xml") {
+          return new Response(
+            `<?xml version="1.0"?>
+            <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>ep-1</guid>
+                  <enclosure url="https://cdn.example.com/ep1.mp3" />
+                  <podcast:transcript url="https://cdn.example.com/ep1.vtt" type="text/vtt" />
+                </item>
+              </channel>
+            </rss>`,
+            { status: 200 },
+          );
+        }
+        if (url === "https://cdn.example.com/ep1.vtt") {
+          // The double space between "chat" and "gpt" survives into segment.text
+          // (only segmentsToText's join collapses whitespace for the top-level
+          // text), so the "chat gpt" variant's single-space literal match only
+          // succeeds once cleanup's collapse-whitespace step normalizes it.
+          return new Response(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nI really love chat  gpt these days.",
+            { status: 200, headers: { "content-type": "text/vtt" } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      const result = (await fetchTranscript(
+        config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+        { episodeUuid: "ep-1" },
+        { fetchImpl },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe("I really love ChatGPT these days.");
+
+      const segments = await storage.readSegments("ep-1");
+      expect(segments).toEqual([
+        expect.objectContaining({ text: "I really love ChatGPT these days." }),
+      ]);
+    });
   });
 
   describe("fetch_transcript repetition-loop quarantine (issue #42)", () => {

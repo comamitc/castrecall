@@ -35,14 +35,12 @@ type CompiledVariant = {
     variant: string;
     canonical: string;
     matchCase: boolean;
+    /** Single-variant word-boundary pattern, scanned independently so shifted overlaps with other variants are never hidden by matchAll's own non-overlapping scan. */
+    pattern: RegExp;
 };
 export type CompiledGlossary = {
-    /** Combined case-insensitive pattern, or undefined when there are no case-insensitive variants. */
-    insensitivePattern?: RegExp;
-    /** Combined case-sensitive pattern, or undefined when there are no matchCase variants. */
-    sensitivePattern?: RegExp;
-    /** Lookup from the matched literal variant text (lowercased for insensitive entries) to its entry. */
-    byMatch: Map<string, CompiledVariant>;
+    /** Sorted longest-first (ties broken by variant string); each variant is scanned with its own pattern. */
+    variants: CompiledVariant[];
 };
 export type GlossaryCorrection = {
     canonical: string;
