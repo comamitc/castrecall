@@ -2,7 +2,7 @@
   "id": "castrecall",
   "name": "CastRecall",
   "description": "Turn podcast listening into retrievable memory: sync Pocket Casts listen history (read-only), fetch or generate episode transcripts, store them privately with provenance, and create approval-gated review candidates. Never writes to durable memory itself.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "configSchema": {
     "type": "object",
     "properties": {
@@ -27,6 +27,10 @@
           {
             "type": "string",
             "const": "openai"
+          },
+          {
+            "type": "string",
+            "const": "deepgram"
           }
         ],
         "description": "Speech-to-text provider when sttEnabled is true (default assemblyai)."

@@ -1,4 +1,4 @@
-export type SttProvider = "assemblyai" | "openai";
+export type SttProvider = "assemblyai" | "openai" | "deepgram";
 /** Non-secret settings accepted via the OpenClaw plugin config schema. */
 export type PluginSettings = {
     dataDir?: string;
@@ -33,6 +33,8 @@ export type ResolvedConfig = {
         assemblyaiApiKey?: string;
         openaiApiKey?: string;
         openaiModel: string;
+        deepgramApiKey?: string;
+        deepgramModel: string;
     };
     secrets: {
         /** CASTRECALL_DISABLE_KEYCHAIN=1 disables the durable keychain sink only. */

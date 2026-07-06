@@ -6,12 +6,15 @@
  * Providers:
  * - AssemblyAI (default): accepts a remote audio URL directly — no download needed.
  * - OpenAI: requires downloading the audio and uploading it (25 MB API limit).
+ * - Deepgram: accepts a remote audio URL directly, like AssemblyAI, but its
+ *   prerecorded endpoint responds synchronously (no polling) with diarized
+ *   utterances.
  */
 import { type ResolvedConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
 export type SttResult = {
     text: string;
-    provider: "assemblyai" | "openai";
+    provider: "assemblyai" | "openai" | "deepgram";
     model?: string;
 };
 export declare function sttAvailability(config: ResolvedConfig): {

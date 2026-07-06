@@ -6,10 +6,14 @@
  * Providers:
  * - AssemblyAI (default): accepts a remote audio URL directly — no download needed.
  * - OpenAI: requires downloading the audio and uploading it (25 MB API limit).
+ * - Deepgram: accepts a remote audio URL directly, like AssemblyAI, but its
+ *   prerecorded endpoint responds synchronously (no polling) with diarized
+ *   utterances.
  */
 import { CastrecallSetupError } from "../config.js";
 const OPENAI_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2";
+const DEEPGRAM_BASE = "https://api.deepgram.com/v1/listen";
 const POLL_INTERVAL_MS = 5_000;
 const POLL_TIMEOUT_MS = 15 * 60_000;
 export function sttAvailability(config) {
@@ -34,6 +38,13 @@ export function sttAvailability(config) {
                 "Set it, or switch with CASTRECALL_STT_PROVIDER=assemblyai.",
         };
     }
+    if (config.stt.provider === "deepgram" && !config.stt.deepgramApiKey) {
+        return {
+            ok: false,
+            reason: "STT provider is 'deepgram' but DEEPGRAM_API_KEY is not set. " +
+                "Get a key at https://deepgram.com or switch with CASTRECALL_STT_PROVIDER=assemblyai.",
+        };
+    }
     return { ok: true };
 }
 export async function transcribeAudio(config, audioUrl, fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms))) {
@@ -42,9 +53,13 @@ export async function transcribeAudio(config, audioUrl, fetchImpl = fetch, sleep
         throw new CastrecallSetupError(availability.reason ?? "STT unavailable.");
     if (!audioUrl)
         throw new Error("Episode has no audio URL; cannot transcribe.");
-    return config.stt.provider === "assemblyai"
-        ? transcribeWithAssemblyAi(config, audioUrl, fetchImpl, sleep)
-        : transcribeWithOpenAi(config, audioUrl, fetchImpl);
+    if (config.stt.provider === "assemblyai") {
+        return transcribeWithAssemblyAi(config, audioUrl, fetchImpl, sleep);
+    }
+    if (config.stt.provider === "deepgram") {
+        return transcribeWithDeepgram(config, audioUrl, fetchImpl);
+    }
+    return transcribeWithOpenAi(config, audioUrl, fetchImpl);
 }
 async function transcribeWithAssemblyAi(config, audioUrl, fetchImpl, sleep) {
     const headers = {
@@ -91,6 +106,34 @@ async function transcribeWithAssemblyAi(config, audioUrl, fetchImpl, sleep) {
     }
     throw new Error(`AssemblyAI transcription did not complete within ${POLL_TIMEOUT_MS / 60_000} minutes; ` +
         "try again later — the job may still finish on their side.");
+}
+async function transcribeWithDeepgram(config, audioUrl, fetchImpl) {
+    const url = `${DEEPGRAM_BASE}?model=${encodeURIComponent(config.stt.deepgramModel)}` +
+        "&smart_format=true&punctuate=true&diarize=true&utterances=true";
+    const response = await fetchImpl(url, {
+        method: "POST",
+        headers: {
+            authorization: `Token ${config.stt.deepgramApiKey ?? ""}`,
+            "content-type": "application/json",
+        },
+        body: JSON.stringify({ url: audioUrl }),
+    });
+    if (response.status === 401) {
+        throw new CastrecallSetupError("Deepgram rejected DEEPGRAM_API_KEY.");
+    }
+    if (!response.ok) {
+        throw new Error(`Deepgram transcription failed with HTTP ${response.status}. Long episodes can time out on ` +
+            "the prerecorded endpoint; retry later.");
+    }
+    const body = (await response.json());
+    const text = body.results?.utterances?.length
+        ? body.results.utterances
+            .map((u) => `Speaker ${u.speaker ?? 0}: ${u.transcript ?? ""}`)
+            .join("\n")
+        : (body.results?.channels?.[0]?.alternatives?.[0]?.transcript ?? "");
+    if (!text.trim())
+        throw new Error("Deepgram completed but returned empty text.");
+    return { text: text.trim(), provider: "deepgram", model: config.stt.deepgramModel };
 }
 async function transcribeWithOpenAi(config, audioUrl, fetchImpl) {
     const audioResponse = await fetchImpl(audioUrl);

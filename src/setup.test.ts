@@ -179,6 +179,19 @@ describe("buildSetupPlan", () => {
     expect(on.find((s) => s.id === "providers.stt")!.status).toBe("configured");
   });
 
+  it("flips the stt step to configured for deepgram once enabled and keyed", () => {
+    const step = plan(
+      config({
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "deepgram",
+        DEEPGRAM_API_KEY: "key",
+      }),
+    ).find((s) => s.id === "providers.stt")!;
+    expect(step.status).toBe("configured");
+    expect(step.envVars).toContain("DEEPGRAM_API_KEY");
+    expect(step.envVars).toContain("CASTRECALL_DEEPGRAM_STT_MODEL");
+  });
+
   it("surfaces a detected gbrain inbox suggestion when export is unset", () => {
     const steps = plan(config({}), { gbrain: WITH_GBRAIN });
     const exportStep = steps.find((s) => s.id === "export")!;
