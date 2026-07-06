@@ -11,6 +11,7 @@ export type PluginSettings = {
   sttProvider?: SttProvider;
   exportDir?: string;
   notesDir?: string;
+  glossaryFile?: string;
 };
 
 /**
@@ -91,6 +92,10 @@ export type ResolvedConfig = {
     /** Deterministic punctuation/caption-artifact/whitespace cleanup pass (issue #45), on by default. */
     enabled: boolean;
   };
+  /** Optional proper-noun correction glossary (issue #46) — off until configured. */
+  glossary: {
+    file?: string;
+  };
   /** Threshold for what counts as "meaningfully listened" before sync ingests an episode — see issue #24. */
   listenFilter: {
     /** Minimum playedUpTo/duration ratio to accept a partial listen. */
@@ -154,6 +159,7 @@ export function resolveConfig(
 
   const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
   const notesDir = nonEmpty(env.CASTRECALL_NOTES_DIR) ?? nonEmpty(settings.notesDir);
+  const glossaryFile = nonEmpty(env.CASTRECALL_GLOSSARY_FILE) ?? nonEmpty(settings.glossaryFile);
 
   const envMinRatio = Number.parseFloat(env.CASTRECALL_MIN_LISTEN_RATIO ?? "");
   const minRatio =
@@ -220,6 +226,9 @@ export function resolveConfig(
     },
     transcriptCleanup: {
       enabled: envFlag(env.CASTRECALL_TRANSCRIPT_CLEANUP) ?? true,
+    },
+    glossary: {
+      file: glossaryFile,
     },
     listenFilter: {
       minRatio,

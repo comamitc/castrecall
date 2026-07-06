@@ -7,6 +7,7 @@ export type PluginSettings = {
     sttProvider?: SttProvider;
     exportDir?: string;
     notesDir?: string;
+    glossaryFile?: string;
 };
 /**
  * Loop-safe decoding options for local Whisper (issue #53), abstract over
@@ -84,6 +85,10 @@ export type ResolvedConfig = {
     transcriptCleanup: {
         /** Deterministic punctuation/caption-artifact/whitespace cleanup pass (issue #45), on by default. */
         enabled: boolean;
+    };
+    /** Optional proper-noun correction glossary (issue #46) — off until configured. */
+    glossary: {
+        file?: string;
     };
     /** Threshold for what counts as "meaningfully listened" before sync ingests an episode — see issue #24. */
     listenFilter: {

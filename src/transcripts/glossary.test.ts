@@ -1,0 +1,212 @@
+import { describe, expect, it } from "vitest";
+import { CastrecallSetupError } from "../config.js";
+import { applyGlossary, compileGlossary, parseGlossary } from "./glossary.js";
+
+describe("glossary", () => {
+  describe("safe corrections", () => {
+    it("corrects a single-word variant to its canonical", () => {
+      const compiled = compileGlossary([{ canonical: "ChatGPT", variants: ["chatgpt"] }]);
+      const result = applyGlossary("I love chatgpt so much", compiled);
+      expect(result.text).toBe("I love ChatGPT so much");
+      expect(result.corrections).toEqual([{ canonical: "ChatGPT", variant: "chatgpt", count: 1 }]);
+    });
+
+    it("corrects a multi-word variant to its canonical", () => {
+      const compiled = compileGlossary([{ canonical: "ChatGPT", variants: ["chat gpt"] }]);
+      const result = applyGlossary("I love chat gpt", compiled);
+      expect(result.text).toBe("I love ChatGPT");
+      expect(result.corrections).toEqual([{ canonical: "ChatGPT", variant: "chat gpt", count: 1 }]);
+    });
+
+    it("supports multiple variants per canonical", () => {
+      const compiled = compileGlossary([
+        { canonical: "ChatGPT", variants: ["chat gpt", "chatgpt", "chat g p t"] },
+      ]);
+      const result = applyGlossary("chat gpt and chatgpt and chat g p t", compiled);
+      expect(result.text).toBe("ChatGPT and ChatGPT and ChatGPT");
+    });
+
+    it("matches case-insensitively by default, producing canonical casing", () => {
+      const compiled = compileGlossary([{ canonical: "ChatGPT", variants: ["chatgpt"] }]);
+      const result = applyGlossary("CHATGPT and ChatGpt and chatGPT", compiled);
+      expect(result.text).toBe("ChatGPT and ChatGPT and ChatGPT");
+      expect(result.corrections).toEqual([{ canonical: "ChatGPT", variant: "chatgpt", count: 3 }]);
+    });
+
+    it("counts multiple occurrences of the same variant", () => {
+      const compiled = compileGlossary([{ canonical: "Astra", variants: ["astral"] }]);
+      const result = applyGlossary("astral won, then astral won again", compiled);
+      expect(result.corrections).toEqual([{ canonical: "Astra", variant: "astral", count: 2 }]);
+    });
+
+    it("longest variant wins on overlap within a single entry", () => {
+      const compiled = compileGlossary([
+        { canonical: "OpenAI Labs", variants: ["open ai", "open ai labs"] },
+      ]);
+      const result = applyGlossary("visit open ai labs today", compiled);
+      expect(result.text).toBe("visit OpenAI Labs today");
+    });
+  });
+
+  describe("near-misses that must NOT change", () => {
+    it("never corrects inside a longer word (prefix/substring)", () => {
+      const compiled = compileGlossary([{ canonical: "Dog", variants: ["cat"] }]);
+      const result = applyGlossary("category cats concatenate", compiled);
+      expect(result.text).toBe("category cats concatenate");
+      expect(result.corrections).toEqual([]);
+    });
+
+    it("never corrects a proper noun that is a prefix of another (Astral/Astralis)", () => {
+      const compiled = compileGlossary([{ canonical: "Astra", variants: ["Astral"] }]);
+      const result = applyGlossary("Astralis won the match", compiled);
+      expect(result.text).toBe("Astralis won the match");
+      expect(result.corrections).toEqual([]);
+    });
+
+    it("does not record a correction when the matched text is already the canonical", () => {
+      const compiled = compileGlossary([{ canonical: "ChatGPT", variants: ["ChatGPT"], matchCase: true }]);
+      const result = applyGlossary("I use ChatGPT daily", compiled);
+      expect(result.text).toBe("I use ChatGPT daily");
+      expect(result.corrections).toEqual([]);
+    });
+
+    it("respects punctuation-adjacent token boundaries", () => {
+      const compiled = compileGlossary([{ canonical: "ChatGPT", variants: ["chatgpt"] }]);
+      const result = applyGlossary("Have you tried chatgpt? Yes, chatgpt!", compiled);
+      expect(result.text).toBe("Have you tried ChatGPT? Yes, ChatGPT!");
+    });
+  });
+
+  describe("cross-entry overlap and cascade safety", () => {
+    it("resolves cross-entry overlap by global longest-match, regardless of entry order", () => {
+      const compiled = compileGlossary([
+        { canonical: "OpenAI", variants: ["open ai"] },
+        { canonical: "OpenAI Labs", variants: ["open ai labs"] },
+      ]);
+      const result = applyGlossary("visit open ai labs today", compiled);
+      expect(result.text).toBe("visit OpenAI Labs today");
+      expect(result.corrections).toEqual([
+        { canonical: "OpenAI Labs", variant: "open ai labs", count: 1 },
+      ]);
+    });
+
+    it("never cascades: a fired canonical is not re-scanned by another entry's variant", () => {
+      const compiled = compileGlossary([
+        { canonical: "OpenAI", variants: ["oai"] },
+        { canonical: "Foo", variants: ["OpenAI"] },
+      ]);
+      const result = applyGlossary("oai", compiled);
+      expect(result.text).toBe("OpenAI");
+      expect(result.corrections).toEqual([{ canonical: "OpenAI", variant: "oai", count: 1 }]);
+    });
+
+    it("throws CastrecallSetupError when one variant maps to two different canonicals", () => {
+      expect(() =>
+        compileGlossary([
+          { canonical: "ChatGPT", variants: ["gpt"] },
+          { canonical: "GPT-4", variants: ["gpt"] },
+        ]),
+      ).toThrow(CastrecallSetupError);
+    });
+
+    it("dedupes silently when the same variant maps to the same canonical twice", () => {
+      const compiled = compileGlossary([
+        { canonical: "ChatGPT", variants: ["chatgpt"] },
+        { canonical: "ChatGPT", variants: ["chatgpt"] },
+      ]);
+      const result = applyGlossary("I use chatgpt", compiled);
+      expect(result.text).toBe("I use ChatGPT");
+    });
+  });
+
+  describe("safety", () => {
+    it("escapes regex metacharacters in variants and matches them literally", () => {
+      const compiled = compileGlossary([
+        { canonical: "C++", variants: ["c++"] },
+        { canonical: "A.I.", variants: ["a.i."] },
+      ]);
+      const result = applyGlossary("I write c++ and study a.i. topics", compiled);
+      expect(result.text).toBe("I write C++ and study A.I. topics");
+    });
+
+    it("does not throw and is a no-op on an empty glossary", () => {
+      const compiled = compileGlossary([]);
+      const result = applyGlossary("nothing to change here", compiled);
+      expect(result.text).toBe("nothing to change here");
+      expect(result.corrections).toEqual([]);
+    });
+
+    it("is a no-op on empty text", () => {
+      const compiled = compileGlossary([{ canonical: "ChatGPT", variants: ["chatgpt"] }]);
+      const result = applyGlossary("", compiled);
+      expect(result.text).toBe("");
+      expect(result.corrections).toEqual([]);
+    });
+
+    it("matches Unicode word tokens correctly", () => {
+      const compiled = compileGlossary([{ canonical: "Café Müller", variants: ["cafe muller"] }]);
+      const result = applyGlossary("we visited cafe muller yesterday", compiled);
+      expect(result.text).toBe("we visited Café Müller yesterday");
+    });
+
+    it("matchCase: true only fires on exact case", () => {
+      const compiled = compileGlossary([{ canonical: "NASA", variants: ["NASA"], matchCase: true }]);
+      const result = applyGlossary("nasa launched a rocket, then NASA confirmed it", compiled);
+      expect(result.text).toBe("nasa launched a rocket, then NASA confirmed it");
+      expect(result.corrections).toEqual([]);
+    });
+  });
+
+  describe("invariants", () => {
+    it("is idempotent: re-applying to the corrected text is a no-op", () => {
+      const compiled = compileGlossary([{ canonical: "ChatGPT", variants: ["chat gpt", "chatgpt"] }]);
+      const first = applyGlossary("I use chat gpt and chatgpt", compiled);
+      const second = applyGlossary(first.text, compiled);
+      expect(second.text).toBe(first.text);
+      expect(second.corrections).toEqual([]);
+    });
+
+    it("is deterministic across repeated calls", () => {
+      const compiled = compileGlossary([
+        { canonical: "OpenAI", variants: ["open ai"] },
+        { canonical: "OpenAI Labs", variants: ["open ai labs"] },
+      ]);
+      const a = applyGlossary("visit open ai labs and open ai today", compiled);
+      const b = applyGlossary("visit open ai labs and open ai today", compiled);
+      expect(a).toEqual(b);
+    });
+  });
+
+  describe("parseGlossary", () => {
+    it("throws CastrecallSetupError when the input is not an object with a terms array", () => {
+      expect(() => parseGlossary(null)).toThrow(CastrecallSetupError);
+      expect(() => parseGlossary([])).toThrow(CastrecallSetupError);
+      expect(() => parseGlossary({})).toThrow(CastrecallSetupError);
+      expect(() => parseGlossary({ terms: "nope" })).toThrow(CastrecallSetupError);
+    });
+
+    it("throws CastrecallSetupError when canonical is missing or empty", () => {
+      expect(() => parseGlossary({ terms: [{ variants: ["x"] }] })).toThrow(CastrecallSetupError);
+      expect(() => parseGlossary({ terms: [{ canonical: "", variants: ["x"] }] })).toThrow(
+        CastrecallSetupError,
+      );
+    });
+
+    it("throws CastrecallSetupError when variants is missing, empty, or non-string", () => {
+      expect(() => parseGlossary({ terms: [{ canonical: "X" }] })).toThrow(CastrecallSetupError);
+      expect(() => parseGlossary({ terms: [{ canonical: "X", variants: [] }] })).toThrow(
+        CastrecallSetupError,
+      );
+      expect(() => parseGlossary({ terms: [{ canonical: "X", variants: [42] }] })).toThrow(
+        CastrecallSetupError,
+      );
+    });
+
+    it("accepts a well-formed glossary", () => {
+      const parsed = parseGlossary({
+        terms: [{ canonical: "ChatGPT", variants: ["chat gpt"], matchCase: false }],
+      });
+      expect(parsed.terms).toEqual([{ canonical: "ChatGPT", variants: ["chat gpt"], matchCase: false }]);
+    });
+  });
+});
