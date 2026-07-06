@@ -1,3 +1,5 @@
 # Lessons
 
-- No project-specific correction lessons recorded yet.
+- **Release-flow shell chains must `cd` back to the main checkout immediately after `gh pr merge`.** Twice (v0.13.0, v0.14.0) a single-command release chain kept its cwd inside the release worktree, so `git tag` tagged the branch commit instead of main's squash commit and the todo tracker commit pushed to the (deleted, then resurrected) release branch. Repair procedure that works: retag onto the squash commit + force-push tag (gh release re-attaches by tag name), cherry-pick the stray tracker commit onto main, delete the remote branch. Prevention: after the merge step, run every subsequent step with `git -C /home/mcomardo/dev/castrecall …` or an explicit `cd` — never rely on chain cwd.
+- **Long single-command release chains hide step failures.** `2>/dev/null` + `&&` chains silently swallow which step broke. Prefer explicit per-step verification (PR state, tag target, milestone state, branch existence) after the chain completes.
+- **Milestone numbers are stable; titles move.** After reassigning issues between milestones (track reorder), closing "the next milestone" by remembered number closes the wrong one — resolve the number from the title at close time.
