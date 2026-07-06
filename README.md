@@ -393,12 +393,25 @@ e.g. `["no-timestamps","low-source-confidence"]` — empty array when nothing
 was flagged). See `docs/ARCHITECTURE.md`'s `provenance.quality` fields for
 the full scoring rules.
 
+**Approximate timestamps (issue #43).** VTT/SRT/JSON sources carry per-segment
+start/end timing, stored alongside the transcript in an optional
+`segments.json` sidecar (plain text and other sources without segment timing
+have no sidecar). When present, each section page's frontmatter gets quoted
+`approx_start`/`approx_end` (`"HH:MM:SS"`), and `index.md`'s section links get
+a ` — HH:MM:SS` suffix, letting search/review consumers jump back to
+roughly where in the episode a passage came from. The mapping is
+proportional and therefore approximate — never exact segment boundaries —
+but always non-decreasing across sections; a section is simply left without
+timestamps when the source has no timing signal there.
+
 Export is idempotent: an episode whose transcript content hash hasn't changed
-re-exports nothing — unless provenance now carries a quality score that the
-existing export predates, in which case it re-exports once to backfill the
-`transcript_quality_*` frontmatter even though the transcript text itself is
-unchanged. It only ever reads a stored transcript + its provenance sidecar —
-review candidates and `state.json` are never exported.
+re-exports nothing — unless provenance now carries a quality score, or
+segments now carry timing, that the existing export predates, in which case
+it re-exports once to backfill the `transcript_quality_*`/`approx_start`/
+`approx_end` frontmatter even though the transcript text itself is unchanged.
+It only ever reads a stored transcript + its provenance sidecar (and the
+optional segments sidecar) — review candidates and `state.json` are never
+exported.
 
 **Two ways to point gbrain at it:**
 

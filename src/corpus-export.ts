@@ -14,6 +14,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ListenRecord, Provenance } from "./storage.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
+import type { TranscriptSegment } from "./transcripts/normalize.js";
 import type { TranscriptQuality } from "./transcripts/quality.js";
 
 const DEFAULT_TARGET_WORDS = 1500;
@@ -105,18 +106,19 @@ function atomize(text: string, range: Range, maxWords: number): Range[] {
 }
 
 /**
- * Split transcript text into ordered, verbatim sections of roughly
- * `targetWords` words, never exceeding `maxWords`. Sections are exact
- * contiguous slices of the source text — never rewritten or whitespace-
- * collapsed — so gbrain and similar consumers see the transcript as-fetched.
+ * Split transcript text into ordered, non-overlapping section ranges of
+ * roughly `targetWords` words, never exceeding `maxWords`. The pure range
+ * computation behind `splitSections` — exposed separately so callers that
+ * need section boundaries (e.g. mapping segment timestamps onto sections)
+ * don't have to re-derive them from slice content.
  */
-export function splitSections(
+export function splitSectionRanges(
   text: string,
   options: { targetWords?: number; maxWords?: number } = {},
-): string[] {
+): Range[] {
   const targetWords = options.targetWords ?? DEFAULT_TARGET_WORDS;
   const maxWords = options.maxWords ?? DEFAULT_MAX_WORDS;
-  if (text.trim().length === 0) return [text];
+  if (text.trim().length === 0) return [{ start: 0, end: text.length }];
 
   const paragraphUnits = splitByBoundary(text, { start: 0, end: text.length }, PARAGRAPH_BOUNDARY);
   const atomicUnits = paragraphUnits.flatMap((unit) => atomize(text, unit, maxWords));
@@ -143,7 +145,20 @@ export function splitSections(
   }
   if (sectionStart !== undefined) sections.push({ start: sectionStart, end: sectionEnd });
 
-  return sections.map((s) => text.slice(s.start, s.end));
+  return sections;
+}
+
+/**
+ * Split transcript text into ordered, verbatim sections of roughly
+ * `targetWords` words, never exceeding `maxWords`. Sections are exact
+ * contiguous slices of the source text — never rewritten or whitespace-
+ * collapsed — so gbrain and similar consumers see the transcript as-fetched.
+ */
+export function splitSections(
+  text: string,
+  options: { targetWords?: number; maxWords?: number } = {},
+): string[] {
+  return splitSectionRanges(text, options).map((s) => text.slice(s.start, s.end));
 }
 
 function yamlString(value: string): string {
@@ -152,6 +167,110 @@ function yamlString(value: string): string {
 
 function firstWords(text: string, n: number): string {
   return text.trim().split(/\s+/).slice(0, n).join(" ");
+}
+
+/** Format seconds as `HH:MM:SS` (supports durations of an hour or more). */
+export function formatTimecode(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  const secs = total % 60;
+  return [hours, minutes, secs].map((n) => String(n).padStart(2, "0")).join(":");
+}
+
+export type SectionTiming = { approxStart?: number; approxEnd?: number };
+
+type TimelineAnchor = { charStart: number; charEnd: number; startSeconds: number; endSeconds: number };
+
+/**
+ * Cumulative char-offset timeline over segment text, in segment order.
+ * Empty-text segments are skipped entirely (they contribute no characters).
+ * A segment with text but no numeric `startSeconds`/`endSeconds` still
+ * advances the character cursor (so later segments keep their proportional
+ * position) but is not added as a timed anchor — that stretch of characters
+ * becomes an untimed gap between the neighboring anchors.
+ */
+function buildSegmentTimeline(segments: TranscriptSegment[] | undefined): {
+  anchors: TimelineAnchor[];
+  totalChars: number;
+} {
+  const anchors: TimelineAnchor[] = [];
+  let cursor = 0;
+  for (const segment of segments ?? []) {
+    const text = segment.text ?? "";
+    if (!text.trim()) continue;
+    const charStart = cursor;
+    cursor += text.length;
+    if (segment.startSeconds !== undefined && segment.endSeconds !== undefined) {
+      anchors.push({ charStart, charEnd: cursor, startSeconds: segment.startSeconds, endSeconds: segment.endSeconds });
+    }
+  }
+  return { anchors, totalChars: cursor };
+}
+
+/**
+ * Map a target character offset (in the segment-timeline's char space) to
+ * seconds: linear interpolation within the covering anchor, clamped to the
+ * first/last anchor's time when the offset falls before/after the timed
+ * range, and `undefined` when it falls in an untimed gap between anchors.
+ */
+function mapOffsetToSeconds(anchors: TimelineAnchor[], targetChar: number): number | undefined {
+  if (anchors.length === 0) return undefined;
+  const first = anchors[0];
+  const last = anchors[anchors.length - 1];
+  if (targetChar <= first.charStart) return first.startSeconds;
+  if (targetChar >= last.charEnd) return last.endSeconds;
+  for (const anchor of anchors) {
+    if (targetChar >= anchor.charStart && targetChar <= anchor.charEnd) {
+      const span = anchor.charEnd - anchor.charStart;
+      if (span <= 0) return anchor.startSeconds;
+      const fraction = (targetChar - anchor.charStart) / span;
+      return anchor.startSeconds + fraction * (anchor.endSeconds - anchor.startSeconds);
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Map each section range onto an approximate `{ approxStart, approxEnd }` in
+ * seconds, by proportionally scaling the range's position in `text` onto the
+ * segment timeline built from `segments`. This is inherently approximate:
+ * `text` is the deduped/whitespace-collapsed transcript (see `joinSegments`),
+ * so character offsets don't line up exactly with segment boundaries.
+ *
+ * Contract: never returns `NaN`. Returns all-`undefined` entries when there
+ * is no usable timing signal at all (empty text, no ranges, or no segment
+ * carries numeric times). Emitted times are non-decreasing across ordered
+ * sections, and within a section `approxEnd >= approxStart` whenever both are
+ * defined.
+ */
+export function sectionTimestamps(
+  segments: TranscriptSegment[] | undefined,
+  ranges: Range[],
+  textLength: number,
+): SectionTiming[] {
+  if (textLength <= 0 || ranges.length === 0) return ranges.map(() => ({}));
+  const { anchors, totalChars } = buildSegmentTimeline(segments);
+  if (anchors.length === 0 || totalChars === 0) return ranges.map(() => ({}));
+
+  const results: SectionTiming[] = [];
+  let floor = 0;
+  for (const range of ranges) {
+    const startTarget = (range.start / textLength) * totalChars;
+    const endTarget = (range.end / textLength) * totalChars;
+    let approxStart = mapOffsetToSeconds(anchors, startTarget);
+    let approxEnd = mapOffsetToSeconds(anchors, endTarget);
+    if (approxStart !== undefined) {
+      approxStart = Math.max(approxStart, floor);
+      floor = approxStart;
+    }
+    if (approxEnd !== undefined) {
+      approxEnd = Math.max(approxEnd, floor, approxStart ?? approxEnd);
+      floor = approxEnd;
+    }
+    results.push({ approxStart, approxEnd });
+  }
+  return results;
 }
 
 type PageMeta = {
@@ -166,7 +285,7 @@ type PageMeta = {
   quality?: TranscriptQuality;
 };
 
-function frontmatterLines(title: string, meta: PageMeta): string[] {
+function frontmatterLines(title: string, meta: PageMeta, timing?: SectionTiming): string[] {
   const gen = meta.generation;
   const lines: Array<string | undefined> = [
     "---",
@@ -195,6 +314,8 @@ function frontmatterLines(title: string, meta: PageMeta): string[] {
     meta.quality ? `transcript_quality_score: ${meta.quality.score}` : undefined,
     meta.quality ? `transcript_quality_tier: ${yamlString(meta.quality.tier)}` : undefined,
     meta.quality ? `transcript_quality_reasons: ${JSON.stringify(meta.quality.reasons)}` : undefined,
+    timing?.approxStart !== undefined ? `approx_start: ${yamlString(formatTimecode(timing.approxStart))}` : undefined,
+    timing?.approxEnd !== undefined ? `approx_end: ${yamlString(formatTimecode(timing.approxEnd))}` : undefined,
     "---",
   ];
   return lines.filter((line): line is string => line !== undefined);
@@ -212,14 +333,18 @@ export function buildCorpusPages(options: {
   contentHash: string;
   targetWords?: number;
   maxWords?: number;
+  /** Normalized transcript segments (issue #43) — when present, section/index pages get approximate timestamps. */
+  segments?: TranscriptSegment[];
 }): CorpusPage[] {
-  const { record, provenance, text, contentHash } = options;
+  const { record, provenance, text, contentHash, segments } = options;
   const showSlug = slugify(record.podcastTitle, "show");
   const episodeSlug = episodeDirSlug(record);
-  const sections = splitSections(text, {
+  const ranges = splitSectionRanges(text, {
     targetWords: options.targetWords,
     maxWords: options.maxWords,
   });
+  const sections = ranges.map((r) => text.slice(r.start, r.end));
+  const timings = sectionTimestamps(segments, ranges, text.length);
   const total = sections.length;
   const meta: PageMeta = {
     show: record.podcastTitle,
@@ -234,20 +359,32 @@ export function buildCorpusPages(options: {
   };
 
   const pages: CorpusPage[] = [];
-  const sectionLinks: Array<{ label: string; file: string }> = [];
+  const sectionLinks: Array<{ label: string; file: string; approxStart?: number }> = [];
 
   sections.forEach((sectionText, i) => {
     const nn = String(i + 1).padStart(2, "0");
     const slug = slugify(firstWords(sectionText, 8), "section");
     const file = `${nn}-${slug}.md`;
     const title = total > 1 ? `${record.title} — part ${i + 1} of ${total}` : record.title;
-    const content = `${frontmatterLines(title, meta).join("\n")}\n\n${sectionText}\n`;
+    const content = `${frontmatterLines(title, meta, timings[i]).join("\n")}\n\n${sectionText}\n`;
     pages.push({ relativePath: `podcasts/${showSlug}/${episodeSlug}/${file}`, content });
-    sectionLinks.push({ label: slug.replace(/-/g, " "), file });
+    sectionLinks.push({ label: slug.replace(/-/g, " "), file, approxStart: timings[i]?.approxStart });
   });
 
+  // Episode-level span for index.md frontmatter — the first section's
+  // approxStart through the last section's approxEnd — doubles as the sole
+  // reconciliation marker `readExistingExportMeta` looks for (it reads only
+  // index.md), so it is emitted only when at least one section on each end
+  // actually resolved a time; both-or-neither, never a half span.
+  const definedStarts = timings.map((t) => t.approxStart).filter((v): v is number => v !== undefined);
+  const definedEnds = timings.map((t) => t.approxEnd).filter((v): v is number => v !== undefined);
+  const episodeTiming: SectionTiming | undefined =
+    definedStarts.length > 0 && definedEnds.length > 0
+      ? { approxStart: definedStarts[0], approxEnd: definedEnds[definedEnds.length - 1] }
+      : undefined;
+
   const indexLines = [
-    ...frontmatterLines(record.title, meta),
+    ...frontmatterLines(record.title, meta, episodeTiming),
     "",
     `# ${record.title}`,
     "",
@@ -255,7 +392,10 @@ export function buildCorpusPages(options: {
     "",
     "## Sections",
     "",
-    ...sectionLinks.map((s, i) => `${i + 1}. [${s.label}](./${s.file})`),
+    ...sectionLinks.map(
+      (s, i) =>
+        `${i + 1}. [${s.label}](./${s.file})${s.approxStart !== undefined ? ` — ${formatTimecode(s.approxStart)}` : ""}`,
+    ),
     "",
   ];
   pages.push({
@@ -270,8 +410,9 @@ const CONTENT_HASH_LINE = /^content_hash: "([^"]*)"$/m;
 const QUALITY_SCORE_LINE = /^transcript_quality_score: (\d+)$/m;
 const QUALITY_TIER_LINE = /^transcript_quality_tier: "([^"]*)"$/m;
 const QUALITY_REASONS_LINE = /^transcript_quality_reasons: (\[[^\]]*\])$/m;
+const APPROX_START_LINE = /^approx_start: "([^"]*)"$/m;
 
-type ExistingExportMeta = { contentHash?: string; quality?: TranscriptQuality };
+type ExistingExportMeta = { contentHash?: string; quality?: TranscriptQuality; hasTimestamps: boolean };
 
 async function readExistingExportMeta(episodeDir: string): Promise<ExistingExportMeta | undefined> {
   try {
@@ -290,6 +431,10 @@ async function readExistingExportMeta(episodeDir: string): Promise<ExistingExpor
     return {
       contentHash: indexContent.match(CONTENT_HASH_LINE)?.[1],
       quality,
+      // index.md is the only page read here, so it must carry the
+      // reconciliation signal itself — see buildCorpusPages' episodeTiming,
+      // which emits approx_start/approx_end on index.md together or not at all.
+      hasTimestamps: APPROX_START_LINE.test(indexContent),
     };
   } catch {
     return undefined;
@@ -317,6 +462,10 @@ export class CorpusExporter {
     provenance: Provenance;
     text: string;
     contentHash: string;
+    targetWords?: number;
+    maxWords?: number;
+    /** Normalized transcript segments (issue #43), read from the storage sidecar — see readSegments. */
+    segments?: TranscriptSegment[];
   }): Promise<ExportResult> {
     const showSlug = slugify(options.record.podcastTitle, "show");
     const episodeSlug = episodeDirSlug(options.record);
@@ -333,7 +482,16 @@ export class CorpusExporter {
       existing !== undefined &&
       options.provenance.quality !== undefined &&
       JSON.stringify(existing.quality) !== JSON.stringify(options.provenance.quality);
-    if (existing?.contentHash === options.contentHash && !qualityStale) {
+    // Same idea for timestamps (issue #43): an episode exported before
+    // segments were available lacks approx_start/approx_end on index.md;
+    // once segments carrying numeric times show up, re-export once to
+    // backfill them, then settle (readExistingExportMeta will report
+    // hasTimestamps: true on the next call).
+    const segmentsHaveNumericTimes = (options.segments ?? []).some(
+      (segment) => segment.startSeconds !== undefined || segment.endSeconds !== undefined,
+    );
+    const timestampsStale = existing !== undefined && segmentsHaveNumericTimes && !existing.hasTimestamps;
+    if (existing?.contentHash === options.contentHash && !qualityStale && !timestampsStale) {
       return { exported: 0, skipped: true, dir: targetDir };
     }
 

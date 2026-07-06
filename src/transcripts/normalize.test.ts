@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { detectFormat, htmlToText, normalizeTranscript } from "./normalize.js";
+import { detectFormat, htmlToText, normalizeTranscript, timecodeToSeconds } from "./normalize.js";
 
 const VTT = `WEBVTT
 
@@ -54,13 +54,36 @@ describe("detectFormat", () => {
   });
 });
 
+describe("timecodeToSeconds", () => {
+  it("parses HH:MM:SS.mmm, MM:SS, comma-decimal, and bare-seconds forms", () => {
+    expect(timecodeToSeconds("00:01:30.500")).toBe(90.5);
+    expect(timecodeToSeconds("01:30")).toBe(90);
+    expect(timecodeToSeconds("00:00:01,200")).toBe(1.2);
+    expect(timecodeToSeconds("2.5")).toBe(2.5);
+  });
+
+  it("ignores trailing SRT cue settings/position coordinates", () => {
+    expect(timecodeToSeconds("00:00:02,000 X1:40 X2:600")).toBe(2);
+  });
+
+  it("returns undefined for unparseable input", () => {
+    expect(timecodeToSeconds("not a timecode")).toBeUndefined();
+    expect(timecodeToSeconds("")).toBeUndefined();
+  });
+});
+
 describe("normalizeTranscript", () => {
   it("parses VTT with voice tags, skipping headers and duplicate cues", () => {
     const result = normalizeTranscript(VTT, "vtt");
     expect(result.text).toContain("Alice: Welcome to the show.");
     expect(result.text).toContain("Bob: Thanks for having me.");
     expect(result.text.match(/Thanks for having me/g)).toHaveLength(1);
-    expect(result.segments?.[0]).toMatchObject({ speaker: "Alice", start: "00:00:00.000" });
+    expect(result.segments?.[0]).toMatchObject({
+      speaker: "Alice",
+      start: "00:00:00.000",
+      startSeconds: 0,
+      endSeconds: 4,
+    });
   });
 
   it("parses a VTT whose first cue follows the WEBVTT header without a blank line", () => {
@@ -75,7 +98,13 @@ describe("normalizeTranscript", () => {
     expect(result.text).toContain("It is great to be here.");
     expect(result.text).not.toContain("<i>");
     expect(result.segments).toHaveLength(2);
-    expect(result.segments?.[0]).toMatchObject({ speaker: "Alice" });
+    expect(result.segments?.[0]).toMatchObject({ speaker: "Alice", startSeconds: 0, endSeconds: 4 });
+  });
+
+  it("parses SRT startSeconds/endSeconds even when the cue timing carries trailing position coordinates", () => {
+    const srtWithCoords = `1\n00:00:00,000 --> 00:00:02,000 X1:40 X2:600 Y1:20 Y2:50\nPositioned caption.\n`;
+    const result = normalizeTranscript(srtWithCoords, "srt");
+    expect(result.segments?.[0]).toMatchObject({ startSeconds: 0, endSeconds: 2 });
   });
 
   it("parses podcast-namespace JSON segments", () => {
@@ -83,6 +112,15 @@ describe("normalizeTranscript", () => {
     expect(result.text).toContain("Alice: Welcome to the show.");
     expect(result.text).toContain("Bob: Thanks for having me.");
     expect(result.segments).toHaveLength(2);
+    expect(result.segments?.[0]).toMatchObject({ startSeconds: 0, endSeconds: 4 });
+  });
+
+  it("parses fractional-second JSON startTime/endTime as-is", () => {
+    const result = normalizeTranscript(
+      JSON.stringify({ segments: [{ startTime: 0.5, endTime: 2.25, body: "Fractional." }] }),
+      "json",
+    );
+    expect(result.segments?.[0]).toMatchObject({ startSeconds: 0.5, endSeconds: 2.25 });
   });
 
   it("throws a clear error for malformed JSON", () => {
@@ -101,8 +139,13 @@ describe("normalizeTranscript", () => {
     expect(result.text).toContain("Hello from whisper.cpp.");
     expect(result.text).toContain("Second segment.");
     expect(result.segments).toHaveLength(2);
-    expect(result.segments?.[0]).toMatchObject({ start: "0", end: "1200" });
-    expect(result.segments?.[1]).toMatchObject({ start: "00:00:01,200", end: "00:00:02,400" });
+    expect(result.segments?.[0]).toMatchObject({ start: "0", end: "1200", startSeconds: 0, endSeconds: 1.2 });
+    expect(result.segments?.[1]).toMatchObject({
+      start: "00:00:01,200",
+      end: "00:00:02,400",
+      startSeconds: 1.2,
+      endSeconds: 2.4,
+    });
   });
 
   it("parses common non-standard JSON transcript shapes", () => {

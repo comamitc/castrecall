@@ -18,6 +18,7 @@
  */
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
+import type { TranscriptSegment } from "./transcripts/normalize.js";
 import type { TranscriptQuality } from "./transcripts/quality.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
@@ -187,6 +188,8 @@ export type StoredTranscript = {
     rawPath: string;
     textPath: string;
     provenancePath: string;
+    /** Only set when the stored artifact carried a non-empty `segments` array (issue #43). */
+    segmentsPath?: string;
     alreadyStored: boolean;
 };
 export declare class Storage {
@@ -310,6 +313,13 @@ export declare class Storage {
     readTranscript(episodeUuid: string): Promise<string | undefined>;
     readProvenance(episodeUuid: string): Promise<StoredProvenance | undefined>;
     /**
+     * Read the optional `segments.json` sidecar (issue #43). Additive: episodes
+     * stored before this sidecar existed, or stored from a source with no
+     * segment timing (e.g. plain text), simply have no file — this returns
+     * `undefined` rather than throwing, same tolerance as `readProvenance`.
+     */
+    readSegments(episodeUuid: string): Promise<TranscriptSegment[] | undefined>;
+    /**
      * Store a transcript with its provenance sidecar. Idempotent: if a
      * transcript already exists for the episode, nothing is overwritten — the
      * content hash is computed once, at first write, and is stable thereafter.
@@ -327,6 +337,7 @@ export declare class Storage {
         ext: string;
         text: string;
         provenance: Provenance;
+        segments?: TranscriptSegment[];
     }): Promise<StoredTranscript>;
     reviewCandidatePath(episodeUuid: string): string;
     /** Write a review candidate once; never overwrite a pending review. */

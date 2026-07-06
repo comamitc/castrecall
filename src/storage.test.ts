@@ -84,6 +84,44 @@ describe("Storage", () => {
     expect(await fs.readFile(stored.textPath, "utf8")).toBe("first version");
   });
 
+  it("writes a segments.json sidecar and round-trips it via readSegments when segments are present (issue #43)", async () => {
+    const segments = [
+      { start: "00:00:00.000", end: "00:00:04.000", startSeconds: 0, endSeconds: 4, speaker: "Alice", text: "Hi." },
+      { start: "00:00:04.000", end: "00:00:08.000", startSeconds: 4, endSeconds: 8, speaker: "Bob", text: "Hey." },
+    ];
+    const stored = await storage.storeTranscript("ep-1", {
+      raw: "WEBVTT\n\n...",
+      ext: "vtt",
+      text: "Alice: Hi. Bob: Hey.",
+      provenance: PROVENANCE,
+      segments,
+    });
+    expect(stored.segmentsPath).toBeDefined();
+    expect(await fs.access(stored.segmentsPath!).then(() => true)).toBe(true);
+    expect(await storage.readSegments("ep-1")).toEqual(segments);
+  });
+
+  it("writes no segments.json sidecar and readSegments returns undefined when segments are absent or empty (backward compatible)", async () => {
+    const stored = await storage.storeTranscript("ep-1", {
+      raw: "plain text",
+      ext: "txt",
+      text: "plain text",
+      provenance: { ...PROVENANCE, format: "txt" },
+    });
+    expect(stored.segmentsPath).toBeUndefined();
+    expect(await storage.readSegments("ep-1")).toBeUndefined();
+
+    const storedEmpty = await storage.storeTranscript("ep-2", {
+      raw: "plain text",
+      ext: "txt",
+      text: "plain text",
+      provenance: { ...PROVENANCE, episodeUuid: "ep-2", format: "txt" },
+      segments: [],
+    });
+    expect(storedEmpty.segmentsPath).toBeUndefined();
+    expect(await storage.readSegments("ep-2")).toBeUndefined();
+  });
+
   it("keeps raw artifacts separate from review candidates", async () => {
     await storage.storeTranscript("ep-1", {
       raw: "raw",

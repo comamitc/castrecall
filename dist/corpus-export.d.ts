@@ -9,12 +9,28 @@
  * (IO): pure builders below, `CorpusExporter` for the filesystem side.
  */
 import type { ListenRecord, Provenance } from "./storage.js";
+import type { TranscriptSegment } from "./transcripts/normalize.js";
+type Range = {
+    start: number;
+    end: number;
+};
 export type CorpusPage = {
     relativePath: string;
     content: string;
 };
 /** Kebab-case slug; never empty — falls back when the input has no alphanumerics. */
 export declare function slugify(value: string, fallback: string): string;
+/**
+ * Split transcript text into ordered, non-overlapping section ranges of
+ * roughly `targetWords` words, never exceeding `maxWords`. The pure range
+ * computation behind `splitSections` — exposed separately so callers that
+ * need section boundaries (e.g. mapping segment timestamps onto sections)
+ * don't have to re-derive them from slice content.
+ */
+export declare function splitSectionRanges(text: string, options?: {
+    targetWords?: number;
+    maxWords?: number;
+}): Range[];
 /**
  * Split transcript text into ordered, verbatim sections of roughly
  * `targetWords` words, never exceeding `maxWords`. Sections are exact
@@ -25,6 +41,26 @@ export declare function splitSections(text: string, options?: {
     targetWords?: number;
     maxWords?: number;
 }): string[];
+/** Format seconds as `HH:MM:SS` (supports durations of an hour or more). */
+export declare function formatTimecode(seconds: number): string;
+export type SectionTiming = {
+    approxStart?: number;
+    approxEnd?: number;
+};
+/**
+ * Map each section range onto an approximate `{ approxStart, approxEnd }` in
+ * seconds, by proportionally scaling the range's position in `text` onto the
+ * segment timeline built from `segments`. This is inherently approximate:
+ * `text` is the deduped/whitespace-collapsed transcript (see `joinSegments`),
+ * so character offsets don't line up exactly with segment boundaries.
+ *
+ * Contract: never returns `NaN`. Returns all-`undefined` entries when there
+ * is no usable timing signal at all (empty text, no ranges, or no segment
+ * carries numeric times). Emitted times are non-decreasing across ordered
+ * sections, and within a section `approxEnd >= approxStart` whenever both are
+ * defined.
+ */
+export declare function sectionTimestamps(segments: TranscriptSegment[] | undefined, ranges: Range[], textLength: number): SectionTiming[];
 /**
  * Build the full set of markdown pages for one episode: one page per
  * transcript section plus an episode index page. Pure — no filesystem
@@ -37,6 +73,8 @@ export declare function buildCorpusPages(options: {
     contentHash: string;
     targetWords?: number;
     maxWords?: number;
+    /** Normalized transcript segments (issue #43) — when present, section/index pages get approximate timestamps. */
+    segments?: TranscriptSegment[];
 }): CorpusPage[];
 export type ExportResult = {
     exported: number;
@@ -62,5 +100,10 @@ export declare class CorpusExporter {
         provenance: Provenance;
         text: string;
         contentHash: string;
+        targetWords?: number;
+        maxWords?: number;
+        /** Normalized transcript segments (issue #43), read from the storage sidecar — see readSegments. */
+        segments?: TranscriptSegment[];
     }): Promise<ExportResult>;
 }
+export {};

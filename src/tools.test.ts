@@ -1604,6 +1604,69 @@ describe("tools", () => {
     expect(second.export.skipped).toBe(true);
   });
 
+  it("threads VTT cue timing through storage and export as approximate timestamps (issue #43)", async () => {
+    const exportDir = path.join(dir, "export");
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.includes("export_feed_urls")) {
+        return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+          status: 200,
+        });
+      }
+      if (url === "https://example.com/feed.xml") {
+        return new Response(
+          `<?xml version="1.0"?>
+          <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+            <channel>
+              <item>
+                <title>Episode One</title>
+                <guid>ep-1</guid>
+                <enclosure url="https://cdn.example.com/ep1.mp3" />
+                <podcast:transcript url="https://cdn.example.com/ep1.vtt" type="text/vtt" />
+              </item>
+            </channel>
+          </rss>`,
+          { status: 200 },
+        );
+      }
+      if (url === "https://cdn.example.com/ep1.vtt") {
+        return new Response("WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript body.", {
+          status: 200,
+          headers: { "content-type": "text/vtt" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = (await fetchTranscript(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      { episodeUuid: "ep-1" },
+      { fetchImpl },
+    )) as Record<string, any>;
+    expect(result.export.skipped).toBe(false);
+
+    const segments = await storage.readSegments("ep-1");
+    expect(segments).toEqual([
+      expect.objectContaining({ startSeconds: 0, endSeconds: 2, text: "A short transcript body." }),
+    ]);
+
+    const episodeDir = path.join(exportDir, "podcasts", "example-show", "episode-one-25422834");
+    const indexContent = await fs.readFile(path.join(episodeDir, "index.md"), "utf8");
+    expect(indexContent).toContain('approx_start: "00:00:00"');
+    expect(indexContent).toContain('approx_end: "00:00:02"');
+  });
+
   it("recomputes the content hash for a legacy provenance sidecar missing contentHash", async () => {
     const exportDir = path.join(dir, "export");
     const storage = new Storage(dir);

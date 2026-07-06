@@ -75,8 +75,9 @@ async function exportIfEnabled(config, storage, record) {
     if (!text || !provenance)
         return undefined;
     const contentHash = provenance.contentHash ?? createHash("sha256").update(text, "utf8").digest("hex");
+    const segments = await storage.readSegments(record.uuid);
     const exporter = new CorpusExporter(config.exportDir);
-    return exporter.exportEpisode({ record, provenance, text, contentHash });
+    return exporter.exportEpisode({ record, provenance, text, contentHash, segments });
 }
 /**
  * Live (unresolved) scheduled-run stage failures: an error counts only while
@@ -536,6 +537,7 @@ export async function fetchTranscript(config, params, deps = {}) {
         ext: result.transcript.format,
         text: result.transcript.text,
         provenance,
+        segments: result.transcript.segments,
     });
     await storage.updateEpisode(record.uuid, {
         transcriptStatus: "stored",
