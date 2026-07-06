@@ -1,0 +1,824 @@
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveConfig } from "./config.js";
+import { Storage, type Provenance } from "./storage.js";
+import { search } from "./tools.js";
+import {
+  buildDocument,
+  buildSnippet,
+  clampLimit,
+  DEFAULT_SEARCH_LIMIT,
+  hashTerm,
+  isValidIndexedDocument,
+  MAX_SEARCH_LIMIT,
+  parseQuery,
+  phraseBonus,
+  phraseConfirmed,
+  scoreKeywords,
+  SearchIndex,
+  tokenize,
+  type CorpusEntry,
+} from "./search.js";
+
+describe("tokenize", () => {
+  it("lowercases and splits on non-letter/number boundaries", () => {
+    expect(tokenize("Climate Policy, Explained!")).toEqual([
+      "climate",
+      "policy",
+      "explained",
+    ]);
+  });
+
+  it("normalizes accented terms to their unaccented ASCII-equivalent form", () => {
+    expect(tokenize("café")).toEqual(tokenize("cafe"));
+    expect(tokenize("Déjà Vu")).toEqual(["deja", "vu"]);
+  });
+
+  it("preserves non-Latin scripts (does not narrow to [a-z0-9])", () => {
+    expect(tokenize("日本語 podcast")).toEqual(["日本語", "podcast"]);
+  });
+
+  it("drops empty tokens from punctuation-only input", () => {
+    expect(tokenize("... !!! ---")).toEqual([]);
+  });
+});
+
+describe("parseQuery", () => {
+  it("splits quoted phrases from bare terms", () => {
+    expect(parseQuery('"exact ordered phrase" bare terms')).toEqual({
+      terms: ["bare", "terms"],
+      phrases: [["exact", "ordered", "phrase"]],
+    });
+  });
+
+  it("supports multiple quoted phrases", () => {
+    expect(parseQuery('"one two" middle "three four"')).toEqual({
+      terms: ["middle"],
+      phrases: [
+        ["one", "two"],
+        ["three", "four"],
+      ],
+    });
+  });
+
+  it("treats an unbalanced trailing quote as literal terms, not a phrase", () => {
+    expect(parseQuery('one "two three')).toEqual({
+      terms: ["one", "two", "three"],
+      phrases: [],
+    });
+  });
+
+  it("returns empty terms/phrases for a query with no matchable tokens", () => {
+    expect(parseQuery("!!!")).toEqual({ terms: [], phrases: [] });
+  });
+});
+
+describe("scoreKeywords", () => {
+  it("scores documents higher for rarer terms (idf-lite) and normalizes by length", () => {
+    const common = buildDocument("common", "h1", "climate climate climate filler filler filler");
+    const rare = buildDocument("rare", "h2", "climate quasar filler filler filler filler");
+    const noMatch = buildDocument("none", "h3", "filler filler filler filler filler filler");
+    const scores = scoreKeywords({ terms: ["quasar"], phrases: [] }, [common, rare, noMatch]);
+    expect(scores.get("rare")).toBeGreaterThan(0);
+    expect(scores.get("common")).toBe(0);
+    expect(scores.get("none")).toBe(0);
+  });
+
+  it("includes quoted-phrase tokens in the base score even with no bare terms", () => {
+    const doc = buildDocument("doc", "h1", "climate policy discussion");
+    const scores = scoreKeywords({ terms: [], phrases: [["climate", "policy"]] }, [doc]);
+    expect(scores.get("doc")).toBeGreaterThan(0);
+  });
+
+  it("returns zero for every document when the query has no terms or phrase tokens", () => {
+    const doc = buildDocument("doc", "h1", "climate policy discussion");
+    const scores = scoreKeywords({ terms: [], phrases: [] }, [doc]);
+    expect(scores.get("doc")).toBe(0);
+  });
+});
+
+describe("phraseBonus", () => {
+  it("rewards a contiguous phrase match", () => {
+    const tokens = tokenize("we discuss climate policy in depth");
+    expect(phraseBonus([["climate", "policy"]], tokens)).toBeGreaterThan(0);
+  });
+
+  it("gives no bonus when the same words appear scattered out of order", () => {
+    const tokens = tokenize("policy debates rarely mention climate directly");
+    expect(phraseBonus([["climate", "policy"]], tokens)).toBe(0);
+  });
+});
+
+describe("phraseConfirmed", () => {
+  it("agrees with the text-based contiguity check across match shapes", () => {
+    const cases: Array<{ text: string; phrase: string[] }> = [
+      { text: "we discuss climate policy in depth", phrase: ["climate", "policy"] },
+      { text: "climate change shapes every policy debate", phrase: ["climate", "policy"] },
+      { text: "alpha beta filler beta gamma", phrase: ["alpha", "beta", "gamma"] },
+      { text: "the host got to alpha beta gamma eventually", phrase: ["alpha", "beta", "gamma"] },
+      { text: "alpha beta", phrase: ["alpha", "beta", "gamma"] },
+      { text: "solo", phrase: ["solo"] },
+      { text: "repeat repeat repeat", phrase: ["repeat", "repeat"] },
+    ];
+    for (const { text, phrase } of cases) {
+      const doc = buildDocument("doc", "h1", text);
+      expect(phraseConfirmed(doc, phrase), `"${phrase.join(" ")}" in "${text}"`).toBe(
+        phraseBonus([phrase], tokenize(text)) > 0,
+      );
+    }
+  });
+
+  it("rejects a chained gap pattern where every adjacent pair exists but the full phrase never does", () => {
+    // "alpha beta … beta gamma" contains "alpha beta" and "beta gamma" as
+    // pairs without ever containing "alpha beta gamma" contiguously.
+    const doc = buildDocument("doc", "h1", "alpha beta filler beta gamma");
+    expect(phraseConfirmed(doc, ["alpha", "beta", "gamma"])).toBe(false);
+    expect(phraseBonus([["alpha", "beta", "gamma"]], tokenize("alpha beta filler beta gamma"))).toBe(0);
+  });
+
+  it("treats a single-token phrase as confirmed on term presence alone", () => {
+    const doc = buildDocument("doc", "h1", "climate is the topic");
+    expect(phraseConfirmed(doc, ["climate"])).toBe(true);
+  });
+
+  it("confirms a phrase found only at the very end of a document", () => {
+    const doc = buildDocument("doc", "h1", "filler filler filler climate policy");
+    expect(phraseConfirmed(doc, ["climate", "policy"])).toBe(true);
+  });
+
+  it("anchors on the rarest term even when it is not the first phrase token", () => {
+    // "the" is frequent, "lazy" rare — the walk starts from "lazy" and must
+    // still find the phrase whose start is one position earlier.
+    const doc = buildDocument("doc", "h1", "the quick fox and the lazy dog near the river");
+    expect(phraseConfirmed(doc, ["the", "lazy"])).toBe(true);
+    expect(phraseConfirmed(doc, ["lazy", "the"])).toBe(false);
+  });
+});
+
+describe("isValidIndexedDocument", () => {
+  it("accepts a document produced by buildDocument", () => {
+    expect(isValidIndexedDocument(buildDocument("doc", "h1", "climate policy in depth"))).toBe(true);
+  });
+
+  it("rejects malformed shapes that would break or skew phrase confirmation", () => {
+    const good = buildDocument("doc", "h1", "climate policy in depth");
+    const tampered: unknown[] = [
+      null,
+      { ...good, postings: undefined },
+      { ...good, postings: { bogus: 1 } },
+      { ...good, postings: {} },
+      // A posting list whose count disagrees with termFreq.
+      { ...good, postings: { ...good.postings, [Object.keys(good.postings)[0]]: [] } },
+      // Non-integer and out-of-range positions.
+      { ...good, postings: { ...good.postings, [Object.keys(good.postings)[0]]: [0.5] } },
+      { ...good, postings: { ...good.postings, [Object.keys(good.postings)[0]]: [99] } },
+      { ...good, length: -1 },
+    ];
+    for (const doc of tampered) {
+      expect(isValidIndexedDocument(doc), JSON.stringify(doc)?.slice(0, 80)).toBe(false);
+    }
+  });
+
+  it("rejects a doc missing a term/postings pair even though the remaining lists are self-consistent", () => {
+    const good = buildDocument("doc", "h1", "climate policy in depth");
+    const termFreq = { ...good.termFreq };
+    const postings = { ...good.postings };
+    const dropped = Object.keys(termFreq)[0];
+    delete termFreq[dropped];
+    delete postings[hashTerm(dropped)];
+    // Key counts still agree and every remaining list is valid in
+    // isolation — only the global coverage check can catch this.
+    const doc = { ...good, termFreq, postings };
+    expect(isValidIndexedDocument(doc)).toBe(false);
+  });
+
+  it("rejects cross-term duplicate positions that keep per-list validity", () => {
+    const good = buildDocument("doc", "h1", "alpha beta");
+    const [keyA, keyB] = Object.keys(good.postings);
+    // Both terms claim position 0: each list alone is sorted and in range,
+    // but position 1 is then covered by nothing.
+    const doc = { ...good, postings: { [keyA]: [0], [keyB]: [0] } };
+    expect(isValidIndexedDocument(doc)).toBe(false);
+  });
+});
+
+describe("buildSnippet", () => {
+  const LONG_TEXT =
+    `${"filler word repeated many times to pad the transcript out. ".repeat(20)}` +
+    "this is the important climate policy discussion right here. " +
+    `${"more filler text after the match to pad things out. ".repeat(20)}`;
+
+  it("returns a window shorter than the full transcript with ellipsis on both truncated ends", () => {
+    const { snippet, snippetText } = buildSnippet(LONG_TEXT, { terms: ["climate"], phrases: [] });
+    expect(snippetText.length).toBeLessThan(LONG_TEXT.length);
+    expect(snippet.startsWith("…")).toBe(true);
+    expect(snippet.endsWith("…")).toBe(true);
+  });
+
+  it("highlights the matched term in snippet but keeps snippetText verbatim", () => {
+    const { snippet, snippetText } = buildSnippet(LONG_TEXT, { terms: ["climate"], phrases: [] });
+    expect(snippet).toContain("**climate**");
+    expect(snippetText).toContain("climate policy discussion");
+    expect(snippetText).not.toContain("**");
+  });
+
+  it("anchors the window on the phrase match when both a term and a phrase are given", () => {
+    const { snippetText } = buildSnippet(LONG_TEXT, {
+      terms: [],
+      phrases: [["climate", "policy"]],
+    });
+    expect(snippetText).toContain("climate policy discussion");
+  });
+});
+
+describe("clampLimit", () => {
+  it("applies the default for undefined, zero, and negative values", () => {
+    expect(clampLimit(undefined)).toBe(DEFAULT_SEARCH_LIMIT);
+    expect(clampLimit(0)).toBe(DEFAULT_SEARCH_LIMIT);
+    expect(clampLimit(-5)).toBe(DEFAULT_SEARCH_LIMIT);
+  });
+
+  it("passes through values within range", () => {
+    expect(clampLimit(1)).toBe(1);
+  });
+
+  it("clamps values above the hard max", () => {
+    expect(clampLimit(MAX_SEARCH_LIMIT + 100)).toBe(MAX_SEARCH_LIMIT);
+  });
+});
+
+const BASE_PROVENANCE: Provenance = {
+  platform: "pocketcasts",
+  podcastTitle: "Example Show",
+  podcastUuid: "pod-1",
+  episodeTitle: "Episode One",
+  episodeUuid: "ep-1",
+  transcriptSource: "rss",
+  format: "txt",
+  fetchedAt: "2026-07-04T00:00:00Z",
+  listenTimestamp: "2026-07-04T12:00:00Z",
+  privacyClass: "private-source",
+};
+
+function entry(overrides: Partial<CorpusEntry> & { text: string }): CorpusEntry {
+  const { text, ...rest } = overrides;
+  return {
+    uuid: "ep-1",
+    contentHash: createHash("sha256").update(text, "utf8").digest("hex"),
+    provenance: BASE_PROVENANCE,
+    transcriptPath: "sources/ep-1/transcript.txt",
+    readText: async () => text,
+    ...rest,
+  };
+}
+
+describe("SearchIndex", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-search-index-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("re-tokenizes zero transcripts on the reconcile pass for an unchanged corpus", async () => {
+    let calls = 0;
+    const text = "we discuss climate policy in depth this week";
+    const corpusEntry = entry({
+      text,
+      readText: async () => {
+        calls += 1;
+        return text;
+      },
+    });
+    const index = new SearchIndex(dir);
+
+    await index.search("climate", {}, [corpusEntry]);
+    expect(calls).toBeGreaterThan(0); // reconcile (new doc) + phase-2 candidate read
+
+    calls = 0;
+    const result = await index.search("climate", {}, [corpusEntry]);
+    expect(calls).toBe(1); // phase-2 candidate read only — reconcile found the hash unchanged
+    expect(result.hits).toHaveLength(1);
+  });
+
+  it("reflects new content and drops the stale snippet after a contentHash change", async () => {
+    const originalText = "we discuss climate policy in depth this week";
+    let currentText = originalText;
+    const corpusEntry = entry({
+      text: originalText,
+      readText: async () => currentText,
+    });
+    const index = new SearchIndex(dir);
+    await index.search("climate", {}, [corpusEntry]);
+
+    currentText = "an unrelated episode about something entirely different, no keywords here";
+    corpusEntry.contentHash = createHash("sha256").update(currentText, "utf8").digest("hex");
+    const result = await index.search("climate", {}, [corpusEntry]);
+    expect(result.hits).toHaveLength(0);
+  });
+
+  it("ranks candidates by keyword score regardless of corpus order, so a high-scoring doc late in a large corpus is not dropped", async () => {
+    const index = new SearchIndex(dir);
+    const lowScoreEntries = Array.from({ length: 51 }, (_, i) =>
+      entry({
+        uuid: `low-${i}`,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: `low-${i}` },
+        text: "filler filler filler filler filler filler filler filler filler filler climate",
+      }),
+    );
+    const highScoreEntry = entry({
+      uuid: "high-score",
+      provenance: { ...BASE_PROVENANCE, episodeUuid: "high-score" },
+      text: "climate climate climate climate climate climate climate climate climate climate",
+    });
+    const corpus = [...lowScoreEntries, highScoreEntry];
+
+    const result = await index.search("climate", { limit: 5 }, corpus);
+    expect(result.hits[0]?.episodeUuid).toBe("high-score");
+  });
+
+  it("does not drop a lower-scoring document holding the exact contiguous phrase behind many higher-scoring non-contiguous matches", async () => {
+    const index = new SearchIndex(dir);
+    // Every noise doc contains both phrase tokens with a high term
+    // frequency (high keyword score) but never contiguously — "climate"
+    // and "policy" never sit next to each other.
+    const noiseEntries = Array.from({ length: 60 }, (_, i) =>
+      entry({
+        uuid: `noise-${i}`,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: `noise-${i}` },
+        text: "climate climate climate climate filler filler filler filler policy policy policy policy",
+      }),
+    );
+    // Lower keyword score (each term appears once) but the phrase is
+    // contiguous, so it deserves the phrase bonus and should rank in.
+    const trueMatchEntry = entry({
+      uuid: "true-match",
+      provenance: { ...BASE_PROVENANCE, episodeUuid: "true-match" },
+      text: "a short transcript mentioning climate policy exactly once in passing",
+    });
+    const corpus = [...noiseEntries, trueMatchEntry];
+
+    const result = await index.search('"climate policy"', { limit: 5 }, corpus);
+    expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
+  });
+
+  it("does not drop an exact 3-token phrase match behind many chained-bigram false positives, without reading them", async () => {
+    const index = new SearchIndex(dir);
+    let readCalls = 0;
+    const counted = (uuid: string, text: string) =>
+      entry({
+        uuid,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: uuid },
+        text,
+        readText: async () => {
+          readCalls += 1;
+          return text;
+        },
+      });
+    // Every noise doc contains all three phrase tokens and even every
+    // adjacent pair ("alpha beta", "beta gamma") — but only via a chain
+    // ("alpha beta filler beta gamma"); the tokens never sit contiguously.
+    // High term repetition also gives every noise doc a much higher
+    // keyword score than the true match. The positional postings must
+    // reject them all from the index alone.
+    const noiseEntries = Array.from({ length: 60 }, (_, i) =>
+      counted(`noise-${i}`, "alpha beta filler beta gamma ".repeat(5).trim()),
+    );
+    // Lower keyword score (each phrase term appears once in a long passage)
+    // but "alpha beta gamma" is truly contiguous, so it deserves the full
+    // phrase bonus and must rank into the results.
+    const trueMatchEntry = counted(
+      "true-match",
+      "the show today covered many topics and after a long discussion the host finally got to alpha beta gamma before moving on to other topics entirely",
+    );
+    const corpus = [...noiseEntries, trueMatchEntry];
+
+    // Build the index first so the second search's reads are snippet reads
+    // only, not reconcile-because-new-doc reads.
+    await index.search('"alpha beta gamma"', {}, corpus);
+    readCalls = 0;
+
+    const result = await index.search('"alpha beta gamma"', {}, corpus);
+    expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
+    // Ranking never reads transcripts — only the returned hits' snippets do.
+    expect(readCalls).toBe(result.hits.length);
+  });
+
+  it("reads only the top `limit` transcripts even when a quoted phrase truly matches every doc", async () => {
+    const index = new SearchIndex(dir);
+    const text = "the quick fox and the lazy dog ran near the river";
+    const docCount = 60;
+    let readCalls = 0;
+    const corpus = Array.from({ length: docCount }, (_, i) =>
+      entry({
+        uuid: `doc-${i}`,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: `doc-${i}` },
+        text,
+        readText: async () => {
+          readCalls += 1;
+          return text;
+        },
+      }),
+    );
+
+    // Build the index first so the second search's reads are snippet reads
+    // only, not reconcile-because-new-doc reads.
+    await index.search('"the lazy"', {}, corpus);
+    readCalls = 0;
+
+    const result = await index.search('"the lazy"', {}, corpus);
+    expect(result.hits).toHaveLength(DEFAULT_SEARCH_LIMIT);
+    expect(readCalls).toBe(DEFAULT_SEARCH_LIMIT);
+  });
+
+  it("never scans the full corpus when a broad quoted phrase matches many docs only non-contiguously", async () => {
+    const index = new SearchIndex(dir);
+    let readCalls = 0;
+    const counted = (uuid: string, text: string) =>
+      entry({
+        uuid,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: uuid },
+        text,
+        readText: async () => {
+          readCalls += 1;
+          return text;
+        },
+      });
+    // Far more docs than any result page: every noise doc contains both
+    // phrase tokens, never adjacent — the index fingerprints exclude them
+    // from the phrase bonus without a single transcript read.
+    const noise = Array.from({ length: 150 }, (_, i) =>
+      counted(`noise-${i}`, "climate climate climate filler filler filler policy policy policy"),
+    );
+    const trueMatch = counted("true-match", "a short transcript mentioning climate policy once");
+    const corpus = [...noise, trueMatch];
+
+    // Build the index first so the second search's reads are snippet reads only.
+    await index.search('"climate policy"', { limit: 5 }, corpus);
+    readCalls = 0;
+
+    const result = await index.search('"climate policy"', { limit: 5 }, corpus);
+    expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
+    // Only the top `limit` hits are read (for snippets) — never the full
+    // 151-doc corpus.
+    expect(readCalls).toBeLessThanOrEqual(5);
+    expect(readCalls).toBeLessThan(corpus.length);
+  });
+
+  it("self-heals an index persisted before the fingerprint fields existed", async () => {
+    const index = new SearchIndex(dir);
+    const corpus = [
+      entry({
+        uuid: "match",
+        provenance: { ...BASE_PROVENANCE, episodeUuid: "match" },
+        text: "we discuss climate policy in depth",
+      }),
+    ];
+    await index.search('"climate policy"', {}, corpus);
+
+    // Strip the postings field, simulating an index written by the
+    // term-frequency-only schema.
+    const indexPath = path.join(dir, "search-index.v1.json");
+    const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
+      docs: Array<Record<string, unknown>>;
+    };
+    for (const doc of parsed.docs) delete doc.postings;
+    await fs.writeFile(indexPath, JSON.stringify(parsed), "utf8");
+
+    const result = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
+    expect(result.hits.map((hit) => hit.episodeUuid)).toContain("match");
+  });
+
+  it("rebuilds an index written under a different schemaVersion", async () => {
+    const index = new SearchIndex(dir);
+    const corpus = [
+      entry({
+        uuid: "match",
+        provenance: { ...BASE_PROVENANCE, episodeUuid: "match" },
+        text: "we discuss climate policy in depth",
+      }),
+    ];
+    await index.search('"climate policy"', {}, corpus);
+
+    const indexPath = path.join(dir, "search-index.v1.json");
+    const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as Record<string, unknown>;
+    parsed.schemaVersion = 999;
+    await fs.writeFile(indexPath, JSON.stringify(parsed), "utf8");
+
+    const result = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
+    expect(result.hits.map((hit) => hit.episodeUuid)).toContain("match");
+  });
+
+  it("self-heals malformed-but-present postings under a matching contentHash instead of throwing or missing matches", async () => {
+    const index = new SearchIndex(dir);
+    const corpus = [
+      entry({
+        uuid: "match",
+        provenance: { ...BASE_PROVENANCE, episodeUuid: "match" },
+        text: "we discuss climate policy in depth",
+      }),
+    ];
+    await index.search('"climate policy"', {}, corpus);
+
+    // Same schemaVersion, same contentHash, but postings values are not
+    // position arrays — the shape a skewed or corrupted build could leave.
+    const indexPath = path.join(dir, "search-index.v1.json");
+    const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
+      schemaVersion: number;
+      docs: Array<Record<string, unknown>>;
+    };
+    for (const doc of parsed.docs) doc.postings = { bogus: 1 };
+    await fs.writeFile(indexPath, JSON.stringify(parsed), "utf8");
+
+    const healed = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
+    expect(healed.hits.map((hit) => hit.episodeUuid)).toContain("match");
+
+    // Empty-object postings (no keys at all) heal the same way.
+    const reparsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
+      docs: Array<Record<string, unknown>>;
+    };
+    for (const doc of reparsed.docs) doc.postings = {};
+    await fs.writeFile(indexPath, JSON.stringify(reparsed), "utf8");
+    const again = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
+    expect(again.hits.map((hit) => hit.episodeUuid)).toContain("match");
+  });
+
+  it("does not throw ENOENT when two searches persist concurrently, since each persist writes a unique temp file", async () => {
+    const index = new SearchIndex(dir);
+    const corpusA = [entry({ uuid: "a", provenance: { ...BASE_PROVENANCE, episodeUuid: "a" }, text: "alpha content here" })];
+    const corpusB = [entry({ uuid: "b", provenance: { ...BASE_PROVENANCE, episodeUuid: "b" }, text: "beta content here" })];
+
+    // Delay every rename so both persists' writeFile calls land before either
+    // rename runs — the interleaving that surfaces ENOENT if both writers
+    // share one fixed temp path.
+    const originalRename = fs.rename.bind(fs);
+    const renameSpy = vi.spyOn(fs, "rename").mockImplementation(async (...args: Parameters<typeof fs.rename>) => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return originalRename(...args);
+    });
+
+    try {
+      const [resultA, resultB] = await Promise.all([
+        index.search("alpha", {}, corpusA),
+        index.search("beta", {}, corpusB),
+      ]);
+      expect(resultA.hits).toHaveLength(1);
+      expect(resultB.hits).toHaveLength(1);
+    } finally {
+      renameSpy.mockRestore();
+    }
+  });
+});
+
+describe("search tool", () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-search-tool-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  function config() {
+    return resolveConfig({}, { CASTRECALL_DATA_DIR: dir });
+  }
+
+  async function seedEpisode(options: {
+    uuid: string;
+    title: string;
+    podcastTitle: string;
+    text: string;
+    listenTimestamp?: string;
+    omitContentHash?: boolean;
+  }): Promise<void> {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: options.uuid,
+        title: options.title,
+        url: `https://cdn.example.com/${options.uuid}.mp3`,
+        podcastUuid: `pod-${options.uuid}`,
+        podcastTitle: options.podcastTitle,
+      },
+    ]);
+    const provenance: Provenance = {
+      platform: "pocketcasts",
+      podcastTitle: options.podcastTitle,
+      podcastUuid: `pod-${options.uuid}`,
+      episodeTitle: options.title,
+      episodeUuid: options.uuid,
+      transcriptSource: "rss",
+      format: "txt",
+      fetchedAt: "2026-07-04T00:00:00Z",
+      listenTimestamp: options.listenTimestamp ?? "2026-07-04T12:00:00Z",
+      privacyClass: "private-source",
+    };
+    if (options.omitContentHash) {
+      const sourceDir = storage.sourceDir(options.uuid);
+      await fs.mkdir(sourceDir, { recursive: true });
+      await fs.writeFile(path.join(sourceDir, "transcript.txt"), options.text, "utf8");
+      await fs.writeFile(
+        path.join(sourceDir, "provenance.json"),
+        JSON.stringify(provenance),
+        "utf8",
+      );
+    } else {
+      await storage.storeTranscript(options.uuid, {
+        raw: options.text,
+        ext: "txt",
+        text: options.text,
+        provenance,
+      });
+    }
+    await storage.updateEpisode(options.uuid, { transcriptStatus: "stored" });
+  }
+
+  it("throws CastrecallSetupError for a blank query", async () => {
+    await expect(search(config(), { query: "   " })).rejects.toThrow(/non-empty query/);
+  });
+
+  it("returns { results: [] } for an empty corpus without throwing", async () => {
+    const result = (await search(config(), { query: "anything" })) as Record<string, any>;
+    expect(result.results).toEqual([]);
+  });
+
+  it("matches a doc containing both keyword terms and excludes a doc matching neither", async () => {
+    await seedEpisode({
+      uuid: "ep-1",
+      title: "Episode One",
+      podcastTitle: "Show A",
+      text: "In this episode we discuss climate policy in depth, covering climate policy across regions.",
+    });
+    await seedEpisode({
+      uuid: "ep-2",
+      title: "Episode Two",
+      podcastTitle: "Show B",
+      text: "This episode is entirely about cooking recipes and kitchen equipment reviews.",
+    });
+
+    const result = (await search(config(), { query: "climate policy" })) as Record<string, any>;
+    const uuids = result.results.map((hit: any) => hit.episodeUuid);
+    expect(uuids).toContain("ep-1");
+    expect(uuids).not.toContain("ep-2");
+    for (const hit of result.results) {
+      expect(hit.score).toBeGreaterThan(0);
+    }
+  });
+
+  it("returns full provenance and both snippet fields on every hit", async () => {
+    await seedEpisode({
+      uuid: "ep-1",
+      title: "Episode One",
+      podcastTitle: "Show A",
+      text: "In this episode we discuss climate policy in meaningful depth for a while.",
+      listenTimestamp: "2026-06-01T08:00:00Z",
+    });
+
+    const result = (await search(config(), { query: "climate" })) as Record<string, any>;
+    expect(result.results).toHaveLength(1);
+    const hit = result.results[0];
+    expect(hit.episodeUuid).toBe("ep-1");
+    expect(hit.podcast).toBe("Show A");
+    expect(hit.episode).toBe("Episode One");
+    expect(hit.listenDate).toBe("2026-06-01");
+    expect(hit.transcriptSource).toBe("rss");
+    expect(hit.transcriptPath).toContain("sources/ep-1/transcript.txt");
+    expect(hit.snippet).toContain("**climate**");
+    expect(hit.snippetText).toContain("climate");
+    expect(hit.snippet.length).toBeLessThan(hit.snippetText.length + 20);
+  });
+
+  it("ranks a doc with the exact contiguous phrase above a doc with the same words scattered", async () => {
+    await seedEpisode({
+      uuid: "ep-contig",
+      title: "Contiguous",
+      podcastTitle: "Show A",
+      text: "In this episode we discuss climate policy at length, returning to climate policy again later.",
+    });
+    await seedEpisode({
+      uuid: "ep-scattered",
+      title: "Scattered",
+      podcastTitle: "Show B",
+      text: "Local policy debates rarely mention climate directly, though climate concerns shape policy.",
+    });
+
+    const result = (await search(config(), { query: '"climate policy"' })) as Record<string, any>;
+    const uuids = result.results.map((hit: any) => hit.episodeUuid);
+    expect(uuids[0]).toBe("ep-contig");
+    expect(uuids).toContain("ep-scattered");
+  });
+
+  it("excludes a doc with zero keyword and zero phrase matches rather than ranking it low", async () => {
+    await seedEpisode({
+      uuid: "ep-1",
+      title: "Episode One",
+      podcastTitle: "Show A",
+      text: "In this episode we discuss climate policy in depth.",
+    });
+    await seedEpisode({
+      uuid: "ep-2",
+      title: "Episode Two",
+      podcastTitle: "Show B",
+      text: "Nothing relevant is mentioned in this recording at all.",
+    });
+
+    const result = (await search(config(), { query: "climate" })) as Record<string, any>;
+    expect(result.results.map((hit: any) => hit.episodeUuid)).toEqual(["ep-1"]);
+  });
+
+  it("caps results at limit, applies the default when omitted/zero/negative, and clamps above the max", async () => {
+    for (const uuid of ["ep-1", "ep-2", "ep-3"]) {
+      await seedEpisode({
+        uuid,
+        title: `Episode ${uuid}`,
+        podcastTitle: "Show A",
+        text: "This podcast episode about technology and podcast trends is thorough.",
+      });
+    }
+
+    const limited = (await search(config(), { query: "podcast", limit: 1 })) as Record<string, any>;
+    expect(limited.results).toHaveLength(1);
+
+    const defaulted = (await search(config(), { query: "podcast" })) as Record<string, any>;
+    expect(defaulted.results).toHaveLength(3);
+
+    const zero = (await search(config(), { query: "podcast", limit: 0 })) as Record<string, any>;
+    expect(zero.results).toHaveLength(3);
+
+    const negative = (await search(config(), { query: "podcast", limit: -1 })) as Record<string, any>;
+    expect(negative.results).toHaveLength(3);
+
+    const overCap = (await search(config(), { query: "podcast", limit: 999 })) as Record<string, any>;
+    expect(overCap.results).toHaveLength(3);
+  });
+
+  it("indexes and searches a legacy sidecar missing contentHash via the sha256 fallback", async () => {
+    await seedEpisode({
+      uuid: "ep-legacy",
+      title: "Legacy Episode",
+      podcastTitle: "Show A",
+      text: "Legacy transcript text stored before the content hash field existed, mentioning climate.",
+      omitContentHash: true,
+    });
+
+    const result = (await search(config(), { query: "climate" })) as Record<string, any>;
+    expect(result.results.map((hit: any) => hit.episodeUuid)).toEqual(["ep-legacy"]);
+  });
+
+  it("creates the versioned .index/search-index file after the first search", async () => {
+    await seedEpisode({
+      uuid: "ep-1",
+      title: "Episode One",
+      podcastTitle: "Show A",
+      text: "In this episode we discuss climate policy in depth.",
+    });
+    await search(config(), { query: "climate" });
+    const storage = new Storage(dir);
+    await expect(
+      fs.access(path.join(storage.indexDir(), "search-index.v1.json")),
+    ).resolves.toBeUndefined();
+    // The unversioned legacy filename is never written — builds only touch
+    // their own format, keeping upgrade/rollback across schema changes safe.
+    await expect(fs.access(path.join(storage.indexDir(), "search-index.json"))).rejects.toThrow();
+  });
+
+  it("self-heals and returns identical results after the index file is corrupted", async () => {
+    await seedEpisode({
+      uuid: "ep-1",
+      title: "Episode One",
+      podcastTitle: "Show A",
+      text: "In this episode we discuss climate policy in depth.",
+    });
+    const first = (await search(config(), { query: "climate" })) as Record<string, any>;
+
+    const storage = new Storage(dir);
+    await fs.writeFile(path.join(storage.indexDir(), "search-index.v1.json"), "{ not valid json", "utf8");
+
+    const second = (await search(config(), { query: "climate" })) as Record<string, any>;
+    expect(second.results).toEqual(first.results);
+  });
+
+  it("matches an accented query term against accented transcript text", async () => {
+    await seedEpisode({
+      uuid: "ep-1",
+      title: "Café Talk",
+      podcastTitle: "Show A",
+      text: "This week's café culture episode explores third-wave coffee shops.",
+    });
+
+    const result = (await search(config(), { query: "café" })) as Record<string, any>;
+    expect(result.results.map((hit: any) => hit.episodeUuid)).toEqual(["ep-1"]);
+
+    const unaccented = (await search(config(), { query: "cafe" })) as Record<string, any>;
+    expect(unaccented.results.map((hit: any) => hit.episodeUuid)).toEqual(["ep-1"]);
+  });
+});

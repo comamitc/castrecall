@@ -16,6 +16,7 @@ import {
   fetchTranscript,
   generateReview,
   listRecent,
+  search,
   setup,
   setupStatus,
   syncHistory,
@@ -155,6 +156,26 @@ export default defineToolPlugin({
       }),
       execute: async (params, settings: PluginSettings) =>
         generateReview(resolveConfig(settings), params),
+    }),
+    tool({
+      name: "castrecall_search",
+      description:
+        "Keyword/phrase search over the privately stored transcript corpus (not durable memory — " +
+        "CastRecall never writes there). Supports bare keywords and \"quoted phrases\" (ranked above " +
+        "the same words scattered out of order). Every result carries provenance (episode, podcast, " +
+        "listen date, transcript source, transcript path) plus a highlighted snippet and its raw " +
+        "verbatim source slice, so anything quoted stays attributable.",
+      parameters: Type.Object({
+        query: Type.String({
+          description: "Keywords and/or \"quoted phrases\" to search for.",
+        }),
+        limit: Type.Optional(
+          Type.Number({
+            description: "Max results to return (default 10, max 25).",
+          }),
+        ),
+      }),
+      execute: async (params, settings: PluginSettings) => search(resolveConfig(settings), params),
     }),
     tool({
       name: "castrecall_run_pipeline",

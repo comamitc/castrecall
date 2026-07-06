@@ -9,6 +9,7 @@ import { isListenedEpisode } from "./pocketcasts/listened.js";
 import { detectSecretBackend } from "./pocketcasts/secret-store.js";
 import { fetchHistoryWithSession, hasCachedPocketCastsTokenRecord, resolvePocketCastsCredentials, } from "./pocketcasts/session.js";
 import { buildReviewCandidate } from "./review.js";
+import { SearchIndex } from "./search.js";
 import { buildSetupPlan, classifyExportDir, detectGbrain, PRIVACY_DEFAULTS, } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { WHISPER_CPP_MODEL_MISSING_MESSAGE, detectLocalWhisper, localWhisperReadiness, } from "./transcripts/local-whisper.js";
@@ -523,6 +524,41 @@ export async function generateReview(config, params, deps = {}) {
         note: "Review candidates are approval-gated: read them, keep what matters (in your own words " +
             "where possible), then delete or archive the file. CastRecall never writes to durable memory.",
     };
+}
+/**
+ * Keyword/phrase search over stored transcripts. Read-only: assembles the
+ * corpus from state.json + sources/<uuid>/ (mirroring exportIfEnabled's
+ * contentHash ?? sha256(text) legacy fallback) and delegates reconciliation,
+ * scoring, and snippet-building to SearchIndex — see search.ts.
+ */
+export async function search(config, params) {
+    const query = params.query?.trim();
+    if (!query) {
+        throw new CastrecallSetupError("castrecall_search requires a non-empty query string.");
+    }
+    const storage = storageFor(config);
+    const state = await storage.loadState();
+    const storedEpisodes = Object.values(state.episodes).filter((e) => e.transcriptStatus === "stored");
+    const corpus = [];
+    for (const record of storedEpisodes) {
+        const provenance = await storage.readProvenance(record.uuid);
+        if (!provenance)
+            continue;
+        const contentHash = provenance.contentHash ??
+            createHash("sha256")
+                .update((await storage.readTranscript(record.uuid)) ?? "", "utf8")
+                .digest("hex");
+        corpus.push({
+            uuid: record.uuid,
+            contentHash,
+            provenance,
+            transcriptPath: `${storage.sourceDir(record.uuid)}/transcript.txt`,
+            readText: async () => (await storage.readTranscript(record.uuid)) ?? "",
+        });
+    }
+    const index = new SearchIndex(storage.indexDir());
+    const { hits } = await index.search(query, { limit: params.limit }, corpus);
+    return { results: hits };
 }
 function summarizeListen(record) {
     return {

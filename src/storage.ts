@@ -171,6 +171,11 @@ export class Storage {
     return path.join(this.dataDir, "review", "pending");
   }
 
+  /** Private, rebuildable search-index cache — see search.ts. */
+  indexDir(): string {
+    return path.join(this.dataDir, ".index");
+  }
+
   async init(): Promise<void> {
     await fs.mkdir(path.join(this.dataDir, "sources"), { recursive: true });
     await fs.mkdir(this.reviewPendingDir(), { recursive: true });
