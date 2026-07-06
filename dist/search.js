@@ -19,7 +19,7 @@
  * more revealing than the transcript files it sits beside, and all of it
  * is rebuilt from them on contentHash or schema change.
  */
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 const WORD_PATTERN = /[\p{L}\p{N}]+/gu;
@@ -61,22 +61,62 @@ export function parseQuery(raw) {
     remainder += raw.slice(last);
     return { terms: tokenize(remainder), phrases };
 }
-function fnv1a(input) {
-    let hash = 0x811c9dc5;
-    for (let i = 0; i < input.length; i++) {
-        hash ^= input.charCodeAt(i);
-        hash = Math.imul(hash, 0x01000193) >>> 0;
+/** Bumped whenever the persisted document shape changes; older indexes rebuild wholesale. */
+export const INDEX_SCHEMA_VERSION = 1;
+/**
+ * Structural validation for a persisted document: every term in `termFreq`
+ * must map (via its term hash) to a strictly ascending array of that many
+ * integer positions in `[0, length)`, with no extra postings keys. Anything
+ * else — a torn write, disk corruption, an index produced by an
+ * incompatible build under the same schemaVersion — is treated as absent so
+ * reconcile rebuilds it, rather than letting `phraseConfirmed` throw or
+ * silently miss exact matches.
+ */
+export function isValidIndexedDocument(doc) {
+    if (typeof doc !== "object" || doc === null)
+        return false;
+    const candidate = doc;
+    if (typeof candidate.uuid !== "string" || typeof candidate.contentHash !== "string")
+        return false;
+    if (typeof candidate.length !== "number" || !Number.isInteger(candidate.length) || candidate.length < 0) {
+        return false;
     }
-    return hash.toString(16).padStart(8, "0");
+    if (typeof candidate.termFreq !== "object" || candidate.termFreq === null)
+        return false;
+    if (typeof candidate.postings !== "object" || candidate.postings === null)
+        return false;
+    const terms = Object.keys(candidate.termFreq);
+    if (Object.keys(candidate.postings).length !== terms.length)
+        return false;
+    for (const term of terms) {
+        const expectedCount = candidate.termFreq[term];
+        if (typeof expectedCount !== "number" || !Number.isInteger(expectedCount) || expectedCount <= 0) {
+            return false;
+        }
+        const positions = candidate.postings[hashTerm(term)];
+        if (!Array.isArray(positions) || positions.length !== expectedCount)
+            return false;
+        let previous = -1;
+        for (const position of positions) {
+            if (typeof position !== "number" || !Number.isInteger(position))
+                return false;
+            if (position <= previous || position >= candidate.length)
+                return false;
+            previous = position;
+        }
+    }
+    return true;
 }
 /**
- * One-way 64-bit hash of a term, keying its positional postings. Two
- * independent 32-bit FNV-1a passes are concatenated so accidental
- * collisions (which would merge two terms' postings and could fake a
- * contiguity check) are negligible.
+ * One-way 64-bit hash of a term, keying its positional postings. Truncated
+ * SHA-256 digest: unlike two concatenated FNV-1a passes (whose halves are
+ * not independent — an FNV collision on `term` also collides on any shared
+ * suffix), a cryptographic digest gives a genuine 64 bits of collision
+ * resistance, so accidental collisions that would merge two terms'
+ * postings and fake a contiguity check are negligible.
  */
 export function hashTerm(term) {
-    return fnv1a(term) + fnv1a(`${term}#`);
+    return createHash("sha256").update(term, "utf8").digest("hex").slice(0, 16);
 }
 /** Build a document's term-frequency + positional-postings record from its transcript text. Pure. */
 export function buildDocument(uuid, contentHash, text) {
@@ -294,7 +334,16 @@ export class SearchIndex {
         try {
             const raw = await fs.readFile(this.indexPath, "utf8");
             const parsed = JSON.parse(raw);
-            return Array.isArray(parsed.docs) ? parsed.docs : [];
+            // Version gate: anything not written by exactly this schema —
+            // including the pre-postings formats — is discarded wholesale and
+            // rebuilt from the transcripts.
+            if (parsed.schemaVersion !== INDEX_SCHEMA_VERSION || !Array.isArray(parsed.docs))
+                return [];
+            // Structural gate: a doc written under the right version can still
+            // be malformed (torn write, disk corruption, hand edit). Dropping it
+            // here marks it changed in reconcile, so it self-heals instead of
+            // making phraseConfirmed throw or silently miss.
+            return parsed.docs.filter(isValidIndexedDocument);
         }
         catch {
             return [];
@@ -305,7 +354,7 @@ export class SearchIndex {
         // Unique per attempt so concurrent searches reconciling the same index
         // don't share (and race on) a single fixed temp path.
         const tmpPath = `${this.indexPath}.${randomUUID()}.tmp`;
-        await fs.writeFile(tmpPath, `${JSON.stringify({ docs }, null, 2)}\n`, "utf8");
+        await fs.writeFile(tmpPath, `${JSON.stringify({ schemaVersion: INDEX_SCHEMA_VERSION, docs }, null, 2)}\n`, "utf8");
         await fs.rename(tmpPath, this.indexPath);
     }
     async reconcile(corpus) {
@@ -315,12 +364,10 @@ export class SearchIndex {
         let changed = corpus.length !== existing.length;
         for (const entry of corpus) {
             const current = byUuid.get(entry.uuid);
-            // Schema check alongside contentHash: docs persisted before
-            // positional postings existed rebuild themselves on the next search.
-            if (current &&
-                current.contentHash === entry.contentHash &&
-                current.postings !== null &&
-                typeof current.postings === "object") {
+            // load() already discarded wrong-version and structurally invalid
+            // docs, so contentHash equality is the only per-doc freshness check
+            // left.
+            if (current && current.contentHash === entry.contentHash) {
                 reconciled.push(current);
                 continue;
             }

@@ -84,6 +84,46 @@ export type IndexedDocument = {
   postings: Record<string, number[]>;
 };
 
+/** Bumped whenever the persisted document shape changes; older indexes rebuild wholesale. */
+export const INDEX_SCHEMA_VERSION = 1;
+
+/**
+ * Structural validation for a persisted document: every term in `termFreq`
+ * must map (via its term hash) to a strictly ascending array of that many
+ * integer positions in `[0, length)`, with no extra postings keys. Anything
+ * else — a torn write, disk corruption, an index produced by an
+ * incompatible build under the same schemaVersion — is treated as absent so
+ * reconcile rebuilds it, rather than letting `phraseConfirmed` throw or
+ * silently miss exact matches.
+ */
+export function isValidIndexedDocument(doc: unknown): doc is IndexedDocument {
+  if (typeof doc !== "object" || doc === null) return false;
+  const candidate = doc as Partial<IndexedDocument>;
+  if (typeof candidate.uuid !== "string" || typeof candidate.contentHash !== "string") return false;
+  if (typeof candidate.length !== "number" || !Number.isInteger(candidate.length) || candidate.length < 0) {
+    return false;
+  }
+  if (typeof candidate.termFreq !== "object" || candidate.termFreq === null) return false;
+  if (typeof candidate.postings !== "object" || candidate.postings === null) return false;
+  const terms = Object.keys(candidate.termFreq);
+  if (Object.keys(candidate.postings).length !== terms.length) return false;
+  for (const term of terms) {
+    const expectedCount = candidate.termFreq[term];
+    if (typeof expectedCount !== "number" || !Number.isInteger(expectedCount) || expectedCount <= 0) {
+      return false;
+    }
+    const positions = candidate.postings[hashTerm(term)];
+    if (!Array.isArray(positions) || positions.length !== expectedCount) return false;
+    let previous = -1;
+    for (const position of positions) {
+      if (typeof position !== "number" || !Number.isInteger(position)) return false;
+      if (position <= previous || position >= candidate.length) return false;
+      previous = position;
+    }
+  }
+  return true;
+}
+
 /**
  * One-way 64-bit hash of a term, keying its positional postings. Truncated
  * SHA-256 digest: unlike two concatenated FNV-1a passes (whose halves are
@@ -348,8 +388,16 @@ export class SearchIndex {
   private async load(): Promise<IndexedDocument[]> {
     try {
       const raw = await fs.readFile(this.indexPath, "utf8");
-      const parsed = JSON.parse(raw) as { docs?: IndexedDocument[] };
-      return Array.isArray(parsed.docs) ? parsed.docs : [];
+      const parsed = JSON.parse(raw) as { schemaVersion?: number; docs?: IndexedDocument[] };
+      // Version gate: anything not written by exactly this schema —
+      // including the pre-postings formats — is discarded wholesale and
+      // rebuilt from the transcripts.
+      if (parsed.schemaVersion !== INDEX_SCHEMA_VERSION || !Array.isArray(parsed.docs)) return [];
+      // Structural gate: a doc written under the right version can still
+      // be malformed (torn write, disk corruption, hand edit). Dropping it
+      // here marks it changed in reconcile, so it self-heals instead of
+      // making phraseConfirmed throw or silently miss.
+      return parsed.docs.filter(isValidIndexedDocument);
     } catch {
       return [];
     }
@@ -360,7 +408,11 @@ export class SearchIndex {
     // Unique per attempt so concurrent searches reconciling the same index
     // don't share (and race on) a single fixed temp path.
     const tmpPath = `${this.indexPath}.${randomUUID()}.tmp`;
-    await fs.writeFile(tmpPath, `${JSON.stringify({ docs }, null, 2)}\n`, "utf8");
+    await fs.writeFile(
+      tmpPath,
+      `${JSON.stringify({ schemaVersion: INDEX_SCHEMA_VERSION, docs }, null, 2)}\n`,
+      "utf8",
+    );
     await fs.rename(tmpPath, this.indexPath);
   }
 
@@ -371,14 +423,10 @@ export class SearchIndex {
     let changed = corpus.length !== existing.length;
     for (const entry of corpus) {
       const current = byUuid.get(entry.uuid);
-      // Schema check alongside contentHash: docs persisted before
-      // positional postings existed rebuild themselves on the next search.
-      if (
-        current &&
-        current.contentHash === entry.contentHash &&
-        current.postings !== null &&
-        typeof current.postings === "object"
-      ) {
+      // load() already discarded wrong-version and structurally invalid
+      // docs, so contentHash equality is the only per-doc freshness check
+      // left.
+      if (current && current.contentHash === entry.contentHash) {
         reconciled.push(current);
         continue;
       }

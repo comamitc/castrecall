@@ -41,11 +41,25 @@ export type IndexedDocument = {
      */
     postings: Record<string, number[]>;
 };
+/** Bumped whenever the persisted document shape changes; older indexes rebuild wholesale. */
+export declare const INDEX_SCHEMA_VERSION = 1;
 /**
- * One-way 64-bit hash of a term, keying its positional postings. Two
- * independent 32-bit FNV-1a passes are concatenated so accidental
- * collisions (which would merge two terms' postings and could fake a
- * contiguity check) are negligible.
+ * Structural validation for a persisted document: every term in `termFreq`
+ * must map (via its term hash) to a strictly ascending array of that many
+ * integer positions in `[0, length)`, with no extra postings keys. Anything
+ * else — a torn write, disk corruption, an index produced by an
+ * incompatible build under the same schemaVersion — is treated as absent so
+ * reconcile rebuilds it, rather than letting `phraseConfirmed` throw or
+ * silently miss exact matches.
+ */
+export declare function isValidIndexedDocument(doc: unknown): doc is IndexedDocument;
+/**
+ * One-way 64-bit hash of a term, keying its positional postings. Truncated
+ * SHA-256 digest: unlike two concatenated FNV-1a passes (whose halves are
+ * not independent — an FNV collision on `term` also collides on any shared
+ * suffix), a cryptographic digest gives a genuine 64 bits of collision
+ * resistance, so accidental collisions that would merge two terms'
+ * postings and fake a contiguity check are negligible.
  */
 export declare function hashTerm(term: string): string;
 /** Build a document's term-frequency + positional-postings record from its transcript text. Pure. */

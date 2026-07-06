@@ -11,6 +11,7 @@ import {
   buildSnippet,
   clampLimit,
   DEFAULT_SEARCH_LIMIT,
+  isValidIndexedDocument,
   MAX_SEARCH_LIMIT,
   parseQuery,
   phraseBonus,
@@ -153,6 +154,31 @@ describe("phraseConfirmed", () => {
     const doc = buildDocument("doc", "h1", "the quick fox and the lazy dog near the river");
     expect(phraseConfirmed(doc, ["the", "lazy"])).toBe(true);
     expect(phraseConfirmed(doc, ["lazy", "the"])).toBe(false);
+  });
+});
+
+describe("isValidIndexedDocument", () => {
+  it("accepts a document produced by buildDocument", () => {
+    expect(isValidIndexedDocument(buildDocument("doc", "h1", "climate policy in depth"))).toBe(true);
+  });
+
+  it("rejects malformed shapes that would break or skew phrase confirmation", () => {
+    const good = buildDocument("doc", "h1", "climate policy in depth");
+    const tampered: unknown[] = [
+      null,
+      { ...good, postings: undefined },
+      { ...good, postings: { bogus: 1 } },
+      { ...good, postings: {} },
+      // A posting list whose count disagrees with termFreq.
+      { ...good, postings: { ...good.postings, [Object.keys(good.postings)[0]]: [] } },
+      // Non-integer and out-of-range positions.
+      { ...good, postings: { ...good.postings, [Object.keys(good.postings)[0]]: [0.5] } },
+      { ...good, postings: { ...good.postings, [Object.keys(good.postings)[0]]: [99] } },
+      { ...good, length: -1 },
+    ];
+    for (const doc of tampered) {
+      expect(isValidIndexedDocument(doc), JSON.stringify(doc)?.slice(0, 80)).toBe(false);
+    }
   });
 });
 
@@ -444,6 +470,60 @@ describe("SearchIndex", () => {
 
     const result = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
     expect(result.hits.map((hit) => hit.episodeUuid)).toContain("match");
+  });
+
+  it("rebuilds an index written under a different schemaVersion", async () => {
+    const index = new SearchIndex(dir);
+    const corpus = [
+      entry({
+        uuid: "match",
+        provenance: { ...BASE_PROVENANCE, episodeUuid: "match" },
+        text: "we discuss climate policy in depth",
+      }),
+    ];
+    await index.search('"climate policy"', {}, corpus);
+
+    const indexPath = path.join(dir, "search-index.json");
+    const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as Record<string, unknown>;
+    parsed.schemaVersion = 999;
+    await fs.writeFile(indexPath, JSON.stringify(parsed), "utf8");
+
+    const result = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
+    expect(result.hits.map((hit) => hit.episodeUuid)).toContain("match");
+  });
+
+  it("self-heals malformed-but-present postings under a matching contentHash instead of throwing or missing matches", async () => {
+    const index = new SearchIndex(dir);
+    const corpus = [
+      entry({
+        uuid: "match",
+        provenance: { ...BASE_PROVENANCE, episodeUuid: "match" },
+        text: "we discuss climate policy in depth",
+      }),
+    ];
+    await index.search('"climate policy"', {}, corpus);
+
+    // Same schemaVersion, same contentHash, but postings values are not
+    // position arrays — the shape a skewed or corrupted build could leave.
+    const indexPath = path.join(dir, "search-index.json");
+    const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
+      schemaVersion: number;
+      docs: Array<Record<string, unknown>>;
+    };
+    for (const doc of parsed.docs) doc.postings = { bogus: 1 };
+    await fs.writeFile(indexPath, JSON.stringify(parsed), "utf8");
+
+    const healed = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
+    expect(healed.hits.map((hit) => hit.episodeUuid)).toContain("match");
+
+    // Empty-object postings (no keys at all) heal the same way.
+    const reparsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
+      docs: Array<Record<string, unknown>>;
+    };
+    for (const doc of reparsed.docs) doc.postings = {};
+    await fs.writeFile(indexPath, JSON.stringify(reparsed), "utf8");
+    const again = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
+    expect(again.hits.map((hit) => hit.episodeUuid)).toContain("match");
   });
 
   it("does not throw ENOENT when two searches persist concurrently, since each persist writes a unique temp file", async () => {
