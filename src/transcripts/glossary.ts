@@ -37,17 +37,23 @@ export type RawGlossary = {
   terms: GlossaryEntry[];
 };
 
-type CompiledVariant = {
-  variant: string;
-  canonical: string;
-  matchCase: boolean;
-  /** Single-variant word-boundary pattern, scanned independently so shifted overlaps with other variants are never hidden by matchAll's own non-overlapping scan. */
+type CompiledScanner = {
+  /**
+   * Zero-width scanner: word-boundary lookbehind plus a lookahead capturing
+   * the longest-first variant alternation (with its own trailing boundary).
+   * Being zero-width, matchAll advances position-by-position, so candidates
+   * STARTING inside another candidate are still enumerated — one native
+   * regex pass per case class instead of one full-text scan per variant.
+   */
   pattern: RegExp;
+  caseSensitive: boolean;
+  /** Matched text (lowercased for the insensitive class) → its variant/canonical. */
+  byMatch: Map<string, { variant: string; canonical: string }>;
 };
 
 export type CompiledGlossary = {
-  /** Sorted longest-first (ties broken by variant string); each variant is scanned with its own pattern. */
-  variants: CompiledVariant[];
+  /** At most two scanners: case-sensitive and case-insensitive classes. */
+  scanners: CompiledScanner[];
 };
 
 export type GlossaryCorrection = {
@@ -135,36 +141,60 @@ export function compileGlossary(entries: GlossaryEntry[]): CompiledGlossary {
     return a.variant.localeCompare(b.variant);
   });
 
-  const variants: CompiledVariant[] = all.map((v) => ({
-    ...v,
-    pattern: new RegExp(
-      `(?<![\\p{L}\\p{N}])${escapeRegExp(v.variant)}(?![\\p{L}\\p{N}])`,
-      v.matchCase ? "gu" : "giu",
-    ),
-  }));
+  const scanners: CompiledScanner[] = [];
+  for (const caseSensitive of [true, false]) {
+    const classVariants = all.filter((v) => v.matchCase === caseSensitive);
+    if (classVariants.length === 0) continue;
+    // Longest-first alternation: at any given start position the regex
+    // engine takes the first alternative that fits, so the longest variant
+    // at that position wins within the class — the same rank rule the
+    // per-variant sort encodes.
+    const alternation = classVariants.map((v) => escapeRegExp(v.variant)).join("|");
+    const byMatch = new Map<string, { variant: string; canonical: string }>();
+    for (const v of classVariants) {
+      byMatch.set(caseSensitive ? v.variant : v.variant.toLowerCase(), {
+        variant: v.variant,
+        canonical: v.canonical,
+      });
+    }
+    scanners.push({
+      pattern: new RegExp(
+        `(?<![\\p{L}\\p{N}])(?=(${alternation})(?![\\p{L}\\p{N}]))`,
+        caseSensitive ? "gu" : "giu",
+      ),
+      caseSensitive,
+      byMatch,
+    });
+  }
 
-  return { variants };
+  return { scanners };
 }
 
 type Span = { start: number; end: number; canonical: string; variant: string };
 
 /**
- * Each variant is scanned independently (its own pattern, its own matchAll
- * pass) rather than via one combined alternation. A combined pattern's
- * single non-overlapping scan would consume "new york" and never even
- * observe "york city" starting inside it — collecting per-variant is what
- * lets resolveOverlaps see every shifted-overlap candidate, not just the
- * ones that happen to start where a prior match left off.
+ * One zero-width lookahead scan per case class (at most two passes total,
+ * regardless of glossary size — the previous per-variant matchAll made this
+ * O(variants × text length)). Because the overall match is zero-width, the
+ * scan advances through every position, so a candidate starting INSIDE
+ * another candidate ("york city" inside "new york") is still enumerated and
+ * resolveOverlaps sees every shifted-overlap candidate. Within one position
+ * the longest-first alternation picks the longest variant; a strictly
+ * shorter same-start alternative is intentionally shadowed (deterministic
+ * longest-at-position, matching the global rank rule).
  */
 function collectSpans(text: string, compiled: CompiledGlossary): Span[] {
   const spans: Span[] = [];
-  for (const v of compiled.variants) {
-    for (const match of text.matchAll(v.pattern)) {
+  for (const scanner of compiled.scanners) {
+    for (const match of text.matchAll(scanner.pattern)) {
+      const matched = match[1];
+      const hit = scanner.byMatch.get(scanner.caseSensitive ? matched : matched.toLowerCase());
+      if (!hit) continue;
       spans.push({
         start: match.index,
-        end: match.index + match[0].length,
-        canonical: v.canonical,
-        variant: v.variant,
+        end: match.index + matched.length,
+        canonical: hit.canonical,
+        variant: hit.variant,
       });
     }
   }

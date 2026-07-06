@@ -31,16 +31,25 @@ export type GlossaryEntry = {
 export type RawGlossary = {
     terms: GlossaryEntry[];
 };
-type CompiledVariant = {
-    variant: string;
-    canonical: string;
-    matchCase: boolean;
-    /** Single-variant word-boundary pattern, scanned independently so shifted overlaps with other variants are never hidden by matchAll's own non-overlapping scan. */
+type CompiledScanner = {
+    /**
+     * Zero-width scanner: word-boundary lookbehind plus a lookahead capturing
+     * the longest-first variant alternation (with its own trailing boundary).
+     * Being zero-width, matchAll advances position-by-position, so candidates
+     * STARTING inside another candidate are still enumerated — one native
+     * regex pass per case class instead of one full-text scan per variant.
+     */
     pattern: RegExp;
+    caseSensitive: boolean;
+    /** Matched text (lowercased for the insensitive class) → its variant/canonical. */
+    byMatch: Map<string, {
+        variant: string;
+        canonical: string;
+    }>;
 };
 export type CompiledGlossary = {
-    /** Sorted longest-first (ties broken by variant string); each variant is scanned with its own pattern. */
-    variants: CompiledVariant[];
+    /** At most two scanners: case-sensitive and case-insensitive classes. */
+    scanners: CompiledScanner[];
 };
 export type GlossaryCorrection = {
     canonical: string;

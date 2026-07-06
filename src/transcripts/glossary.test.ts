@@ -212,6 +212,34 @@ describe("glossary", () => {
       );
     });
 
+    it("scales to large glossaries with a bounded number of scans (issue #46 review: no per-variant full-text passes)", () => {
+      // 1,000 variants over a long transcript: the scanner does at most one
+      // native pass per case class, so this must complete quickly AND still
+      // apply corrections exactly like the small-glossary path.
+      const entries = Array.from({ length: 1000 }, (_, i) => ({
+        canonical: `Product${i}`,
+        variants: [`produkt ${i}`],
+      }));
+      const compiled = compileGlossary(entries);
+      const filler = "plain narration continues here with ordinary words. ";
+      const text = `${filler.repeat(200)}we compared produkt 7 against produkt 421 today. ${filler.repeat(200)}`;
+
+      const started = performance.now();
+      const result = applyGlossary(text, compiled);
+      const elapsedMs = performance.now() - started;
+
+      expect(result.text).toContain("Product7 against Product421");
+      expect(result.corrections).toEqual(
+        expect.arrayContaining([
+          { canonical: "Product7", variant: "produkt 7", count: 1 },
+          { canonical: "Product421", variant: "produkt 421", count: 1 },
+        ]),
+      );
+      // Generous smoke ceiling — the pre-fix per-variant scan (1,000 full
+      // passes over ~20k chars) sat well above this on the same hardware.
+      expect(elapsedMs).toBeLessThan(1500);
+    });
+
     it("accepts a well-formed glossary", () => {
       const parsed = parseGlossary({
         terms: [{ canonical: "ChatGPT", variants: ["chat gpt"], matchCase: false }],
