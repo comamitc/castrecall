@@ -430,6 +430,34 @@ describe("CorpusExporter", () => {
     expect(afterIndex).toContain('transcript_quality_reasons: ["no-timestamps","no-speaker-labels"]');
   });
 
+  it("never erases an already-scored export when legacy provenance without quality re-exports the same hash (issue #41 review)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 82, tier: "reviewable", reasons: ["no-timestamps"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    const beforeIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(beforeIndex).toContain("transcript_quality_score: 82");
+
+    // A pre-#41 sidecar carries no quality field. Re-exporting the same
+    // content with it must NOT count the scored page as stale — that would
+    // rewrite the page without any transcript_quality_* lines and destroy
+    // the only machine-readable quality signal consumers have.
+    const legacy = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    expect(legacy.skipped).toBe(true);
+    expect(legacy.exported).toBe(0);
+
+    const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(afterIndex).toContain("transcript_quality_score: 82");
+  });
+
   it("replaces the episode dir with no stale files when the content hash changes", async () => {
     const exporter = new CorpusExporter(dir);
     const longText = Array.from({ length: 10 }, (_, i) => paragraph(60, `long${i}-`)).join("\n\n");

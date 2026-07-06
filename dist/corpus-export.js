@@ -267,7 +267,14 @@ export class CorpusExporter {
         const episodeSlug = episodeDirSlug(options.record);
         const targetDir = path.join(this.exportDir, "podcasts", showSlug, episodeSlug);
         const existing = await readExistingExportMeta(targetDir);
+        // Quality reconciliation only runs when the incoming provenance
+        // actually carries a quality value: legacy pre-#41 sidecars have none,
+        // and re-exporting a same-hash episode against an already-scored page
+        // just to REMOVE its score/tier/reasons would erase the only
+        // machine-readable quality signal downstream consumers have. A scored
+        // page therefore only re-exports when the incoming quality disagrees.
         const qualityStale = existing !== undefined &&
+            options.provenance.quality !== undefined &&
             JSON.stringify(existing.quality) !== JSON.stringify(options.provenance.quality);
         if (existing?.contentHash === options.contentHash && !qualityStale) {
             return { exported: 0, skipped: true, dir: targetDir };
