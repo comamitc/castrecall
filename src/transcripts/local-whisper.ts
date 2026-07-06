@@ -168,6 +168,11 @@ export function resolveWhisperDecodeArgs(
   if (decode.language) {
     args.push(...(flavor === "whisper.cpp" ? ["-l", decode.language] : ["--language", decode.language]));
     applied.push("language");
+  } else if (flavor === "whisper.cpp") {
+    // whisper.cpp's CLI defaults -l to "en", not auto-detect, so an unset
+    // language hint must explicitly request auto-detect to match the
+    // documented "unset = auto-detect" behavior other flavors get for free.
+    args.push("-l", "auto");
   }
 
   // Loop-prevention default for long-form podcasts (issue #53): repeating
@@ -231,19 +236,35 @@ export function resolveWhisperDecodeArgs(
       "whisper-ctranslate2": "--compression_ratio_threshold",
     },
   );
-  applyThreshold(
-    flavor,
-    decode.hallucinationSilenceThreshold,
-    "hallucinationSilenceThreshold",
-    args,
-    applied,
-    ignore,
-    {
-      "mlx-whisper": "--hallucination-silence-threshold",
-      "openai-whisper": "--hallucination_silence_threshold",
-      "whisper-ctranslate2": "--hallucination_silence_threshold",
-    },
-  );
+  // mlx-whisper, openai-whisper, and whisper-ctranslate2 only act on
+  // hallucination_silence_threshold inside their word-timestamp decode path;
+  // set without wordTimestamps it would otherwise be a silent no-op, so it's
+  // ignored with an explicit reason instead of being reported as applied.
+  if (
+    decode.hallucinationSilenceThreshold !== undefined &&
+    flavor !== "whisper.cpp" &&
+    !decode.wordTimestamps
+  ) {
+    ignore(
+      "hallucinationSilenceThreshold",
+      `${flavor} only honors hallucinationSilenceThreshold alongside word timestamps; set ` +
+        "CASTRECALL_WHISPER_WORD_TIMESTAMPS=true to use this.",
+    );
+  } else {
+    applyThreshold(
+      flavor,
+      decode.hallucinationSilenceThreshold,
+      "hallucinationSilenceThreshold",
+      args,
+      applied,
+      ignore,
+      {
+        "mlx-whisper": "--hallucination-silence-threshold",
+        "openai-whisper": "--hallucination_silence_threshold",
+        "whisper-ctranslate2": "--hallucination_silence_threshold",
+      },
+    );
+  }
 
   return { args, applied, ignored, outputFormat };
 }

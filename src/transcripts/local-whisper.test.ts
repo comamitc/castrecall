@@ -148,7 +148,7 @@ describe("resolveWhisperDecodeArgs", () => {
     expect(mlx.outputFormat).toBe("txt");
 
     const cpp = resolveWhisperDecodeArgs("whisper.cpp", DEFAULT_DECODE);
-    expect(cpp.args).toEqual(["-mc", "0"]);
+    expect(cpp.args).toEqual(["-l", "auto", "-mc", "0"]);
 
     const openai = resolveWhisperDecodeArgs("openai-whisper", DEFAULT_DECODE);
     expect(openai.args).toEqual(["--condition_on_previous_text", "False"]);
@@ -175,6 +175,44 @@ describe("resolveWhisperDecodeArgs", () => {
     expect(openai.args).toEqual(
       expect.arrayContaining(["--language", "en", "--no_speech_threshold", "0.6"]),
     );
+  });
+
+  it("passes -l auto to whisper.cpp when no language hint is configured (regression)", () => {
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", DEFAULT_DECODE);
+    expect(cpp.args).toEqual(expect.arrayContaining(["-l", "auto"]));
+    expect(cpp.applied).not.toContain("language");
+
+    const other = resolveWhisperDecodeArgs("openai-whisper", DEFAULT_DECODE);
+    expect(other.args).not.toEqual(expect.arrayContaining(["--language"]));
+  });
+
+  it("ignores hallucinationSilenceThreshold on Python-backed flavors without word timestamps (regression)", () => {
+    const decode: WhisperDecodeConfig = { ...DEFAULT_DECODE, hallucinationSilenceThreshold: 2 };
+    for (const flavor of ["mlx-whisper", "openai-whisper", "whisper-ctranslate2"] as const) {
+      const result = resolveWhisperDecodeArgs(flavor, decode);
+      expect(result.args).not.toEqual(expect.arrayContaining(["--hallucination-silence-threshold"]));
+      expect(result.args).not.toEqual(expect.arrayContaining(["--hallucination_silence_threshold"]));
+      expect(result.ignored).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            option: "hallucinationSilenceThreshold",
+            reason: expect.stringContaining("CASTRECALL_WHISPER_WORD_TIMESTAMPS"),
+          }),
+        ]),
+      );
+    }
+  });
+
+  it("applies hallucinationSilenceThreshold on Python-backed flavors once word timestamps are enabled", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      wordTimestamps: true,
+      hallucinationSilenceThreshold: 2,
+    };
+    const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
+    expect(mlx.args).toEqual(expect.arrayContaining(["--hallucination-silence-threshold", "2"]));
+    expect(mlx.applied).toEqual(expect.arrayContaining(["hallucinationSilenceThreshold"]));
+    expect(mlx.ignored).toEqual([]);
   });
 
   it("ignores whisper.cpp-unsupported options with a reason instead of dropping them silently", () => {

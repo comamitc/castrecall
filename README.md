@@ -297,7 +297,7 @@ Pocket Casts' `/user/history` endpoint returns everything you've opened, includi
 | `CASTRECALL_WHISPER_NO_SPEECH_THRESHOLD` | no | Numeric threshold for detecting silence/no-speech segments. An invalid (non-numeric) value is dropped (unset), not passed through as `NaN`. |
 | `CASTRECALL_WHISPER_LOGPROB_THRESHOLD` | no | Numeric average-logprob threshold below which a segment is treated as failed. Maps to whisper.cpp's `-lpt`. Same invalid-value handling as above. |
 | `CASTRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD` | no | Numeric gzip-compression-ratio threshold above which a segment is treated as failed (catches repetition loops). Not supported by whisper.cpp (ignored with a reason). Same invalid-value handling as above. |
-| `CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD` | no | Numeric silence-duration threshold (seconds) for hallucination suppression (openai-whisper/whisper-ctranslate2 require word timestamps for this to take effect). Not supported by whisper.cpp (ignored with a reason). Same invalid-value handling as above. |
+| `CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD` | no | Numeric silence-duration threshold (seconds) for hallucination suppression. mlx-whisper/openai-whisper/whisper-ctranslate2 only act on it alongside `CASTRECALL_WHISPER_WORD_TIMESTAMPS=true`; without that, it's ignored with a reason rather than silently having no effect. Not supported by whisper.cpp (ignored with a reason). Same invalid-value handling as above. |
 | `CASTRECALL_ENABLE_STT` | no | `true` to allow paid STT fallback. |
 | `CASTRECALL_STT_PROVIDER` | no | `assemblyai` (default), `openai`, or `deepgram`. |
 | `ASSEMBLYAI_API_KEY` | with STT | AssemblyAI transcription. |
