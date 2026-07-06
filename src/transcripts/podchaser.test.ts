@@ -76,6 +76,26 @@ describe("fetchPodchaserTranscript", () => {
     expect(result).toEqual({ text: "hello\nworld", sourceUrl: TRANSCRIPT_URL });
   });
 
+  it("GUID lookup sends the documented EpisodeIdentifier shape ({ id, type })", async () => {
+    let capturedVariables: unknown;
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === GRAPHQL_URL) {
+        const body = JSON.parse(String(init?.body)) as { query: string; variables: unknown };
+        if (body.query.includes("GetEpisodeByGuid")) {
+          capturedVariables = body.variables;
+          return episodeByGuidResponse([]);
+        }
+        return notFoundResponse();
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    await fetchPodchaserTranscript(config(), { guid: "guid-1", title: "Episode One" }, fetchImpl, RETRY);
+
+    expect(capturedVariables).toEqual({ identifier: { id: "guid-1", type: "GUID" } });
+  });
+
   it("raw_JSON hit: top-level array of utterance objects yields the same joined text", async () => {
     const fetchImpl = (async (input: RequestInfo | URL) => {
       const url = String(input);

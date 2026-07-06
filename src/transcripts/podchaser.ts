@@ -89,7 +89,7 @@ async function lookupByGuid(
   const result = await podchaserRequest(
     config,
     query,
-    { identifier: { identifier: guid, type: "GUID" } },
+    { identifier: { id: guid, type: "GUID" } },
     fetchImpl,
     retry,
   );
