@@ -298,19 +298,40 @@ function jobStatePath(config: ResolvedConfig, base: string, audioUrl: string): s
   return path.join(config.dataDir, ".staging", "remote-stt-jobs", `${key}.json`);
 }
 
-async function readJobState(statePath: string): Promise<string | undefined> {
+type JobState = { jobId: string; authFailures: number };
+
+async function readJobState(statePath: string): Promise<JobState | undefined> {
   try {
-    const parsed = JSON.parse(await fs.readFile(statePath, "utf8")) as { jobId?: string };
-    return typeof parsed.jobId === "string" && parsed.jobId ? parsed.jobId : undefined;
+    const parsed = JSON.parse(await fs.readFile(statePath, "utf8")) as {
+      jobId?: string;
+      authFailures?: number;
+    };
+    if (typeof parsed.jobId !== "string" || !parsed.jobId) return undefined;
+    return { jobId: parsed.jobId, authFailures: typeof parsed.authFailures === "number" ? parsed.authFailures : 0 };
   } catch {
     return undefined;
   }
 }
 
-async function writeJobState(statePath: string, jobId: string): Promise<void> {
+async function writeJobState(statePath: string, jobId: string, authFailures = 0): Promise<void> {
   await fs.mkdir(path.dirname(statePath), { recursive: true });
-  await fs.writeFile(statePath, JSON.stringify({ jobId, savedAt: new Date().toISOString() }), "utf8");
+  await fs.writeFile(
+    statePath,
+    JSON.stringify({ jobId, authFailures, savedAt: new Date().toISOString() }),
+    "utf8",
+  );
 }
+
+/**
+ * A 401/403 on a resume poll is AMBIGUOUS under the remote-stt contract:
+ * /health is not required to validate the token, so nothing can prove
+ * whether the token is globally broken (keep the handle — a fixed token
+ * resumes the job) or this specific job is no longer ours (handle is dead).
+ * Fail safe by KEEPING the state, but bound the ambiguity: after this many
+ * consecutive auth-failed resume attempts the handle is forgotten, so a
+ * genuinely dead job cannot strand the episode indefinitely.
+ */
+const MAX_RESUME_AUTH_FAILURES = 3;
 
 async function clearJobState(statePath: string): Promise<void> {
   await fs.rm(statePath, { force: true }).catch(() => {});
@@ -337,14 +358,14 @@ export async function transcribeWithRemoteStt(
   // keep the state file so a later run can resume again; any terminal poll
   // error (job unknown, job failed) forgets the job and falls through to a
   // fresh submit below.
-  const priorJobId = await readJobState(statePath);
-  if (priorJobId) {
+  const prior = await readJobState(statePath);
+  if (prior) {
     let resumedBody: RawRemoteResult | undefined;
     try {
       resumedBody = await pollJob(
         base,
         headers,
-        priorJobId,
+        prior.jobId,
         fetchImpl,
         sleep,
         pollIntervalMs,
@@ -356,22 +377,21 @@ export async function transcribeWithRemoteStt(
         // Provider forgot the job — the one case where resubmitting is right.
         await clearJobState(statePath);
       } else if (error instanceof CastrecallSetupError) {
-        // Auth failure on the resume poll: disambiguate GLOBAL auth failure
-        // (token broken everywhere — keep the job handle; a fixed token can
-        // still resume) from a JOB-SCOPED denial (provider healthy under
-        // this token, but this job id is not ours anymore — rotated
-        // account, ACL change; keeping the handle would strand the episode
-        // behind endless 403s). The health endpoint uses the same token, so
-        // it decides which case this is.
-        const health = await remoteSttHealth(config, fetchImpl);
-        if (health.ok) {
+        // Ambiguous auth failure (see MAX_RESUME_AUTH_FAILURES): keep the
+        // handle so a fixed token can resume the running job, but count the
+        // attempt — a job-scoped denial (rotated account/ACL) would 401/403
+        // forever, and after the bound the handle is forgotten so the
+        // episode is never stranded indefinitely.
+        const failures = prior.authFailures + 1;
+        if (failures >= MAX_RESUME_AUTH_FAILURES) {
           await clearJobState(statePath);
           throw new Error(
-            `Remote STT denied access to saved job ${priorJobId} while the service is otherwise ` +
-              "reachable with this token; the saved job was forgotten. " +
-              `(${error.message})`,
+            `Remote STT rejected auth for saved job ${prior.jobId} on ${failures} consecutive ` +
+              "attempts; the saved job was forgotten — fix CASTRECALL_REMOTE_STT_TOKEN and the " +
+              `next attempt will submit fresh. (${error.message})`,
           );
         }
+        await writeJobState(statePath, prior.jobId, failures);
         throw error;
       } else if (error instanceof RetryableSttError) {
         // Still running / transient: keep the state for the next run.

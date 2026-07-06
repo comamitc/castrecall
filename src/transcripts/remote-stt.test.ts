@@ -505,21 +505,20 @@ describe("transcribeWithRemoteStt — async job resume (issue #61 review)", () =
       expect(await jobStateFiles()).toHaveLength(1);
     }
 
-    // JOB-SCOPED denial: the poll 403s but the health endpoint accepts the
-    // token — the saved job is not ours anymore (rotated account/ACL).
-    // Keeping it would strand the episode behind endless 403s; it is
-    // forgotten and the failure surfaces as a terminal error.
-    const jobScoped: FetchLike = (async (url: string) => {
-      if (String(url).includes("/jobs/")) return new Response("forbidden", { status: 403 });
-      if (String(url).endsWith("/health")) return new Response(JSON.stringify({ status: "ok" }), { status: 200 });
-      throw new Error("must not resubmit in the same call");
+    // The ambiguity is BOUNDED: after MAX_RESUME_AUTH_FAILURES consecutive
+    // auth-failed resume attempts (2 above + 1 below), the handle is
+    // forgotten with a terminal error so a job-scoped denial (rotated
+    // account/ACL) can never strand the episode indefinitely.
+    const authFail3: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) throw new Error("must not resubmit in the same call");
+      return new Response("forbidden", { status: 403 });
     }) as FetchLike;
     const clock3 = fakeClock();
     await expect(
       transcribeWithRemoteStt(config(), AUDIO_URL, {
-        fetchImpl: jobScoped, sleep: clock3.sleep, now: clock3.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+        fetchImpl: authFail3, sleep: clock3.sleep, now: clock3.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
       }),
-    ).rejects.toThrow(/denied access to saved job/);
+    ).rejects.toThrow(/forgotten/);
     expect(await jobStateFiles()).toHaveLength(0);
   });
 
