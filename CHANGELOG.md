@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.4.0 — 2026-07-06
+
+Ladder breadth: a second cloud STT provider, and an honest answer on
+platform captions.
+
+- **Deepgram STT provider** (#12, PR #31): `CASTRECALL_STT_PROVIDER=deepgram`
+  (+ `DEEPGRAM_API_KEY`, model via `CASTRECALL_DEEPGRAM_STT_MODEL`, default
+  nova-3) joins AssemblyAI and OpenAI on the paid rung 4. Deepgram's
+  prerecorded endpoint takes the audio URL directly and answers
+  synchronously with diarized `Speaker N:` utterances — no polling, no
+  download. Transient provider failures (429/5xx/timeouts and network-level
+  rejections) no longer strand an episode as terminally failed OR retry
+  forever: each episode gets capped exponential backoff (5→60 min) with a
+  5-attempt budget surfaced in `castrecall_setup_status`, and scheduled runs
+  defer not-yet-eligible episodes instead of re-billing the provider every
+  tick.
+- **Platform-caption sources investigated, declined** (#13, PR #30):
+  `docs/transcript-source-investigation.md` documents why Apple Podcasts and
+  Pocket Casts generated transcripts are NOT being added as ladder rungs —
+  Pocket Casts' endpoint is unauthenticated and using it would bypass their
+  Plus/Patron paywall; Apple's requires reverse-engineered request signing.
+  The runtime ladder stays at 4 rungs.
+
 ## v0.3.0 — 2026-07-05
 
 Robustness: credentials move off plaintext env vars, every Pocket Casts call
