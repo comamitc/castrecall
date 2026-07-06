@@ -62,6 +62,7 @@ export async function runTranscriptLadder(config, record, options = {}) {
                                 raw: fetched.raw,
                                 text: fetched.text,
                                 sourceUrl: fetched.sourceUrl,
+                                segments: fetched.segments,
                             },
                             feedItem,
                             rungs,
