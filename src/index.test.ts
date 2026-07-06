@@ -32,4 +32,15 @@ describe("castrecall plugin entry", () => {
     expect(metadata?.id).toBe("castrecall");
     expect(metadata?.name).toBe("CastRecall");
   });
+
+  it("accepts remote-stt in the sttProvider config enum (issue #61 review)", () => {
+    // The manifest is generated from this schema: remote-stt must live in
+    // the SOURCE enum, or a manifest regeneration silently drops the value
+    // and configured remote-stt installs fail validation.
+    const schema = JSON.parse(JSON.stringify(metadata?.configSchema ?? {}));
+    const providers = JSON.stringify(schema);
+    for (const provider of ["assemblyai", "openai", "deepgram", "remote-stt"]) {
+      expect(providers).toContain(provider);
+    }
+  });
 });

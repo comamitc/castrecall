@@ -56,6 +56,32 @@ describe("resolveConfig", () => {
     expect(config.stt.provider).toBe("assemblyai");
   });
 
+  it("resolves remote-stt without coercing it to assemblyai (issue #61)", () => {
+    const config = resolveConfig(
+      {},
+      {
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "remote-stt",
+        CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
+        CASTRECALL_REMOTE_STT_TOKEN: "tok",
+        CASTRECALL_REMOTE_STT_MODEL: "large-v3",
+        CASTRECALL_REMOTE_STT_UPLOAD: "true",
+      },
+    );
+    expect(config.stt.provider).toBe("remote-stt");
+    expect(config.stt.remoteBaseUrl).toBe("https://stt.example.com");
+    expect(config.stt.remoteToken).toBe("tok");
+    expect(config.stt.remoteModel).toBe("large-v3");
+    expect(config.stt.remoteForceUpload).toBe(true);
+  });
+
+  it("defaults remoteForceUpload to false and leaves remote fields unset when not configured", () => {
+    const config = resolveConfig({}, { CASTRECALL_STT_PROVIDER: "remote-stt" });
+    expect(config.stt.remoteForceUpload).toBe(false);
+    expect(config.stt.remoteBaseUrl).toBeUndefined();
+    expect(config.stt.remoteToken).toBeUndefined();
+  });
+
   it("uses plugin settings when env is empty", () => {
     const config = resolveConfig({ dataDir: "/from/settings", historyLimit: 7 }, {});
     expect(config.dataDir).toBe("/from/settings");

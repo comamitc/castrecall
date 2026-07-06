@@ -14,6 +14,7 @@ import { type ResolvedFeedItem } from "../resolver.js";
 import type { ListenRecord } from "../storage.js";
 import type { TranscriptSegment } from "./normalize.js";
 import { type LocalWhisperGeneration } from "./local-whisper.js";
+import type { RemoteSttGeneration } from "./remote-stt.js";
 export type LadderRung = "rss" | "taddy" | "podchaser" | "local-whisper" | "stt";
 export type RungOutcome = {
     rung: LadderRung;
@@ -36,8 +37,8 @@ export type LadderResult = {
         text: string;
         sourceUrl?: string;
         provider?: string;
-        /** Exact local-transcription provenance (issue #54); only set on a local-whisper hit. */
-        generation?: LocalWhisperGeneration;
+        /** Exact local-transcription (issue #54) or remote-stt (issue #61) provenance; only set on the matching rung's hit. */
+        generation?: LocalWhisperGeneration | RemoteSttGeneration;
         /** Structured segments (timing, speaker), when the rung parsed them; set on an RSS hit (VTT/SRT/JSON) or a diarized STT hit. */
         segments?: TranscriptSegment[];
     };

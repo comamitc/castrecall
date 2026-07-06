@@ -69,6 +69,76 @@ describe("tools", () => {
     expect(status.counts.syncedListens).toBe(0);
   });
 
+  it("setup_status surfaces remote-stt health without leaking the token (issue #61)", async () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://5090-box.internal.example.com",
+      CASTRECALL_REMOTE_STT_TOKEN: "hunter2-token",
+    });
+
+    const healthy = (await setupStatus(cfg, {
+      env: { PATH: "" },
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ implementation: "whisperx" }), { status: 200 })) as typeof fetch,
+    })) as Record<string, any>;
+    expect(healthy.transcriptLadder.stt).toContain("remote healthy");
+    expect(healthy.transcriptLadder.stt).toContain("whisperx");
+    expect(JSON.stringify(healthy)).not.toContain("hunter2-token");
+
+    const down = (await setupStatus(cfg, {
+      env: { PATH: "" },
+      fetchImpl: (async () => new Response("down", { status: 503 })) as typeof fetch,
+    })) as Record<string, any>;
+    expect(down.transcriptLadder.stt).toContain("remote NOT ready");
+  });
+
+  it("setup rejects a down or unauthorized remote-stt endpoint instead of reporting configured (issue #61 review)", async () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://5090-box.internal.example.com",
+      CASTRECALL_REMOTE_STT_TOKEN: "hunter2-token",
+    });
+
+    const result = (await setup(cfg, {}, {
+      env: { PATH: "" },
+      fetchImpl: (async () => new Response("bad token", { status: 401 })) as typeof fetch,
+    })) as Record<string, any>;
+    const sttStep = result.steps.find((s: any) => s.id === "providers.stt");
+    expect(sttStep.status).toBe("missing");
+    expect(sttStep.explanation).toContain("NOT ready");
+    expect(JSON.stringify(result)).not.toContain("hunter2-token");
+
+    const healthy = (await setup(cfg, {}, {
+      env: { PATH: "" },
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ implementation: "whisperx" }), { status: 200 })) as typeof fetch,
+    })) as Record<string, any>;
+    const healthyStep = healthy.steps.find((s: any) => s.id === "providers.stt");
+    expect(healthyStep.status).toBe("configured");
+    expect(healthyStep.explanation).toContain("remote service healthy");
+  });
+
+  it("setup_status does not probe remote-stt health when STT is disabled (issue #61)", async () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "false",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://5090-box.internal.example.com",
+      CASTRECALL_REMOTE_STT_TOKEN: "hunter2-token",
+    });
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ implementation: "whisperx" }), { status: 200 }));
+
+    const status = (await setupStatus(cfg, {
+      env: { PATH: "" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    })) as Record<string, any>;
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(status.transcriptLadder.stt).toContain("off");
+    expect(status.transcriptLadder.stt).not.toContain("remote");
+  });
+
   it("setup_status reports whisper.cpp WITHOUT a model as not ready, never as available", async () => {
     const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
     try {

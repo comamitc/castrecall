@@ -146,6 +146,31 @@ describe("buildReviewCandidate", () => {
     expect(markdown).toContain("dropped decode options: wordTimestamps");
   });
 
+  it("treats local-whisper generation written before the kind discriminator existed as local-whisper (issue #61 regression)", () => {
+    // Sidecars from before #61 introduced generation.kind never had it —
+    // they were the only generation shape, so nothing wrote a discriminator.
+    const preDiscriminatorGeneration = {
+      backend: "mlx-whisper",
+      model: "mlx-community/whisper-large-v3-turbo",
+      modelSource: "explicit",
+      usesBackendDefault: false,
+      outputFormat: "txt",
+      wordTimestamps: false,
+      decode: { applied: {}, ignored: [] },
+    } as unknown as NonNullable<Provenance["generation"]>;
+    const markdown = buildReviewCandidate({
+      record: RECORD,
+      provenance: { ...PROVENANCE, transcriptSource: "local-whisper", generation: preDiscriminatorGeneration },
+      transcriptText: TRANSCRIPT_TEXT,
+      transcriptPath: "/tmp/transcript.txt",
+      generatedAt: new Date("2026-07-06T00:00:00.000Z"),
+    });
+    expect(markdown).toContain("transcript_backend: mlx-whisper");
+    expect(markdown).toContain('transcript_model: "mlx-community/whisper-large-v3-turbo"');
+    expect(markdown).toContain("transcript_model_source: explicit");
+    expect(markdown).toContain("- Generation: mlx-whisper:mlx-community/whisper-large-v3-turbo (explicit)");
+  });
+
   it("omits every transcript_* generation line and the Generation provenance line for a legacy provenance with no generation", () => {
     const markdown = buildReviewCandidate({
       record: RECORD,

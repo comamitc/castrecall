@@ -8,7 +8,7 @@
  * docs/ARCHITECTURE.md. Two layers, mirroring review.ts (pure) + storage.ts
  * (IO): pure builders below, `CorpusExporter` for the filesystem side.
  */
-import type { ListenRecord, Provenance } from "./storage.js";
+import { type ListenRecord, type Provenance } from "./storage.js";
 import type { TranscriptSegment } from "./transcripts/normalize.js";
 type Range = {
     start: number;

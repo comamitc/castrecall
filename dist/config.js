@@ -37,7 +37,9 @@ export function resolveConfig(settings = {}, env = process.env) {
             : DEFAULT_HISTORY_LIMIT;
     const sttEnabled = envFlag(env.CASTRECALL_ENABLE_STT) ?? settings.sttEnabled ?? false;
     const providerRaw = nonEmpty(env.CASTRECALL_STT_PROVIDER)?.toLowerCase() ?? settings.sttProvider ?? "assemblyai";
-    const provider = providerRaw === "openai" || providerRaw === "deepgram" ? providerRaw : "assemblyai";
+    const provider = providerRaw === "openai" || providerRaw === "deepgram" || providerRaw === "remote-stt"
+        ? providerRaw
+        : "assemblyai";
     const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
     const notesDir = nonEmpty(env.CASTRECALL_NOTES_DIR) ?? nonEmpty(settings.notesDir);
     const glossaryFile = nonEmpty(env.CASTRECALL_GLOSSARY_FILE) ?? nonEmpty(settings.glossaryFile);
@@ -92,6 +94,10 @@ export function resolveConfig(settings = {}, env = process.env) {
             openaiModel: nonEmpty(env.CASTRECALL_OPENAI_STT_MODEL) ?? "gpt-4o-transcribe",
             deepgramApiKey: nonEmpty(env.DEEPGRAM_API_KEY),
             deepgramModel: nonEmpty(env.CASTRECALL_DEEPGRAM_STT_MODEL) ?? "nova-3",
+            remoteBaseUrl: nonEmpty(env.CASTRECALL_REMOTE_STT_BASE_URL),
+            remoteToken: nonEmpty(env.CASTRECALL_REMOTE_STT_TOKEN),
+            remoteModel: nonEmpty(env.CASTRECALL_REMOTE_STT_MODEL),
+            remoteForceUpload: envFlag(env.CASTRECALL_REMOTE_STT_UPLOAD) ?? false,
         },
         secrets: {
             keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,

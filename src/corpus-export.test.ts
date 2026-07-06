@@ -318,6 +318,34 @@ describe("buildCorpusPages", () => {
     }
   });
 
+  it("treats local-whisper generation written before the kind discriminator existed as local-whisper (issue #61 regression)", () => {
+    // Sidecars from before #61 introduced generation.kind never had it —
+    // they were the only generation shape, so nothing wrote a discriminator.
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: {
+        ...PROVENANCE,
+        transcriptSource: "local-whisper",
+        generation: {
+          backend: "mlx-whisper",
+          model: "mlx-community/whisper-large-v3-turbo",
+          modelSource: "explicit",
+          usesBackendDefault: false,
+          outputFormat: "txt",
+          wordTimestamps: false,
+          decode: { applied: {}, ignored: [] },
+        } as unknown as NonNullable<Provenance["generation"]>,
+      },
+      text: "Body text.",
+      contentHash: "hash",
+    });
+    for (const page of pages) {
+      expect(page.content).toContain('transcript_backend: "mlx-whisper"');
+      expect(page.content).toContain('transcript_model: "mlx-community/whisper-large-v3-turbo"');
+      expect(page.content).toContain('transcript_model_source: "explicit"');
+    }
+  });
+
   it("omits every transcript_* generation line for a legacy provenance with no generation", () => {
     const pages = buildCorpusPages({
       record: RECORD,

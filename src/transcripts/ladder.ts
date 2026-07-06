@@ -23,6 +23,7 @@ import {
   transcribeWithLocalWhisper,
   type LocalWhisperGeneration,
 } from "./local-whisper.js";
+import type { RemoteSttGeneration } from "./remote-stt.js";
 import { RetryableSttError, sttAvailability, transcribeAudio } from "./stt.js";
 
 export type LadderRung = "rss" | "taddy" | "podchaser" | "local-whisper" | "stt";
@@ -49,8 +50,8 @@ export type LadderResult = {
     text: string;
     sourceUrl?: string;
     provider?: string;
-    /** Exact local-transcription provenance (issue #54); only set on a local-whisper hit. */
-    generation?: LocalWhisperGeneration;
+    /** Exact local-transcription (issue #54) or remote-stt (issue #61) provenance; only set on the matching rung's hit. */
+    generation?: LocalWhisperGeneration | RemoteSttGeneration;
     /** Structured segments (timing, speaker), when the rung parsed them; set on an RSS hit (VTT/SRT/JSON) or a diarized STT hit. */
     segments?: TranscriptSegment[];
   };
@@ -332,6 +333,7 @@ export async function runTranscriptLadder(
           text: result.text,
           provider: result.model ? `${result.provider}:${result.model}` : result.provider,
           segments: result.segments,
+          generation: result.generation,
         },
         feedItem,
         rungs,

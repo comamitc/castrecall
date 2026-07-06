@@ -21,6 +21,7 @@ import { hashNormalizedTranscript } from "./transcripts/normalize.js";
 import { scoreTranscriptQuality } from "./transcripts/quality.js";
 import { detectLocalWhisper, localWhisperReadiness, resolveWhisperDecodeArgs, resolveWhisperModel, } from "./transcripts/local-whisper.js";
 import { buildTranscriptionPreflight } from "./transcripts/preflight.js";
+import { remoteSttHealth } from "./transcripts/remote-stt.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { podchaserConfigured } from "./transcripts/podchaser.js";
@@ -144,6 +145,7 @@ export async function setupStatus(config, deps = {}) {
     const episodes = Object.values(state.episodes);
     const pendingReviews = await storage.listPendingReviews();
     const stt = sttAvailability(config);
+    const remoteSttStatus = stt.ok && config.stt.provider === "remote-stt" ? await remoteSttHealth(config, deps.fetchImpl) : undefined;
     const whisper = await detectLocalWhisper(config, deps.env);
     const now = deps.now ?? (() => new Date());
     const exportStatus = classifyExportDir(config.exportDir);
@@ -216,7 +218,14 @@ export async function setupStatus(config, deps = {}) {
                         ignoredPart);
                 })()
                 : `unavailable — ${whisper.reason}`,
-            stt: stt.ok ? `enabled (${config.stt.provider})` : `off — ${stt.reason}`,
+            stt: stt.ok
+                ? `enabled (${config.stt.provider})` +
+                    (remoteSttStatus
+                        ? remoteSttStatus.ok
+                            ? ` — remote healthy${remoteSttStatus.implementation ? ` (${remoteSttStatus.implementation})` : ""}`
+                            : ` — remote NOT ready: ${remoteSttStatus.reason}`
+                        : "")
+                : `off — ${stt.reason}`,
         },
         counts: {
             syncedListens: episodes.length,
@@ -263,6 +272,13 @@ export async function setup(config, params = {}, deps = {}) {
     const gbrain = await detectGbrain({ env: deps.env });
     const secretBackend = await detectSecretBackend(config, { env: deps.env, platform: deps.platform });
     const resolvedCredentials = await resolvePocketCastsCredentials(config, deps);
+    // Same live probe setup_status uses: the remote-stt contract's health
+    // check backs both tools, so a down or unauthorized service is surfaced
+    // here instead of first failing mid-transcription.
+    const sttForSetup = sttAvailability(config);
+    const remoteStt = sttForSetup.ok && config.stt.provider === "remote-stt"
+        ? await remoteSttHealth(config, deps.fetchImpl)
+        : undefined;
     const steps = buildSetupPlan(config, {
         whisper,
         gbrain,
@@ -274,6 +290,7 @@ export async function setup(config, params = {}, deps = {}) {
             available: Boolean(secretBackend.backend),
             kind: secretBackend.backend?.kind,
         },
+        remoteStt,
     });
     let verify;
     if (params.verify) {

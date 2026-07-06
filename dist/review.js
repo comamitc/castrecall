@@ -6,6 +6,7 @@
  * and heuristic excerpt candidates. A human (or a human-approved agent flow)
  * decides what — if anything — graduates into curated memory.
  */
+import { isLocalWhisperGeneration } from "./storage.js";
 const MAX_EXCERPTS = 5;
 const MAX_EXCERPT_CHARS = 600;
 const MIN_EXCERPT_CHARS = 120;
@@ -14,12 +15,14 @@ export function buildReviewCandidate(options) {
     const excerpts = pickExcerpts(transcriptText);
     const wordCount = transcriptText.split(/\s+/).filter(Boolean).length;
     const gen = provenance.generation;
+    const localGen = isLocalWhisperGeneration(gen) ? gen : undefined;
+    const remoteGen = gen?.kind === "remote-stt" ? gen : undefined;
     // Stored provenance predating newer generation fields (or written by a
     // different build) may lack decode.applied, outputFormat, or
     // wordTimestamps. Normalize before rendering so review generation never
     // crashes on — or prints literal "undefined" for — an older shape.
-    const decodeApplied = gen?.decode?.applied ?? {};
-    const decodeIgnored = gen?.decode?.ignored ?? [];
+    const decodeApplied = localGen?.decode?.applied ?? {};
+    const decodeIgnored = localGen?.decode?.ignored ?? [];
     const lines = [
         "---",
         "status: pending-review",
@@ -31,13 +34,13 @@ export function buildReviewCandidate(options) {
         `transcript_source: ${provenance.transcriptSource}`,
         `transcript_format: ${provenance.format}`,
         provenance.provider ? `transcript_provider: ${provenance.provider}` : undefined,
-        gen ? `transcript_backend: ${gen.backend}` : undefined,
-        gen?.model ? `transcript_model: ${yamlString(gen.model)}` : undefined,
-        gen ? `transcript_model_source: ${gen.modelSource}` : undefined,
-        gen?.preset ? `transcript_preset: ${yamlString(gen.preset)}` : undefined,
-        gen?.outputFormat ? `transcript_output_format: ${gen.outputFormat}` : undefined,
-        gen && gen.wordTimestamps !== undefined
-            ? `transcript_word_timestamps: ${gen.wordTimestamps}`
+        localGen ? `transcript_backend: ${localGen.backend}` : undefined,
+        localGen?.model ? `transcript_model: ${yamlString(localGen.model)}` : undefined,
+        localGen ? `transcript_model_source: ${localGen.modelSource}` : undefined,
+        localGen?.preset ? `transcript_preset: ${yamlString(localGen.preset)}` : undefined,
+        localGen?.outputFormat ? `transcript_output_format: ${localGen.outputFormat}` : undefined,
+        localGen && localGen.wordTimestamps !== undefined
+            ? `transcript_word_timestamps: ${localGen.wordTimestamps}`
             : undefined,
         Object.keys(decodeApplied).length > 0
             ? `transcript_decode_options: ${yamlString(JSON.stringify(decodeApplied))}`
@@ -45,7 +48,10 @@ export function buildReviewCandidate(options) {
         decodeIgnored.length > 0
             ? `transcript_decode_ignored: ${yamlString(JSON.stringify(decodeIgnored.map((entry) => entry.option)))}`
             : undefined,
-        gen?.toolVersion ? `transcript_tool_version: ${yamlString(gen.toolVersion)}` : undefined,
+        localGen?.toolVersion ? `transcript_tool_version: ${yamlString(localGen.toolVersion)}` : undefined,
+        remoteGen?.implementation ? `transcript_implementation: ${yamlString(remoteGen.implementation)}` : undefined,
+        remoteGen?.model ? `transcript_model: ${yamlString(remoteGen.model)}` : undefined,
+        remoteGen ? `transcript_remote_host: ${yamlString(remoteGen.baseUrlHost)}` : undefined,
         `generated_at: ${generatedAt.toISOString()}`,
         "---",
         "",
@@ -64,8 +70,11 @@ export function buildReviewCandidate(options) {
         provenance.episodeUrl ? `- Episode page: ${reviewUrl(provenance.episodeUrl)}` : undefined,
         provenance.audioUrl ? `- Audio: ${reviewUrl(provenance.audioUrl)}` : undefined,
         `- Transcript: ${provenance.transcriptSource}${provenance.transcriptSourceUrl ? ` (${reviewUrl(provenance.transcriptSourceUrl)})` : ""}`,
-        gen
-            ? `- Generation: ${gen.backend}${gen.model ? `:${gen.model}` : ""} (${gen.modelSource}${gen.usesBackendDefault ? ", backend default — check corpus quality" : ""})${decodeIgnored.length > 0 ? `; dropped decode options: ${decodeIgnored.map((entry) => entry.option).join(", ")}` : ""}`
+        localGen
+            ? `- Generation: ${localGen.backend}${localGen.model ? `:${localGen.model}` : ""} (${localGen.modelSource}${localGen.usesBackendDefault ? ", backend default — check corpus quality" : ""})${decodeIgnored.length > 0 ? `; dropped decode options: ${decodeIgnored.map((entry) => entry.option).join(", ")}` : ""}`
+            : undefined,
+        remoteGen
+            ? `- Generation: remote-stt${remoteGen.implementation ? ` (${remoteGen.implementation})` : ""}${remoteGen.model ? `:${remoteGen.model}` : ""} via ${remoteGen.baseUrlHost}`
             : undefined,
         `- Fetched: ${provenance.fetchedAt}`,
         `- Full transcript (${wordCount.toLocaleString()} words): ${transcriptPath}`,

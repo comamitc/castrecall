@@ -389,7 +389,7 @@ can be repaired or removed manually; it never deletes them silently.
 | `listenTimestamp` | When the episode was first seen synced, if known. |
 | `transcriptSource` | `"rss" \| "taddy" \| "podchaser" \| "local-whisper" \| "stt"`. |
 | `transcriptSourceUrl`, `provider` | Optional rung-specific detail. |
-| `generation` | Exact local-transcription provenance (issue #54): only set when `transcriptSource` is `"local-whisper"`. See below. |
+| `generation` | Exact generation provenance, discriminated by `kind`: local-transcription details (issue #54) when `transcriptSource` is `"local-whisper"`, or remote-stt details (issue #61) when `transcriptSource` is `"stt"` and the configured provider was `remote-stt`. See below. |
 | `quality` | Deterministic transcript quality score (issue #41): `score` (0-100), `tier` (`quote-safe`/`reviewable`/`search-only`), and machine-readable `reasons`. See below. |
 | `cleanup` | Deterministic cleanup-pass provenance (issue #45): `version` and the named transform steps that actually changed the text (`applied: []` when the input was already clean). Present whenever the cleanup pass ran, even as a no-op; omitted entirely when `CASTRECALL_TRANSCRIPT_CLEANUP=false` disabled it, so "ran, no-op" is distinguishable from "never ran". See below. |
 | `format` | Raw transcript format (`vtt`, `srt`, `json`, `txt`, ...). |
@@ -435,6 +435,25 @@ built from, so it can never disagree with what actually executed.
 | `decode.applied` | Effective option → concrete value, for decode options this run actually applied. |
 | `decode.ignored` | Decode options this run bypassed, with reasons — verbatim from `resolveWhisperDecodeArgs`, so nothing is silently dropped. |
 | `toolVersion` | Best-effort `<tool> --version` output; `undefined` when unavailable, on a non-zero exit, or for the `custom` flavor. Never blocks or fails a transcription. |
+
+#### `provenance.generation` fields (remote-stt only, issue #61)
+
+`generation.kind === "remote-stt"` records what the configured self-hosted
+service (WhisperX, faster-whisper, or anything else implementing the
+contract — see README "Remote STT contract") reported about itself, plus how
+the job actually ran. `baseUrlHost` is deliberately host-only — never the
+full base URL (which may carry a path/query) or the bearer token — assembled
+in `transcripts/remote-stt.ts`'s `transcribeWithRemoteStt`.
+
+| Field | Notes |
+| --- | --- |
+| `implementation` | Implementation name self-reported by the remote service (e.g. `"whisperx"`), if it returned one. |
+| `model` | Model name/id self-reported by the remote service, falling back to `CASTRECALL_REMOTE_STT_MODEL` when the response didn't include one. |
+| `baseUrlHost` | `new URL(base).host` — host only, never the token or the full base URL/path. |
+| `mode` | `"sync"` (the submit response was the normalized result directly) or `"async"` (a `job_id` was polled to completion). |
+| `submittedBy` | `"audio_url"` (default) or `"upload"` (`CASTRECALL_REMOTE_STT_UPLOAD=true` — audio downloaded and multipart-uploaded instead). |
+| `warnings` | Provider-reported warnings, if any. |
+| `durationSeconds` | Provider-reported audio duration, if reported. |
 
 #### `provenance.quality` fields (issue #41)
 

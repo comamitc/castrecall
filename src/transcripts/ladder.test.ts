@@ -308,6 +308,45 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
   });
 });
 
+describe("runTranscriptLadder stt rung with remote-stt (issue #61)", () => {
+  it("propagates remote-stt generation provenance onto the transcript with no secret in the serialized output", async () => {
+    const fetchImpl = (async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("/transcribe")) {
+        return new Response(
+          JSON.stringify({ text: "remote transcript", implementation: "whisperx", model: "large-v3" }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await runTranscriptLadder(
+      config({
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "remote-stt",
+        CASTRECALL_REMOTE_STT_BASE_URL: "https://5090-box.internal.example.com",
+        CASTRECALL_REMOTE_STT_TOKEN: "top-secret-token",
+      }),
+      RECORD,
+      { fetchImpl, env: { PATH: "" } },
+    );
+
+    const sttRung = result.rungs.find((r) => r.rung === "stt")!;
+    expect(sttRung.outcome).toBe("hit");
+    expect(result.transcript?.source).toBe("stt");
+    expect(result.transcript?.generation).toMatchObject({
+      kind: "remote-stt",
+      implementation: "whisperx",
+      model: "large-v3",
+      baseUrlHost: "5090-box.internal.example.com",
+    });
+    const serialized = JSON.stringify(result.transcript);
+    expect(serialized).not.toContain("top-secret-token");
+    expect(serialized).not.toContain("5090-box.internal.example.com/");
+  });
+});
+
 describe("runTranscriptLadder local-whisper rung with structured output (issue #53)", () => {
   let binDir: string;
 

@@ -83,6 +83,21 @@ export function selectPendingTranscripts(episodes, nowMs) {
     }
     return { pending, deferred };
 }
+/**
+ * True when `generation` is local-whisper provenance. Recognizes both the
+ * documented `kind: "local-whisper"` discriminator (issue #61) and sidecars
+ * written before that discriminator existed — those carry local-whisper-only
+ * fields like `backend`/`decode` with no `kind` at all, and must still be
+ * treated as local-whisper rather than silently falling through as neither
+ * local nor remote.
+ */
+export function isLocalWhisperGeneration(gen) {
+    if (!gen)
+        return false;
+    if (gen.kind === "local-whisper")
+        return true;
+    return gen.kind === undefined && "backend" in gen;
+}
 const EMPTY_STATE = { version: 1, schemaVersion: SCHEMA_VERSION, episodes: {} };
 export class Storage {
     dataDir;
