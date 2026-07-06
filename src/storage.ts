@@ -24,6 +24,7 @@ import { CastrecallSetupError } from "./config.js";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
+import type { RemoteSttGeneration } from "./transcripts/remote-stt.js";
 import {
   hashNormalizedTranscript,
   normalizeTranscript,
@@ -199,12 +200,14 @@ export type Provenance = {
   format: string;
   provider?: string;
   /**
-   * Exact local-transcription provenance (issue #54): backend, concrete
-   * model/preset, decode settings, output shape. Only set when
-   * `transcriptSource` is `"local-whisper"`; additive, so pre-#54 sidecars
-   * simply lack it.
+   * Exact generation provenance: local-transcription details (issue #54,
+   * backend/model/preset/decode settings/output shape) when `transcriptSource`
+   * is `"local-whisper"`, or remote-stt details (issue #61, implementation/
+   * model/host/mode) when `transcriptSource` is `"stt"` and the configured
+   * provider was `remote-stt`. Discriminated by `generation.kind`. Additive,
+   * so pre-#54/#61 sidecars simply lack it.
    */
-  generation?: LocalWhisperGeneration;
+  generation?: LocalWhisperGeneration | RemoteSttGeneration;
   /**
    * Deterministic transcript quality score (issue #41): score, tier
    * (`quote-safe`/`reviewable`/`search-only`), and machine-readable reasons.

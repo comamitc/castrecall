@@ -272,6 +272,27 @@ describe("buildSetupPlan", () => {
     expect(step.envVars).toContain("CASTRECALL_DEEPGRAM_STT_MODEL");
   });
 
+  it("lists the remote-stt env vars in the stt step and flips to configured once enabled with a base URL (issue #61)", () => {
+    const off = plan(config({ CASTRECALL_STT_PROVIDER: "remote-stt" })).find(
+      (s) => s.id === "providers.stt",
+    )!;
+    expect(off.status).toBe("optional-off");
+    expect(off.envVars).toContain("CASTRECALL_REMOTE_STT_BASE_URL");
+    expect(off.envVars).toContain("CASTRECALL_REMOTE_STT_TOKEN");
+    expect(off.envVars).toContain("CASTRECALL_REMOTE_STT_MODEL");
+    expect(off.envVars).toContain("CASTRECALL_REMOTE_STT_UPLOAD");
+
+    const on = plan(
+      config({
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "remote-stt",
+        CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
+      }),
+    ).find((s) => s.id === "providers.stt")!;
+    expect(on.status).toBe("configured");
+    expect(on.explanation).toContain("remote-stt");
+  });
+
   it("surfaces a detected gbrain inbox suggestion when export is unset", () => {
     const steps = plan(config({}), { gbrain: WITH_GBRAIN });
     const exportStep = steps.find((s) => s.id === "export")!;

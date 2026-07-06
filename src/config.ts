@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-export type SttProvider = "assemblyai" | "openai" | "deepgram";
+export type SttProvider = "assemblyai" | "openai" | "deepgram" | "remote-stt";
 
 /** Non-secret settings accepted via the OpenClaw plugin config schema. */
 export type PluginSettings = {
@@ -81,6 +81,14 @@ export type ResolvedConfig = {
     openaiModel: string;
     deepgramApiKey?: string;
     deepgramModel: string;
+    /** Base URL of a self-hosted/private STT service implementing the remote-stt contract (issue #61). */
+    remoteBaseUrl?: string;
+    /** Bearer token sent as `Authorization: Bearer <token>` on every remote-stt request. */
+    remoteToken?: string;
+    /** Model name/id forwarded to the remote-stt provider; the provider decides what it means. */
+    remoteModel?: string;
+    /** Download the audio and multipart-upload it instead of submitting `audio_url`, for providers that can't fetch remote URLs. */
+    remoteForceUpload: boolean;
   };
   secrets: {
     /** CASTRECALL_DISABLE_KEYCHAIN=1 disables the durable keychain sink only. */
@@ -155,7 +163,9 @@ export function resolveConfig(
   const providerRaw =
     nonEmpty(env.CASTRECALL_STT_PROVIDER)?.toLowerCase() ?? settings.sttProvider ?? "assemblyai";
   const provider: SttProvider =
-    providerRaw === "openai" || providerRaw === "deepgram" ? providerRaw : "assemblyai";
+    providerRaw === "openai" || providerRaw === "deepgram" || providerRaw === "remote-stt"
+      ? providerRaw
+      : "assemblyai";
 
   const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
   const notesDir = nonEmpty(env.CASTRECALL_NOTES_DIR) ?? nonEmpty(settings.notesDir);
@@ -219,6 +229,10 @@ export function resolveConfig(
       openaiModel: nonEmpty(env.CASTRECALL_OPENAI_STT_MODEL) ?? "gpt-4o-transcribe",
       deepgramApiKey: nonEmpty(env.DEEPGRAM_API_KEY),
       deepgramModel: nonEmpty(env.CASTRECALL_DEEPGRAM_STT_MODEL) ?? "nova-3",
+      remoteBaseUrl: nonEmpty(env.CASTRECALL_REMOTE_STT_BASE_URL),
+      remoteToken: nonEmpty(env.CASTRECALL_REMOTE_STT_TOKEN),
+      remoteModel: nonEmpty(env.CASTRECALL_REMOTE_STT_MODEL),
+      remoteForceUpload: envFlag(env.CASTRECALL_REMOTE_STT_UPLOAD) ?? false,
     },
     secrets: {
       keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,

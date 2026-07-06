@@ -69,6 +69,30 @@ describe("tools", () => {
     expect(status.counts.syncedListens).toBe(0);
   });
 
+  it("setup_status surfaces remote-stt health without leaking the token (issue #61)", async () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://5090-box.internal.example.com",
+      CASTRECALL_REMOTE_STT_TOKEN: "hunter2-token",
+    });
+
+    const healthy = (await setupStatus(cfg, {
+      env: { PATH: "" },
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ implementation: "whisperx" }), { status: 200 })) as typeof fetch,
+    })) as Record<string, any>;
+    expect(healthy.transcriptLadder.stt).toContain("remote healthy");
+    expect(healthy.transcriptLadder.stt).toContain("whisperx");
+    expect(JSON.stringify(healthy)).not.toContain("hunter2-token");
+
+    const down = (await setupStatus(cfg, {
+      env: { PATH: "" },
+      fetchImpl: (async () => new Response("down", { status: 503 })) as typeof fetch,
+    })) as Record<string, any>;
+    expect(down.transcriptLadder.stt).toContain("remote NOT ready");
+  });
+
   it("setup_status reports whisper.cpp WITHOUT a model as not ready, never as available", async () => {
     const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
     try {

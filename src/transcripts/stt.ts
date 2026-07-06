@@ -9,11 +9,14 @@
  * - Deepgram: accepts a remote audio URL directly, like AssemblyAI, but its
  *   prerecorded endpoint responds synchronously (no polling) with diarized
  *   utterances.
+ * - remote-stt (issue #61): a generic contract for private/self-hosted STT
+ *   services (WhisperX, faster-whisper, etc.) — see transcripts/remote-stt.ts.
  */
 
 import { CastrecallSetupError, type ResolvedConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
 import { segmentsToText, type TranscriptSegment } from "./normalize.js";
+import { remoteSttHealth, transcribeWithRemoteStt, type RemoteSttGeneration } from "./remote-stt.js";
 
 const OPENAI_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2";
@@ -23,10 +26,12 @@ const POLL_TIMEOUT_MS = 15 * 60_000;
 
 export type SttResult = {
   text: string;
-  provider: "assemblyai" | "openai" | "deepgram";
+  provider: "assemblyai" | "openai" | "deepgram" | "remote-stt";
   model?: string;
   /** Diarized speaker turns (issue #44), when the provider returned per-utterance speaker labels. */
   segments?: TranscriptSegment[];
+  /** Exact remote-stt provenance (issue #61); only set on a remote-stt hit. */
+  generation?: RemoteSttGeneration;
 };
 
 /** `` `Speaker ${raw}` `` — never dropped by a falsy check, so a numeric `0` speaker still renders. */
@@ -41,7 +46,7 @@ function speakerLabel(raw: string | number): string {
  * emitted only when a finite numeric time exists, matching the
  * `parseJsonTranscript` convention of a bare-seconds string.
  */
-function utterancesToSegments(
+export function utterancesToSegments(
   utterances: Array<{ speaker?: string | number; text: string; startSeconds?: number; endSeconds?: number }>,
 ): TranscriptSegment[] {
   return utterances.map((u) => {
@@ -76,7 +81,7 @@ export class RetryableSttError extends Error {
 
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
 
-function isRetryableHttpStatus(status: number): boolean {
+export function isRetryableHttpStatus(status: number): boolean {
   return RETRYABLE_HTTP_STATUSES.has(status) || status >= 500;
 }
 
@@ -113,6 +118,15 @@ export function sttAvailability(config: ResolvedConfig): { ok: boolean; reason?:
         "Get a key at https://deepgram.com or switch with CASTRECALL_STT_PROVIDER=assemblyai.",
     };
   }
+  if (config.stt.provider === "remote-stt" && !config.stt.remoteBaseUrl) {
+    return {
+      ok: false,
+      reason:
+        "STT provider is 'remote-stt' but CASTRECALL_REMOTE_STT_BASE_URL is not set. " +
+        "Point it at your self-hosted STT service (WhisperX, faster-whisper, ...), " +
+        "or switch with CASTRECALL_STT_PROVIDER=assemblyai.",
+    };
+  }
   return { ok: true };
 }
 
@@ -130,6 +144,9 @@ export async function transcribeAudio(
   }
   if (config.stt.provider === "deepgram") {
     return transcribeWithDeepgram(config, audioUrl, fetchImpl);
+  }
+  if (config.stt.provider === "remote-stt") {
+    return transcribeWithRemoteStt(config, audioUrl, { fetchImpl, sleep });
   }
   return transcribeWithOpenAi(config, audioUrl, fetchImpl);
 }

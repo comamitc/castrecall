@@ -44,6 +44,7 @@ import {
   resolveWhisperModel,
 } from "./transcripts/local-whisper.js";
 import { buildTranscriptionPreflight, type TranscriptionPreflight } from "./transcripts/preflight.js";
+import { remoteSttHealth } from "./transcripts/remote-stt.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { podchaserConfigured } from "./transcripts/podchaser.js";
@@ -219,6 +220,8 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
   const episodes = Object.values(state.episodes);
   const pendingReviews = await storage.listPendingReviews();
   const stt = sttAvailability(config);
+  const remoteSttStatus =
+    config.stt.provider === "remote-stt" ? await remoteSttHealth(config, deps.fetchImpl) : undefined;
   const whisper = await detectLocalWhisper(config, deps.env);
   const now = deps.now ?? (() => new Date());
   const exportStatus = classifyExportDir(config.exportDir);
@@ -299,7 +302,14 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
             );
           })()
         : `unavailable — ${whisper.reason}`,
-      stt: stt.ok ? `enabled (${config.stt.provider})` : `off — ${stt.reason}`,
+      stt: stt.ok
+        ? `enabled (${config.stt.provider})` +
+          (remoteSttStatus
+            ? remoteSttStatus.ok
+              ? ` — remote healthy${remoteSttStatus.implementation ? ` (${remoteSttStatus.implementation})` : ""}`
+              : ` — remote NOT ready: ${remoteSttStatus.reason}`
+            : "")
+        : `off — ${stt.reason}`,
     },
     counts: {
       syncedListens: episodes.length,
