@@ -35,23 +35,23 @@
 
 16. **#1** Review disposition tool: conversational approval, explicit promotion
 
-### v0.11.0–v0.13.0 — transcript quality track (added 2026-07-06)
+### v0.11.0–v0.13.0 — local-Whisper quality track (added 2026-07-06; reordered ahead of #41–#46 as upstream guardrails)
 
-17. **#42** Detect Whisper repetition loops and quarantine bad transcripts — v0.11.0 (bug; its detector feeds #41's scoring)
-18. **#41** Transcript quality scoring in stored provenance — v0.11.0
-19. **#43** Timestamped transcript segments through storage and corpus export — v0.12.0
-20. **#44** Speaker metadata and diarization across transcript sources — v0.12.0 (speaker turns ride on #43's segments)
-21. **#45** Transcript cleanup pass (punctuation, sentence boundaries, formatting) — v0.13.0
-22. **#46** Optional proper-noun correction glossary — v0.13.0 (plugs into #45's cleanup pass)
+17. **#51** Require explicit quality-ready model selection for MLX Whisper — v0.11.0 (bug; fail closed instead of silently using whisper-tiny)
+18. **#52** Apple Silicon local transcription preset (MLX large-v3-turbo) — v0.11.0 (the blessed way to satisfy #51's gate)
+19. **#53** Loop-safe Whisper decoding options for local transcription — v0.12.0
+20. **#54** Persist exact local provider, model, and decode settings in provenance — v0.12.0 (records the settings #52/#53 introduce)
+21. **#55** Corpus-scale transcription preflight and quality warning — v0.13.0 (summarizes the #51–#53 config surface)
+22. **#56** Document local Whisper model requirements — v0.13.0 (docs last, covering the whole track)
 
-### v0.14.0–v0.16.0 — local-Whisper quality track (added 2026-07-06)
+### v0.14.0–v0.16.0 — transcript quality track (added 2026-07-06; downstream quality/export layers)
 
-23. **#51** Require explicit quality-ready model selection for MLX Whisper — v0.14.0 (bug; fail closed instead of silently using whisper-tiny)
-24. **#52** Apple Silicon local transcription preset (MLX large-v3-turbo) — v0.14.0 (the blessed way to satisfy #51's gate)
-25. **#53** Loop-safe Whisper decoding options for local transcription — v0.15.0
-26. **#54** Persist exact local provider, model, and decode settings in provenance — v0.15.0 (records the settings #52/#53 introduce)
-27. **#55** Corpus-scale transcription preflight and quality warning — v0.16.0 (summarizes the #51–#53 config surface)
-28. **#56** Document local Whisper model requirements — v0.16.0 (docs last, covering the whole track)
+23. **#42** Detect Whisper repetition loops and quarantine bad transcripts — v0.14.0 (bug; its detector feeds #41's scoring)
+24. **#41** Transcript quality scoring in stored provenance — v0.14.0
+25. **#43** Timestamped transcript segments through storage and corpus export — v0.15.0
+26. **#44** Speaker metadata and diarization across transcript sources — v0.15.0 (speaker turns ride on #43's segments)
+27. **#45** Transcript cleanup pass (punctuation, sentence boundaries, formatting) — v0.16.0
+28. **#46** Optional proper-noun correction glossary — v0.16.0 (plugs into #45's cleanup pass)
 
 ## Notes
 
