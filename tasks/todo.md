@@ -57,7 +57,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] release v0.7.0 — PR #39 merged, version 0.6.1→0.7.0 (manifest regenerated), tag pushed, GitHub release published, milestone closed. Release PR also synced README/ARCHITECTURE search docs to the final merged index design.
 - [x] #4 cross-episode digest — PR #40 squash-merged, issue closed. `castrecall_digest { days? }` writes an approval-gated structural digest (listening pattern, term-frequency topics, attributed verbatim excerpts, synthesis handed to the reviewing agent) to `review/pending/digest-<window>.md`; idempotent per window. One pre-merge round: lone-CR line endings could escape the excerpt blockquote → split on /\r\n?|\n/ + regression test. 378 tests green on main.
 - [x] release v0.8.0 — PR #47 merged, version 0.7.0→0.8.0 (manifest regenerated), tag pushed, GitHub release published, milestone closed.
-- [ ] #11 → v0.9.0 (release after)
+- [x] #11 Listen Notes fallback — PR #49 squash-merged, issue closed. Feed resolution gains a keyed last-resort Listen Notes rung after Pocket Casts export + iTunes. Two pre-merge rounds: dist drift (rebuilt); wrong-show risk — title-only candidate acceptance replaced with per-candidate feed verification requiring enclosure-URL/GUID match (episode-title never sufficient; fail closed on ambiguity) + `matchEvidence` on resolved items + 3 regression tests. 393 tests green on main.
+- [ ] release v0.9.0 — PR #50 in CI
 
 ### v0.11.0–v0.13.0 — transcript quality track (added 2026-07-06, issues #41–#46)
 
