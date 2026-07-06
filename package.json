@@ -53,7 +53,7 @@
       "./dist/index.js"
     ],
     "install": {
-      "clawhubSpec": "clawhub:@comamitc/castrecall",
+      "clawhubSpec": "clawhub:comamitc/castrecall",
       "localPath": ".",
       "defaultChoice": "clawhub",
       "minHostVersion": ">=2026.6.11"

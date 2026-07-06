@@ -61,7 +61,7 @@ OpenClaw's current installer does not accept bare HTTPS GitHub URLs such as
 `https://github.com/comamitc/castrecall`; use the `git:github.com/...@ref`
 form above. That GitHub form is the current primary install path. Once
 CastRecall clears ClawHub's publish review, the install target will be
-`openclaw plugins install clawhub:@comamitc/castrecall` (pending publish —
+`openclaw plugins install clawhub:comamitc/castrecall` (pending publish —
 not yet live).
 
 ## First-run setup

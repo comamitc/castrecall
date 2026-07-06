@@ -86,6 +86,6 @@ curl -sI https://raw.githubusercontent.com/comamitc/castrecall/main/assets/icon.
 ## 8. Flip the README to ClawHub as the primary install path
 
 Once the ClawHub listing is live and installable, update the "Install"
-section of `README.md` so `openclaw plugins install clawhub:@comamitc/castrecall`
+section of `README.md` so `openclaw plugins install clawhub:comamitc/castrecall`
 is the primary path, with the `git:github.com/...@main` form kept as a
 fallback for pre-review or offline installs.

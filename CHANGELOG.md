@@ -14,9 +14,10 @@ between what the plugin manifest claims and what actually ships.
   from source again.
 - **ClawHub publish spec finalized**: package renamed `castrecall` →
   `@comamitc/castrecall` (ClawHub plugin scope must match the publish owner);
-  `openclaw.install.clawhubSpec` updated to `clawhub:@comamitc/castrecall`.
-  The plugin `id` (`castrecall`) is unchanged, so `openclaw plugins enable
-  castrecall` and all tool names are unaffected.
+  `openclaw.install.clawhubSpec` updated to `clawhub:comamitc/castrecall` to
+  match the publish slug used in `clawhub package publish` and the release
+  runbook. The plugin `id` (`castrecall`) is unchanged, so `openclaw plugins
+  enable castrecall` and all tool names are unaffected.
 - **Listing icon**: added `assets/icon.svg` (shipped via `package.json`
   `files`) and a manifest `icon` field pointing at its raw-GitHub URL —
   the only marketplace-card field ClawHub's plugin manifest supports.
