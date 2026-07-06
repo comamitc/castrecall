@@ -321,7 +321,24 @@ export class SearchIndex {
 
     const candidateUuids = selectCandidates(query, docs);
     const keywordScores = scoreKeywords(query, docs);
-    const cappedCandidates = candidateUuids.slice(0, MAX_CANDIDATES);
+
+    // Phrase-eligible docs (containing every token of a quoted phrase) are always
+    // retained regardless of the cap, since only Phase 2 can confirm the exact
+    // contiguous match. Remaining bare-term candidates are ranked by their
+    // already-computed keyword score before capping, so the cap drops the
+    // lowest-scoring matches rather than an arbitrary corpus-order tail.
+    const phraseEligibleUuids = new Set(
+      docs
+        .filter((doc) =>
+          query.phrases.some((phrase) => phrase.length > 0 && phrase.every((term) => (doc.termFreq[term] ?? 0) > 0)),
+        )
+        .map((doc) => doc.uuid),
+    );
+    const bareTermUuids = candidateUuids
+      .filter((uuid) => !phraseEligibleUuids.has(uuid))
+      .sort((a, b) => (keywordScores.get(b) ?? 0) - (keywordScores.get(a) ?? 0));
+    const remainingBudget = Math.max(0, MAX_CANDIDATES - phraseEligibleUuids.size);
+    const cappedCandidates = [...phraseEligibleUuids, ...bareTermUuids.slice(0, remainingBudget)];
     const droppedCandidates = candidateUuids.length - cappedCandidates.length;
 
     const scored: Array<{ uuid: string; score: number; text: string }> = [];

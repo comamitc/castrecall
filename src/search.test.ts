@@ -226,6 +226,26 @@ describe("SearchIndex", () => {
     const result = await index.search("climate", {}, [corpusEntry]);
     expect(result.hits).toHaveLength(0);
   });
+
+  it("ranks candidates by keyword score before applying the candidate cap, so a high-scoring doc past MAX_CANDIDATES in corpus order is not dropped", async () => {
+    const index = new SearchIndex(dir);
+    const lowScoreEntries = Array.from({ length: 51 }, (_, i) =>
+      entry({
+        uuid: `low-${i}`,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: `low-${i}` },
+        text: "filler filler filler filler filler filler filler filler filler filler climate",
+      }),
+    );
+    const highScoreEntry = entry({
+      uuid: "high-score",
+      provenance: { ...BASE_PROVENANCE, episodeUuid: "high-score" },
+      text: "climate climate climate climate climate climate climate climate climate climate",
+    });
+    const corpus = [...lowScoreEntries, highScoreEntry];
+
+    const result = await index.search("climate", { limit: 5 }, corpus);
+    expect(result.hits[0]?.episodeUuid).toBe("high-score");
+  });
 });
 
 describe("search tool", () => {
