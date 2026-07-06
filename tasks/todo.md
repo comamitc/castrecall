@@ -40,6 +40,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] release v0.5.0 — PR #34 merged, version 0.4.0→0.5.0, tag pushed, GitHub release published, milestone closed.
 - [ ] #9 → v0.6.0 · [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
 
+> HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resume from #9 on the new machine.
+
 #### #10 Podchaser transcript rung — implementation checklist
 - [x] `resolveConfig` resolves `PODCHASER_API_KEY` into `config.podchaser.apiKey` (empty string → undefined)
 - [x] `podchaserConfigured(config)` true iff apiKey set
