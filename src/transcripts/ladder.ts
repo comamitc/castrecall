@@ -236,16 +236,22 @@ export async function runTranscriptLadder(
   } else {
     try {
       const result = await transcribeWithLocalWhisper(config, record.audioUrl, { fetchImpl, env });
+      const ignoredDetail =
+        result.ignoredOptions.length > 0
+          ? ` Ignored decode options: ${result.ignoredOptions
+              .map((o) => `${o.option} (${o.reason})`)
+              .join("; ")}.`
+          : "";
       rungs.push({
         rung: "local-whisper",
         outcome: "hit",
-        detail: `Audio transcribed locally with ${result.provider}.`,
+        detail: `Audio transcribed locally with ${result.provider}.${ignoredDetail}`,
       });
       return {
         transcript: {
           source: "local-whisper",
-          format: "txt",
-          raw: result.text,
+          format: result.format,
+          raw: result.raw,
           text: result.text,
           provider: result.provider,
         },

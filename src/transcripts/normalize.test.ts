@@ -90,6 +90,21 @@ describe("normalizeTranscript", () => {
     expect(() => normalizeTranscript("{}", "json")).toThrowError(/usable transcript/);
   });
 
+  it("parses whisper.cpp's -oj/-ojf JSON shape (nested transcription/offsets, issue #53)", () => {
+    const whisperCppJson = JSON.stringify({
+      transcription: [
+        { text: "Hello from whisper.cpp.", offsets: { from: 0, to: 1200 } },
+        { text: "Second segment.", timestamps: { from: "00:00:01,200", to: "00:00:02,400" } },
+      ],
+    });
+    const result = normalizeTranscript(whisperCppJson, "json");
+    expect(result.text).toContain("Hello from whisper.cpp.");
+    expect(result.text).toContain("Second segment.");
+    expect(result.segments).toHaveLength(2);
+    expect(result.segments?.[0]).toMatchObject({ start: "0", end: "1200" });
+    expect(result.segments?.[1]).toMatchObject({ start: "00:00:01,200", end: "00:00:02,400" });
+  });
+
   it("parses common non-standard JSON transcript shapes", () => {
     const stringArray = normalizeTranscript(JSON.stringify({ transcript: ["First paragraph.", "Second paragraph."] }), "json");
     expect(stringArray.text).toBe("First paragraph. Second paragraph.");

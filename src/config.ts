@@ -13,6 +13,27 @@ export type PluginSettings = {
   notesDir?: string;
 };
 
+/**
+ * Loop-safe decoding options for local Whisper (issue #53), abstract over
+ * flavor: resolveWhisperDecodeArgs (local-whisper.ts) maps these to concrete
+ * per-flavor CLI flags, never silently dropping an option a flavor can't
+ * honor. `outputFormat` is stored as a raw lowercased string here — it's
+ * validated against the supported set in the resolver, not here, so an
+ * unrecognized value is an ignore-with-provenance case rather than breaking
+ * every resolveConfig caller on a typo.
+ */
+export type WhisperDecodeConfig = {
+  language?: string;
+  /** Disables loop-prone repetition by not feeding prior output back as context. Default false (off) for long-form podcasts. */
+  conditionOnPreviousText: boolean;
+  wordTimestamps?: boolean;
+  outputFormat: string;
+  noSpeechThreshold?: number;
+  logprobThreshold?: number;
+  compressionRatioThreshold?: number;
+  hallucinationSilenceThreshold?: number;
+};
+
 export type ResolvedConfig = {
   dataDir: string;
   historyLimit: number;
@@ -49,6 +70,7 @@ export type ResolvedConfig = {
     preset?: string;
     /** Accept mlx-whisper's low-quality default model instead of requiring CASTRECALL_WHISPER_MODEL. */
     allowLowQuality: boolean;
+    decode: WhisperDecodeConfig;
   };
   stt: {
     enabled: boolean;
@@ -88,6 +110,14 @@ export function envFlag(value: string | undefined): boolean | undefined {
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed ? trimmed : undefined;
+}
+
+/** Undefined for unset/blank/non-finite input — never NaN leaking into an argv value. */
+function nonEmptyNumber(value: string | undefined): number | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const parsed = Number.parseFloat(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 /**
@@ -158,6 +188,18 @@ export function resolveConfig(
       model: nonEmpty(env.CASTRECALL_WHISPER_MODEL),
       preset: nonEmpty(env.CASTRECALL_LOCAL_WHISPER_PRESET)?.toLowerCase(),
       allowLowQuality: envFlag(env.CASTRECALL_WHISPER_ALLOW_LOW_QUALITY) ?? false,
+      decode: {
+        language: nonEmpty(env.CASTRECALL_WHISPER_LANGUAGE),
+        conditionOnPreviousText: envFlag(env.CASTRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT) ?? false,
+        wordTimestamps: envFlag(env.CASTRECALL_WHISPER_WORD_TIMESTAMPS),
+        outputFormat: nonEmpty(env.CASTRECALL_WHISPER_OUTPUT_FORMAT)?.toLowerCase() ?? "txt",
+        noSpeechThreshold: nonEmptyNumber(env.CASTRECALL_WHISPER_NO_SPEECH_THRESHOLD),
+        logprobThreshold: nonEmptyNumber(env.CASTRECALL_WHISPER_LOGPROB_THRESHOLD),
+        compressionRatioThreshold: nonEmptyNumber(env.CASTRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD),
+        hallucinationSilenceThreshold: nonEmptyNumber(
+          env.CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD,
+        ),
+      },
     },
     stt: {
       enabled: sttEnabled,

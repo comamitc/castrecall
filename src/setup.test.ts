@@ -225,6 +225,22 @@ describe("buildSetupPlan", () => {
     expect(withOptIn.find((s) => s.id === "providers.localWhisper")!.status).toBe("configured");
   });
 
+  it("surfaces an ignored decode option (unrecognized output format) in the localWhisper explanation (issue #53)", () => {
+    const steps = plan(
+      config({
+        CASTRECALL_WHISPER_MODEL: "/models/ggml-base.bin",
+        CASTRECALL_WHISPER_OUTPUT_FORMAT: "josn",
+      }),
+      { whisper: WITH_WHISPER_CPP_NO_MODEL },
+    );
+    const step = steps.find((s) => s.id === "providers.localWhisper")!;
+    expect(step.status).toBe("configured");
+    expect(step.explanation).toContain("Ignored decode options");
+    expect(step.explanation).toContain("outputFormat");
+    expect(step.explanation).toContain("josn");
+    expect(step.envVars).toContain("CASTRECALL_WHISPER_OUTPUT_FORMAT");
+  });
+
   it("marks mlx-whisper ready via CASTRECALL_LOCAL_WHISPER_PRESET and names the resolved model", () => {
     const steps = plan(config({ CASTRECALL_LOCAL_WHISPER_PRESET: "best" }), {
       whisper: WITH_MLX_NO_MODEL,

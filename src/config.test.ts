@@ -165,6 +165,59 @@ describe("resolveConfig", () => {
     expect(resolveConfig({}, {}).localWhisper.preset).toBeUndefined();
     expect(resolveConfig({}, { CASTRECALL_LOCAL_WHISPER_PRESET: "  " }).localWhisper.preset).toBeUndefined();
   });
+
+  it("defaults localWhisper.decode to loop-safe podcast defaults when unset", () => {
+    const config = resolveConfig({}, {});
+    expect(config.localWhisper.decode).toEqual({
+      language: undefined,
+      conditionOnPreviousText: false,
+      wordTimestamps: undefined,
+      outputFormat: "txt",
+      noSpeechThreshold: undefined,
+      logprobThreshold: undefined,
+      compressionRatioThreshold: undefined,
+      hallucinationSilenceThreshold: undefined,
+    });
+  });
+
+  it("reads localWhisper.decode options from the environment", () => {
+    const config = resolveConfig(
+      {},
+      {
+        CASTRECALL_WHISPER_LANGUAGE: "en",
+        CASTRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT: "false",
+        CASTRECALL_WHISPER_WORD_TIMESTAMPS: "true",
+        CASTRECALL_WHISPER_OUTPUT_FORMAT: "JSON",
+        CASTRECALL_WHISPER_NO_SPEECH_THRESHOLD: "0.6",
+        CASTRECALL_WHISPER_LOGPROB_THRESHOLD: "-1",
+        CASTRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD: "2.4",
+        CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD: "2",
+      },
+    );
+    expect(config.localWhisper.decode).toEqual({
+      language: "en",
+      conditionOnPreviousText: false,
+      wordTimestamps: true,
+      outputFormat: "json",
+      noSpeechThreshold: 0.6,
+      logprobThreshold: -1,
+      compressionRatioThreshold: 2.4,
+      hallucinationSilenceThreshold: 2,
+    });
+  });
+
+  it("lets CASTRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT=true opt back into looping context", () => {
+    const config = resolveConfig(
+      {},
+      { CASTRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT: "true" },
+    );
+    expect(config.localWhisper.decode.conditionOnPreviousText).toBe(true);
+  });
+
+  it("drops an invalid numeric threshold to undefined rather than NaN", () => {
+    const config = resolveConfig({}, { CASTRECALL_WHISPER_NO_SPEECH_THRESHOLD: "not-a-number" });
+    expect(config.localWhisper.decode.noSpeechThreshold).toBeUndefined();
+  });
 });
 
 describe("requirePocketCastsCredentials", () => {

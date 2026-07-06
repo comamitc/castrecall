@@ -12,6 +12,14 @@ function nonEmpty(value) {
     const trimmed = value?.trim();
     return trimmed ? trimmed : undefined;
 }
+/** Undefined for unset/blank/non-finite input — never NaN leaking into an argv value. */
+function nonEmptyNumber(value) {
+    const trimmed = value?.trim();
+    if (!trimmed)
+        return undefined;
+    const parsed = Number.parseFloat(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+}
 /**
  * Merge plugin config (non-secret settings) with environment variables.
  * Secrets are env-only by design; they never pass through OpenClaw config.
@@ -64,6 +72,16 @@ export function resolveConfig(settings = {}, env = process.env) {
             model: nonEmpty(env.CASTRECALL_WHISPER_MODEL),
             preset: nonEmpty(env.CASTRECALL_LOCAL_WHISPER_PRESET)?.toLowerCase(),
             allowLowQuality: envFlag(env.CASTRECALL_WHISPER_ALLOW_LOW_QUALITY) ?? false,
+            decode: {
+                language: nonEmpty(env.CASTRECALL_WHISPER_LANGUAGE),
+                conditionOnPreviousText: envFlag(env.CASTRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT) ?? false,
+                wordTimestamps: envFlag(env.CASTRECALL_WHISPER_WORD_TIMESTAMPS),
+                outputFormat: nonEmpty(env.CASTRECALL_WHISPER_OUTPUT_FORMAT)?.toLowerCase() ?? "txt",
+                noSpeechThreshold: nonEmptyNumber(env.CASTRECALL_WHISPER_NO_SPEECH_THRESHOLD),
+                logprobThreshold: nonEmptyNumber(env.CASTRECALL_WHISPER_LOGPROB_THRESHOLD),
+                compressionRatioThreshold: nonEmptyNumber(env.CASTRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD),
+                hallucinationSilenceThreshold: nonEmptyNumber(env.CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD),
+            },
         },
         stt: {
             enabled: sttEnabled,

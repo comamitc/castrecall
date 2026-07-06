@@ -86,6 +86,24 @@ describe("tools", () => {
     }
   });
 
+  it("setup_status surfaces an ignored decode option in the localWhisper status line (issue #53)", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "whisper-cli"), "#!/bin/sh\n", { mode: 0o755 });
+      const status = (await setupStatus(
+        config({
+          CASTRECALL_WHISPER_MODEL: "/models/ggml-base.en.bin",
+          CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD: "2",
+        }),
+        { env: { PATH: binDir } },
+      )) as Record<string, any>;
+      expect(status.transcriptLadder.localWhisper).toContain("ignored decode options");
+      expect(status.transcriptLadder.localWhisper).toContain("hallucinationSilenceThreshold");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
   it("setup_status names the preset-resolved concrete model for mlx-whisper ready via a preset", async () => {
     const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
     try {

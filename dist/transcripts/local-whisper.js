@@ -12,6 +12,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CastrecallSetupError } from "../config.js";
+import { normalizeTranscript } from "./normalize.js";
 const TRANSCRIBE_TIMEOUT_MS = 60 * 60_000; // long episodes on CPU take a while
 const KNOWN_BINARIES = [
     { name: "whisper-cli", flavor: "whisper.cpp" },
@@ -71,6 +72,106 @@ export function resolveWhisperModel(flavor, localWhisperConfig) {
         return { source: "none", preset, reason: WHISPER_PRESET_UNKNOWN_MESSAGE };
     }
     return { model: presetModel, source: "preset", preset };
+}
+const VALID_OUTPUT_FORMATS = ["txt", "json", "vtt", "srt"];
+const WHISPER_CPP_FORMAT_FLAGS = {
+    json: "-oj",
+    vtt: "-ovtt",
+    srt: "-osrt",
+};
+/**
+ * Single source of truth mapping abstract decode intents (issue #53:
+ * language, condition-on-previous-text loop prevention, word timestamps,
+ * structured output, hallucination/silence thresholds) to concrete per-
+ * flavor CLI flags. Every option lands in `applied` with the flag it
+ * produced, or in `ignored` with a reason — nothing is silently dropped
+ * (the "fail clearly or ignored with explicit provenance" criterion). The
+ * `custom` flavor ignores everything: same precedent as resolveWhisperModel
+ * treating a leftover preset on `custom` as neither consumed nor an error,
+ * because the user owns the whole command template.
+ */
+export function resolveWhisperDecodeArgs(flavor, decode) {
+    if (flavor === "custom") {
+        return { args: [], applied: [], ignored: [], outputFormat: "txt" };
+    }
+    const ignored = [];
+    const ignore = (option, reason) => ignored.push({ option, reason });
+    let outputFormat = "txt";
+    if (VALID_OUTPUT_FORMATS.includes(decode.outputFormat)) {
+        outputFormat = decode.outputFormat;
+    }
+    else {
+        ignore("outputFormat", `CASTRECALL_WHISPER_OUTPUT_FORMAT="${decode.outputFormat}" is not one of ` +
+            `${VALID_OUTPUT_FORMATS.join(", ")}; falling back to txt.`);
+    }
+    const applied = [];
+    const args = [];
+    if (decode.language) {
+        args.push(...(flavor === "whisper.cpp" ? ["-l", decode.language] : ["--language", decode.language]));
+        applied.push("language");
+    }
+    // Loop-prevention default for long-form podcasts (issue #53): repeating
+    // prior output back as decoding context is a primary driver of Whisper
+    // repetition loops, so this is honored (and reported as applied) whenever
+    // it's false, which is CastRecall's own default.
+    if (!decode.conditionOnPreviousText) {
+        if (flavor === "whisper.cpp") {
+            args.push("-mc", "0");
+        }
+        else if (flavor === "mlx-whisper") {
+            args.push("--condition-on-previous-text", "False");
+        }
+        else {
+            args.push("--condition_on_previous_text", "False");
+        }
+        applied.push("conditionOnPreviousText");
+    }
+    if (decode.wordTimestamps) {
+        if (flavor === "whisper.cpp") {
+            ignore("wordTimestamps", "whisper.cpp has no boolean word-timestamps flag (only the full-JSON -ojf output).");
+        }
+        else if (flavor === "mlx-whisper") {
+            args.push("--word-timestamps", "True");
+            applied.push("wordTimestamps");
+        }
+        else {
+            args.push("--word_timestamps", "True");
+            applied.push("wordTimestamps");
+        }
+    }
+    applyThreshold(flavor, decode.noSpeechThreshold, "noSpeechThreshold", args, applied, ignore, {
+        "whisper.cpp": "-nth",
+        "mlx-whisper": "--no-speech-threshold",
+        "openai-whisper": "--no_speech_threshold",
+        "whisper-ctranslate2": "--no_speech_threshold",
+    });
+    applyThreshold(flavor, decode.logprobThreshold, "logprobThreshold", args, applied, ignore, {
+        "mlx-whisper": "--logprob-threshold",
+        "openai-whisper": "--logprob_threshold",
+        "whisper-ctranslate2": "--logprob_threshold",
+    });
+    applyThreshold(flavor, decode.compressionRatioThreshold, "compressionRatioThreshold", args, applied, ignore, {
+        "mlx-whisper": "--compression-ratio-threshold",
+        "openai-whisper": "--compression_ratio_threshold",
+        "whisper-ctranslate2": "--compression_ratio_threshold",
+    });
+    applyThreshold(flavor, decode.hallucinationSilenceThreshold, "hallucinationSilenceThreshold", args, applied, ignore, {
+        "mlx-whisper": "--hallucination-silence-threshold",
+        "openai-whisper": "--hallucination_silence_threshold",
+        "whisper-ctranslate2": "--hallucination_silence_threshold",
+    });
+    return { args, applied, ignored, outputFormat };
+}
+function applyThreshold(flavor, value, option, args, applied, ignore, flagByFlavor) {
+    if (value === undefined)
+        return;
+    const flag = flagByFlavor[flavor];
+    if (!flag) {
+        ignore(option, `${flavor} does not support ${option}.`);
+        return;
+    }
+    args.push(flag, String(value));
+    applied.push(option);
 }
 /**
  * Single source of truth for whether the local Whisper rung can actually RUN
@@ -155,11 +256,20 @@ export async function transcribeWithLocalWhisper(config, audioUrl, deps = {}) {
     const workDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-whisper-"));
     try {
         const audioPath = await downloadAudio(fetchImpl, audioUrl, workDir);
-        const text = await runWhisper(detection.detected, config, audioPath, workDir, execImpl, deps.env);
-        if (!text.trim()) {
+        const produced = await runWhisper(detection.detected, config, audioPath, workDir, execImpl, deps.env);
+        const text = produced.format === "txt"
+            ? produced.raw.trim()
+            : normalizeTranscript(produced.raw, produced.format).text.trim();
+        if (!text) {
             throw new Error(`${detection.detected.flavor} produced an empty transcript.`);
         }
-        return { text: text.trim(), provider: providerLabel(detection.detected, config) };
+        return {
+            text,
+            raw: produced.raw,
+            format: produced.format,
+            provider: providerLabel(detection.detected, config),
+            ignoredOptions: produced.ignoredOptions,
+        };
     }
     finally {
         await fs.rm(workDir, { recursive: true, force: true });
@@ -179,6 +289,7 @@ async function downloadAudio(fetchImpl, audioUrl, workDir) {
 async function runWhisper(detected, config, audioPath, workDir, execImpl, env = process.env) {
     const resolved = resolveWhisperModel(detected.flavor, config.localWhisper);
     const model = resolved.model;
+    const decodeResolution = resolveWhisperDecodeArgs(detected.flavor, config.localWhisper.decode);
     switch (detected.flavor) {
         case "custom": {
             const command = detected.command
@@ -188,33 +299,63 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
                 timeoutMs: TRANSCRIBE_TIMEOUT_MS,
             });
             assertExitOk(result, "custom whisper command");
-            return result.stdout;
+            return { raw: result.stdout, format: "txt", ignoredOptions: decodeResolution.ignored };
         }
         case "whisper.cpp": {
             if (!model) {
                 throw new CastrecallSetupError(WHISPER_CPP_MODEL_MISSING_MESSAGE);
             }
             const input = await ensureWav(audioPath, workDir, execImpl, env);
-            const result = await execImpl([detected.command, "-m", model, "-f", input, "-np", "-nt"], { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
+            const format = decodeResolution.outputFormat;
+            if (format === "txt") {
+                const result = await execImpl([detected.command, "-m", model, "-f", input, "-np", "-nt", ...decodeResolution.args], { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
+                assertExitOk(result, "whisper.cpp");
+                return { raw: result.stdout, format, ignoredOptions: decodeResolution.ignored };
+            }
+            // Controlled output base: whisper.cpp appends .<format> to -of itself,
+            // so the exact file we read is the exact path we asked it to write —
+            // no filename-convention guessing for structured output.
+            const outputBase = path.join(workDir, "episode");
+            const result = await execImpl([
+                detected.command,
+                "-m",
+                model,
+                "-f",
+                input,
+                WHISPER_CPP_FORMAT_FLAGS[format],
+                "-of",
+                outputBase,
+                ...decodeResolution.args,
+            ], { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
             assertExitOk(result, "whisper.cpp");
-            return result.stdout;
+            let raw;
+            try {
+                raw = await fs.readFile(`${outputBase}.${format}`, "utf8");
+            }
+            catch {
+                throw new Error(`whisper.cpp produced no ${format} output.`);
+            }
+            return { raw, format, ignoredOptions: decodeResolution.ignored };
         }
         case "openai-whisper":
         case "whisper-ctranslate2": {
+            const format = decodeResolution.outputFormat;
             const argv = [
                 detected.command,
                 audioPath,
                 "--output_format",
-                "txt",
+                format,
                 "--output_dir",
                 workDir,
                 "--verbose",
                 "False",
                 ...(model ? ["--model", model] : []),
+                ...decodeResolution.args,
             ];
             const result = await execImpl(argv, { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
             assertExitOk(result, detected.flavor);
-            return readProducedTxt(workDir, audioPath);
+            const raw = await readProduced(workDir, audioPath, format, format === "txt");
+            return { raw, format, ignoredOptions: decodeResolution.ignored };
         }
         case "mlx-whisper": {
             if (!model) {
@@ -225,18 +366,21 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
                     throw new CastrecallSetupError(MLX_WHISPER_MODEL_MISSING_MESSAGE);
                 }
             }
+            const format = decodeResolution.outputFormat;
             const argv = [
                 detected.command,
                 audioPath,
                 "--output-dir",
                 workDir,
                 "--output-format",
-                "txt",
+                format,
                 ...(model ? ["--model", model] : []),
+                ...decodeResolution.args,
             ];
             const result = await execImpl(argv, { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
             assertExitOk(result, "mlx-whisper");
-            return readProducedTxt(workDir, audioPath);
+            const raw = await readProduced(workDir, audioPath, format, format === "txt");
+            return { raw, format, ignoredOptions: decodeResolution.ignored };
         }
     }
 }
@@ -255,19 +399,27 @@ async function ensureWav(audioPath, workDir, execImpl, env) {
     assertExitOk(result, "ffmpeg conversion");
     return wavPath;
 }
-async function readProducedTxt(workDir, audioPath) {
+/**
+ * Reads the file a Whisper CLI produced from --output-dir/--output-format.
+ * The "take any file it produced" fallback is retained only for txt (some
+ * CLIs name plain-text outputs differently) — structured formats never fall
+ * back to a stale/other file, they either match the exact expected name or
+ * fail clearly.
+ */
+async function readProduced(workDir, audioPath, ext, allowFallback) {
     const base = path.basename(audioPath).replace(/\.[^.]+$/, "");
-    const expected = path.join(workDir, `${base}.txt`);
+    const expected = path.join(workDir, `${base}.${ext}`);
     try {
         return await fs.readFile(expected, "utf8");
     }
     catch {
-        // Some CLIs name outputs differently; take any .txt they produced.
-        const entries = await fs.readdir(workDir);
-        const txt = entries.find((name) => name.endsWith(".txt"));
-        if (!txt)
-            throw new Error("Whisper run finished but produced no .txt output.");
-        return fs.readFile(path.join(workDir, txt), "utf8");
+        if (allowFallback) {
+            const entries = await fs.readdir(workDir);
+            const match = entries.find((name) => name.endsWith(`.${ext}`));
+            if (match)
+                return fs.readFile(path.join(workDir, match), "utf8");
+        }
+        throw new Error(`Whisper run finished but produced no ${ext} output.`);
     }
 }
 function providerLabel(detected, config) {
