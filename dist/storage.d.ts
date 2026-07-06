@@ -301,12 +301,23 @@ export declare class Storage {
      * `moved: false` (instead of throwing) when there is nothing pending for
      * this episode — either it was never generated, or a prior resolve
      * already moved it — so the caller can surface an actionable error rather
-     * than silently no-op.
+     * than silently no-op. Uses link+unlink rather than rename so an existing
+     * resolved candidate at the destination is never silently clobbered —
+     * `fs.rename` would replace it outright; `alreadyResolved: true` lets the
+     * caller surface that conflict instead.
      */
     resolvePendingReview(episodeUuid: string): Promise<{
         moved: boolean;
         resolvedPath: string;
+        alreadyResolved: boolean;
     }>;
+    /**
+     * Undo a successful `resolvePendingReview` move — used only when the
+     * follow-up state write (updateEpisode) fails after the move succeeded, so
+     * a retry lands on the same pending-review path instead of a candidate
+     * that is resolved-on-disk but has no recorded disposition.
+     */
+    revertResolvedReview(episodeUuid: string): Promise<void>;
     /**
      * Write a promoted note once; never overwrite an existing note at the same
      * path. Creates `notesDir` on demand — same create-on-demand precedent as
@@ -317,6 +328,8 @@ export declare class Storage {
         path: string;
         alreadyExists: boolean;
     }>;
+    /** Remove a written promoted note — used to clean up an orphan when the caller loses a resolve race. */
+    deletePromotedNote(filePath: string): Promise<void>;
     digestPath(slug: string): string;
     /** Write a digest once; never overwrite a pending digest — same write-once semantics as writeReviewCandidate. */
     writeDigest(slug: string, markdown: string): Promise<{

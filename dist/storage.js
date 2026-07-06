@@ -518,21 +518,41 @@ export class Storage {
      * `moved: false` (instead of throwing) when there is nothing pending for
      * this episode — either it was never generated, or a prior resolve
      * already moved it — so the caller can surface an actionable error rather
-     * than silently no-op.
+     * than silently no-op. Uses link+unlink rather than rename so an existing
+     * resolved candidate at the destination is never silently clobbered —
+     * `fs.rename` would replace it outright; `alreadyResolved: true` lets the
+     * caller surface that conflict instead.
      */
     async resolvePendingReview(episodeUuid) {
         await this.init();
         const resolvedPath = this.resolvedCandidatePath(episodeUuid);
+        const pendingPath = this.reviewCandidatePath(episodeUuid);
         try {
-            await fs.rename(this.reviewCandidatePath(episodeUuid), resolvedPath);
-            return { moved: true, resolvedPath };
+            await fs.link(pendingPath, resolvedPath);
         }
         catch (error) {
+            if (error.code === "EEXIST") {
+                return { moved: false, resolvedPath, alreadyResolved: true };
+            }
             if (error.code === "ENOENT") {
-                return { moved: false, resolvedPath };
+                return { moved: false, resolvedPath, alreadyResolved: false };
             }
             throw error;
         }
+        await fs.unlink(pendingPath);
+        return { moved: true, resolvedPath, alreadyResolved: false };
+    }
+    /**
+     * Undo a successful `resolvePendingReview` move — used only when the
+     * follow-up state write (updateEpisode) fails after the move succeeded, so
+     * a retry lands on the same pending-review path instead of a candidate
+     * that is resolved-on-disk but has no recorded disposition.
+     */
+    async revertResolvedReview(episodeUuid) {
+        const resolvedPath = this.resolvedCandidatePath(episodeUuid);
+        const pendingPath = this.reviewCandidatePath(episodeUuid);
+        await fs.link(resolvedPath, pendingPath);
+        await fs.unlink(resolvedPath);
     }
     /**
      * Write a promoted note once; never overwrite an existing note at the same
@@ -553,6 +573,10 @@ export class Storage {
             }
             throw error;
         }
+    }
+    /** Remove a written promoted note — used to clean up an orphan when the caller loses a resolve race. */
+    async deletePromotedNote(filePath) {
+        await fs.rm(filePath, { force: true });
     }
     digestPath(slug) {
         return path.join(this.reviewPendingDir(), `digest-${safeName(slug)}.md`);

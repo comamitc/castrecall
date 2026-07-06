@@ -550,10 +550,37 @@ export async function resolveReview(config, params, deps = {}) {
         throw new CastrecallSetupError(`No pending review to resolve for episode ${params.episodeUuid}: it was never generated ` +
             "(run castrecall_generate_review first) or has already been resolved.");
     }
+    if (record.reviewDisposition) {
+        throw new CastrecallSetupError(`Episode ${params.episodeUuid} was already resolved as "${record.reviewDisposition}" ` +
+            `at ${record.reviewResolvedAt}. A pending candidate reappeared for it, but ` +
+            "castrecall_resolve_review only resolves an episode once.");
+    }
     if (params.disposition === "discard") {
-        const { resolvedPath } = await storage.resolvePendingReview(params.episodeUuid);
+        // The move (pending -> resolved) is the linearization point: it is the
+        // only step two concurrent resolves for the same episode can race on,
+        // and it can only succeed for one of them. Only the caller for whom it
+        // reports moved === true may write state.
+        const { moved, resolvedPath, alreadyResolved } = await storage.resolvePendingReview(params.episodeUuid);
+        if (!moved) {
+            if (alreadyResolved) {
+                throw new CastrecallSetupError(`A resolved candidate already exists at ${resolvedPath} for episode ` +
+                    `${params.episodeUuid}. Remove or archive it before resolving this candidate again.`);
+            }
+            throw new CastrecallSetupError(`Episode ${params.episodeUuid}'s pending review was resolved by a concurrent ` +
+                "castrecall_resolve_review call before this one completed. Check the episode's " +
+                "reviewDisposition (e.g. via castrecall_setup_status) for the outcome that won.");
+        }
         const resolvedAt = now().toISOString();
-        await storage.updateEpisode(params.episodeUuid, { reviewDisposition: "discard", reviewResolvedAt: resolvedAt }, now);
+        try {
+            await storage.updateEpisode(params.episodeUuid, { reviewDisposition: "discard", reviewResolvedAt: resolvedAt }, now);
+        }
+        catch (error) {
+            // The move succeeded but recording the disposition failed: put the
+            // candidate back so a retry lands on the normal pending path instead
+            // of being stranded resolved-on-disk with no recorded disposition.
+            await storage.revertResolvedReview(params.episodeUuid).catch(() => { });
+            throw error;
+        }
         return {
             disposition: "discard",
             resolvedPath,
@@ -565,12 +592,14 @@ export async function resolveReview(config, params, deps = {}) {
     // pending candidate; a retry then hits the write-once collision below and
     // throws (surfaced, not silently double-promoted) rather than orphaning
     // state — the same reconciliation stance generateReview takes on its own
-    // write/state-update pair (see above).
-    const content = params.content?.trim();
-    if (!content) {
+    // write/state-update pair (see above). The move step below is also the
+    // linearization point for concurrent resolves of the same episode; see
+    // its `!moved` handling.
+    if (!params.content?.trim()) {
         throw new CastrecallSetupError("castrecall_resolve_review requires non-empty content when disposition is \"promote\" — " +
             "the exact text the human chose to keep, in their own words where possible.");
     }
+    const content = params.content;
     const notesDir = requireNotesDir(config);
     const provenance = await storage.readProvenance(params.episodeUuid);
     if (!provenance) {
@@ -593,13 +622,39 @@ export async function resolveReview(config, params, deps = {}) {
         throw new CastrecallSetupError(`A promoted note already exists at ${written.path}. The candidate was left pending — ` +
             "remove or rename the existing note, or resolve again with a different title.");
     }
-    const { resolvedPath } = await storage.resolvePendingReview(params.episodeUuid);
+    // The move (pending -> resolved) is the linearization point: it is the
+    // only step two concurrent resolves for the same episode can race on. If
+    // this call loses that race, the note it just wrote is an orphan — remove
+    // it rather than leaving two divergent promotions or letting a discard
+    // that lost this race silently overwrite the winning promote's state.
+    const { moved, resolvedPath, alreadyResolved } = await storage.resolvePendingReview(params.episodeUuid);
+    if (!moved) {
+        await storage.deletePromotedNote(written.path);
+        if (alreadyResolved) {
+            throw new CastrecallSetupError(`A resolved candidate already exists at ${resolvedPath} for episode ` +
+                `${params.episodeUuid}. Remove or archive it before resolving this candidate again.`);
+        }
+        throw new CastrecallSetupError(`Episode ${params.episodeUuid}'s pending review was resolved by a concurrent ` +
+            "castrecall_resolve_review call before this one completed. Check the episode's " +
+            "reviewDisposition (e.g. via castrecall_setup_status) for the outcome that won.");
+    }
     const resolvedAt = resolvedAtDate.toISOString();
-    await storage.updateEpisode(params.episodeUuid, {
-        reviewDisposition: "promote",
-        reviewResolvedAt: resolvedAt,
-        promotedNotePath: written.path,
-    }, now);
+    try {
+        await storage.updateEpisode(params.episodeUuid, {
+            reviewDisposition: "promote",
+            reviewResolvedAt: resolvedAt,
+            promotedNotePath: written.path,
+        }, now);
+    }
+    catch (error) {
+        // The move and note write succeeded but recording the disposition
+        // failed: put the candidate back and remove the note so a retry lands
+        // on the normal pending path instead of a candidate that's resolved and
+        // promoted on disk with no recorded disposition.
+        await storage.revertResolvedReview(params.episodeUuid).catch(() => { });
+        await storage.deletePromotedNote(written.path).catch(() => { });
+        throw error;
+    }
     return {
         disposition: "promote",
         resolvedPath,

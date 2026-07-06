@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config.js";
 import type { ExecImpl } from "./pocketcasts/secret-store.js";
 import { clearPocketCastsSessionCache } from "./pocketcasts/session.js";
@@ -1688,6 +1688,129 @@ describe("tools", () => {
       const cfg = config();
       const status = (await setupStatus(cfg)) as Record<string, any>;
       expect(status.notes).toEqual({ notesDir: null });
+    });
+
+    it("discard: losing a resolve race to a concurrent promote does not overwrite the winning disposition", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+      const originalResolve = Storage.prototype.resolvePendingReview;
+      // Simulate a concurrent castrecall_resolve_review promote call that
+      // completes its own move-and-record step in the middle of this call's
+      // resolvePendingReview — i.e. it wins the race.
+      const spy = vi
+        .spyOn(Storage.prototype, "resolvePendingReview")
+        .mockImplementationOnce(async function (this: Storage, uuid: string) {
+          await originalResolve.call(this, uuid);
+          await this.updateEpisode(uuid, {
+            reviewDisposition: "promote",
+            reviewResolvedAt: "2026-01-01T00:00:00.000Z",
+            promotedNotePath: "/tmp/winner.md",
+          });
+          return originalResolve.call(this, uuid);
+        });
+
+      try {
+        await expect(
+          resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
+        ).rejects.toThrow(/concurrent/i);
+      } finally {
+        spy.mockRestore();
+      }
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("promote");
+      expect(state.episodes["ep-1"].promotedNotePath).toBe("/tmp/winner.md");
+    });
+
+    it("promote: losing a resolve race to a concurrent discard removes the orphaned note and does not overwrite state", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+      const originalResolve = Storage.prototype.resolvePendingReview;
+      const spy = vi
+        .spyOn(Storage.prototype, "resolvePendingReview")
+        .mockImplementationOnce(async function (this: Storage, uuid: string) {
+          await originalResolve.call(this, uuid);
+          await this.updateEpisode(uuid, {
+            reviewDisposition: "discard",
+            reviewResolvedAt: "2026-01-01T00:00:00.000Z",
+          });
+          return originalResolve.call(this, uuid);
+        });
+
+      try {
+        await expect(
+          resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }),
+        ).rejects.toThrow(/concurrent/i);
+      } finally {
+        spy.mockRestore();
+      }
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("discard");
+      expect(state.episodes["ep-1"].promotedNotePath).toBeUndefined();
+      const noteFiles = await fs.readdir(notesDir).catch(() => []);
+      expect(noteFiles).toHaveLength(0);
+    });
+
+    it("discard: rolls the candidate back to pending if the state write fails after the move", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+      const spy = vi
+        .spyOn(Storage.prototype, "updateEpisode")
+        .mockImplementationOnce(async () => {
+          throw new Error("simulated state write failure");
+        });
+
+      try {
+        await expect(
+          resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
+        ).rejects.toThrow(/simulated state write failure/);
+      } finally {
+        spy.mockRestore();
+      }
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+
+      const result = (await resolveReview(cfg, {
+        episodeUuid: "ep-1",
+        disposition: "discard",
+      })) as Record<string, any>;
+      expect(result.disposition).toBe("discard");
+    });
+
+    it("promote: rolls the candidate back to pending and removes the note if the state write fails after the move", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+      const spy = vi
+        .spyOn(Storage.prototype, "updateEpisode")
+        .mockImplementationOnce(async () => {
+          throw new Error("simulated state write failure");
+        });
+
+      try {
+        await expect(
+          resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }),
+        ).rejects.toThrow(/simulated state write failure/);
+      } finally {
+        spy.mockRestore();
+      }
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+      const noteFiles = await fs.readdir(notesDir).catch(() => []);
+      expect(noteFiles).toHaveLength(0);
+
+      const result = (await resolveReview(cfg, {
+        episodeUuid: "ep-1",
+        disposition: "promote",
+        content: "Body.",
+      })) as Record<string, any>;
+      expect(result.disposition).toBe("promote");
     });
   });
 

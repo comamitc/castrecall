@@ -699,6 +699,19 @@ export class Storage {
   }
 
   /**
+   * Undo a successful `resolvePendingReview` move — used only when the
+   * follow-up state write (updateEpisode) fails after the move succeeded, so
+   * a retry lands on the same pending-review path instead of a candidate
+   * that is resolved-on-disk but has no recorded disposition.
+   */
+  async revertResolvedReview(episodeUuid: string): Promise<void> {
+    const resolvedPath = this.resolvedCandidatePath(episodeUuid);
+    const pendingPath = this.reviewCandidatePath(episodeUuid);
+    await fs.link(resolvedPath, pendingPath);
+    await fs.unlink(resolvedPath);
+  }
+
+  /**
    * Write a promoted note once; never overwrite an existing note at the same
    * path. Creates `notesDir` on demand — same create-on-demand precedent as
    * `CorpusExporter.exportEpisode` — so a configured-but-not-yet-existing
@@ -720,6 +733,11 @@ export class Storage {
       }
       throw error;
     }
+  }
+
+  /** Remove a written promoted note — used to clean up an orphan when the caller loses a resolve race. */
+  async deletePromotedNote(filePath: string): Promise<void> {
+    await fs.rm(filePath, { force: true });
   }
 
   digestPath(slug: string): string {
