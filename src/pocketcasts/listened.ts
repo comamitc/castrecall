@@ -41,5 +41,9 @@ export function isListenedEpisode(
     return episode.playedUpTo >= filter.minSeconds;
   }
 
+  // A known, non-completed playingStatus (1 or 2) is a real signal that the
+  // episode wasn't finished — recordUnknown is only for truly unknown metadata.
+  if (usableNumber(episode.playingStatus)) return false;
+
   return filter.recordUnknown;
 }

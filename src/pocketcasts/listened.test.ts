@@ -45,4 +45,10 @@ describe("isListenedEpisode", () => {
     expect(isListenedEpisode({}, filter)).toBe(false);
     expect(isListenedEpisode({}, { ...filter, recordUnknown: true })).toBe(true);
   });
+
+  it("does not let recordUnknown admit a known non-completed playingStatus with no play signal", () => {
+    const recordUnknownFilter = { ...filter, recordUnknown: true };
+    expect(isListenedEpisode({ playingStatus: 1 }, recordUnknownFilter)).toBe(false);
+    expect(isListenedEpisode({ playingStatus: 2 }, recordUnknownFilter)).toBe(false);
+  });
 });
