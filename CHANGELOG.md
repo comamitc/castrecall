@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.6.0 — 2026-07-06
+
+Event-driven transcript availability — delivered as bounded polling, because
+an OpenClaw plugin has no reachable inbound endpoint for a literal webhook.
+
+- **Transcript availability recheck** (#9, PR #35): a Taddy episode still
+  being transcribed (`taddyTranscribeStatus`) or an RSS item with no
+  transcript links declared yet is no longer a terminal miss. Those rungs
+  now mark the episode recheckable, and a new `transcriptRecheck` state —
+  sibling to the STT-billing `transcriptRetry` backoff — polls again on a
+  capped exponential horizon until a hard age limit, after which the miss
+  becomes terminal with an explicit "no transcript appeared" error.
+  Scheduled runs defer episodes until the later of their retry/recheck
+  eligibility times; `castrecall_setup_status` reports the pending-recheck
+  count.
+- **Manual STT recovery honored** (same PR, review-driven): once an
+  episode's 5-attempt STT budget is spent, only *scheduled* runs keep
+  skipping the paid rung. A direct `castrecall_fetch_transcript` call is
+  explicit operator intent and re-attempts STT — exactly what the
+  skipped-rung message advertises.
+
 ## v0.5.0 — 2026-07-06
 
 A fifth transcript-ladder rung: Podchaser transcript lookup, hardened against
