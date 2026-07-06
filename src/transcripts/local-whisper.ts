@@ -129,8 +129,9 @@ export function localWhisperReadiness(
   // readiness would say "ready" for a preset value that runWhisper rejects.
   const presetError = Boolean(localWhisperConfig.preset && resolved.reason);
   const needsModel =
+    presetError ||
     (flavor === "whisper.cpp" && !hasModel) ||
-    (flavor === "mlx-whisper" && !hasModel && (presetError || !localWhisperConfig.allowLowQuality));
+    (flavor === "mlx-whisper" && !hasModel && !localWhisperConfig.allowLowQuality);
   const reason = needsModel
     ? presetError
       ? resolved.reason

@@ -178,6 +178,15 @@ describe("localWhisperReadiness", () => {
     expect(result).toMatchObject({ ready: false, needsModel: true, detected: true });
     expect(result.reason).toBe(WHISPER_PRESET_UNKNOWN_MESSAGE);
   });
+
+  it("is not ready for a non-mlx flavor with a preset set, and reports the non-mlx reason (regression)", () => {
+    const ctranslate2Detected: WhisperDetection = {
+      detected: { flavor: "whisper-ctranslate2", command: "/usr/local/bin/whisper-ctranslate2" },
+    };
+    const result = localWhisperReadiness(ctranslate2Detected, { preset: "best" });
+    expect(result).toMatchObject({ ready: false, needsModel: true, detected: true });
+    expect(result.reason).toBe(WHISPER_PRESET_NON_MLX_MESSAGE);
+  });
 });
 
 describe("transcribeWithLocalWhisper", () => {
