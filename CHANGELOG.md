@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.12.0 — 2026-07-06
+
+Local-Whisper guardrails, part two: loop-safe decoding you can steer, and
+provenance that names exactly what produced every local transcript.
+
+- **Loop-safe decoding options** (#53, PR #68): local transcription now
+  disables condition-on-previous-text by default (the primary driver of
+  Whisper repetition loops on long podcasts) and exposes documented
+  controls — `CASTRECALL_WHISPER_LANGUAGE`, `_OUTPUT_FORMAT`,
+  `_WORD_TIMESTAMPS`, and no-speech/logprob/compression-ratio/
+  hallucination-silence thresholds — mapped to each Whisper flavor's real
+  CLI flags. Every option lands in applied-or-ignored provenance with a
+  reason; nothing is silently dropped. Word timestamps only count as
+  applied when the stored artifact (json) can carry them, the
+  hallucination-silence guardrail applies regardless of output format
+  (implicitly enabling the word-timestamp decode path it needs), and
+  custom commands surface every bypassed control — including the
+  loop-prevention default.
+- **Exact generation provenance** (#54, PR #70): stored transcripts,
+  setup/status, review candidates, and corpus exports now record the
+  precise backend, model, model source (explicit/preset/backend-default),
+  preset, output format, and applied/ignored decode settings — so
+  `local-whisper:mlx-whisper` can never again hide a whisper-tiny corpus.
+  Older stored provenance shapes render gracefully, never crashing review
+  or export.
+
 ## v0.11.0 — 2026-07-06
 
 Local-Whisper guardrails, part one: no more silently transcribing a corpus
