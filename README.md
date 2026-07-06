@@ -243,7 +243,8 @@ Pocket Casts' `/user/history` endpoint returns everything you've opened, includi
 | `TADDY_API_KEY` / `TADDY_USER_ID` | no | Enables the Taddy ladder rung. |
 | `PODCHASER_API_KEY` | no | Enables the Podchaser ladder rung. A bearer access token minted via Podchaser's `requestAccessToken` mutation — not a raw client secret. |
 | `LISTENNOTES_API_KEY` | no | Enables the Listen Notes feed-URL discovery fallback (not a ladder rung), used only when Pocket Casts feed export and iTunes Search both miss. |
-| `CASTRECALL_WHISPER_MODEL` | for whisper.cpp | ggml model path (whisper.cpp) or model name (other Whisper CLIs). |
+| `CASTRECALL_WHISPER_MODEL` | for whisper.cpp / mlx_whisper | ggml model path (whisper.cpp) or model name (other Whisper CLIs). mlx_whisper otherwise defaults to the tiny model, so it's required there too unless `CASTRECALL_WHISPER_ALLOW_LOW_QUALITY` is set. |
+| `CASTRECALL_WHISPER_ALLOW_LOW_QUALITY` | no | `true` to let mlx_whisper run with its low-quality tiny-model default instead of requiring `CASTRECALL_WHISPER_MODEL`. |
 | `CASTRECALL_WHISPER_COMMAND` | no | Custom local transcription command with an `{input}` placeholder; stdout = transcript. |
 | `CASTRECALL_DISABLE_LOCAL_WHISPER` | no | `true` to skip the local Whisper rung even when a CLI is installed. |
 | `CASTRECALL_ENABLE_STT` | no | `true` to allow paid STT fallback. |

@@ -16,7 +16,7 @@ import type { ListenRecord } from "../storage.js";
 import { fetchRssTranscript } from "./rss.js";
 import { fetchTaddyTranscript, taddyConfigured } from "./taddy.js";
 import { fetchPodchaserTranscript, podchaserConfigured } from "./podchaser.js";
-import { detectLocalWhisper, transcribeWithLocalWhisper } from "./local-whisper.js";
+import { detectLocalWhisper, localWhisperReadiness, transcribeWithLocalWhisper } from "./local-whisper.js";
 import { RetryableSttError, sttAvailability, transcribeAudio } from "./stt.js";
 
 export type LadderRung = "rss" | "taddy" | "podchaser" | "local-whisper" | "stt";
@@ -226,8 +226,13 @@ export async function runTranscriptLadder(
 
   // Rung 4: local Whisper (free, private; used whenever a CLI is detected)
   const whisper = await detectLocalWhisper(config, env);
+  const whisperReadiness = whisper.detected
+    ? localWhisperReadiness(whisper, config.localWhisper)
+    : undefined;
   if (!whisper.detected) {
     rungs.push({ rung: "local-whisper", outcome: "skipped", detail: whisper.reason });
+  } else if (!whisperReadiness!.ready) {
+    rungs.push({ rung: "local-whisper", outcome: "skipped", detail: whisperReadiness!.reason! });
   } else {
     try {
       const result = await transcribeWithLocalWhisper(config, record.audioUrl, { fetchImpl, env });

@@ -39,6 +39,8 @@ export type ResolvedConfig = {
     command?: string;
     /** Model path (whisper.cpp) or model name (openai-whisper/mlx/ctranslate2). */
     model?: string;
+    /** Accept mlx-whisper's low-quality default model instead of requiring CASTRECALL_WHISPER_MODEL. */
+    allowLowQuality: boolean;
   };
   stt: {
     enabled: boolean;
@@ -144,6 +146,7 @@ export function resolveConfig(
       disabled: envFlag(env.CASTRECALL_DISABLE_LOCAL_WHISPER) ?? false,
       command: nonEmpty(env.CASTRECALL_WHISPER_COMMAND),
       model: nonEmpty(env.CASTRECALL_WHISPER_MODEL),
+      allowLowQuality: envFlag(env.CASTRECALL_WHISPER_ALLOW_LOW_QUALITY) ?? false,
     },
     stt: {
       enabled: sttEnabled,

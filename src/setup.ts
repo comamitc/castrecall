@@ -20,7 +20,7 @@ import { envFlag, type ResolvedConfig } from "./config.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { podchaserConfigured } from "./transcripts/podchaser.js";
 import { sttAvailability } from "./transcripts/stt.js";
-import { WHISPER_CPP_MODEL_MISSING_MESSAGE, localWhisperReadiness, type WhisperDetection } from "./transcripts/local-whisper.js";
+import { localWhisperReadiness, type WhisperDetection } from "./transcripts/local-whisper.js";
 
 export type SetupStepStatus = "configured" | "missing" | "optional-off";
 
@@ -116,7 +116,7 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
   const podchaserOk = podchaserConfigured(config);
   const stt = sttAvailability(config);
   const { exportDir, mode } = classifyExportDir(config.exportDir);
-  const { ready: whisperReady, needsModel: whisperNeedsModel } = localWhisperReadiness(
+  const { ready: whisperReady, reason: whisperReason } = localWhisperReadiness(
     deps.whisper,
     config.localWhisper,
   );
@@ -197,13 +197,16 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
       id: "providers.localWhisper",
       title: "Local Whisper (optional, free & fully private)",
       status: whisperReady ? "configured" : "optional-off",
-      envVars: ["CASTRECALL_WHISPER_MODEL", "CASTRECALL_WHISPER_COMMAND", "CASTRECALL_DISABLE_LOCAL_WHISPER"],
+      envVars: [
+        "CASTRECALL_WHISPER_MODEL",
+        "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY",
+        "CASTRECALL_WHISPER_COMMAND",
+        "CASTRECALL_DISABLE_LOCAL_WHISPER",
+      ],
       explanation: whisperReady
         ? `Detected ${deps.whisper.detected!.flavor} on PATH — transcribes locally at no cost and ` +
           "nothing leaves your machine."
-        : whisperNeedsModel
-          ? `Detected whisper.cpp on PATH, but it's not ready yet: ${WHISPER_CPP_MODEL_MISSING_MESSAGE}`
-          : deps.whisper.reason!,
+        : (whisperReason ?? deps.whisper.reason!),
     },
     {
       id: "providers.stt",

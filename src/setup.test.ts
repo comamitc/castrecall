@@ -10,6 +10,9 @@ const WITH_WHISPER: WhisperDetection = {
 const WITH_WHISPER_CPP_NO_MODEL: WhisperDetection = {
   detected: { flavor: "whisper.cpp", command: "/usr/local/bin/whisper-cli" },
 };
+const WITH_MLX_NO_MODEL: WhisperDetection = {
+  detected: { flavor: "mlx-whisper", command: "/usr/local/bin/mlx_whisper" },
+};
 const NO_GBRAIN = { detected: false as const, reason: "No ~/.gbrain directory found." };
 const WITH_GBRAIN = {
   detected: true as const,
@@ -187,6 +190,23 @@ describe("buildSetupPlan", () => {
     const withModelStep = withModel.find((s) => s.id === "providers.localWhisper")!;
     expect(withModelStep.status).toBe("configured");
     expect(withModelStep.explanation).toContain("whisper.cpp");
+  });
+
+  it("does not mark mlx-whisper ready until CASTRECALL_WHISPER_MODEL is set (or low quality is allowed)", () => {
+    const noModel = plan(config({}), { whisper: WITH_MLX_NO_MODEL });
+    const noModelStep = noModel.find((s) => s.id === "providers.localWhisper")!;
+    expect(noModelStep.status).toBe("optional-off");
+    expect(noModelStep.explanation).toContain("CASTRECALL_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo");
+
+    const withModel = plan(config({ CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo" }), {
+      whisper: WITH_MLX_NO_MODEL,
+    });
+    expect(withModel.find((s) => s.id === "providers.localWhisper")!.status).toBe("configured");
+
+    const withOptIn = plan(config({ CASTRECALL_WHISPER_ALLOW_LOW_QUALITY: "true" }), {
+      whisper: WITH_MLX_NO_MODEL,
+    });
+    expect(withOptIn.find((s) => s.id === "providers.localWhisper")!.status).toBe("configured");
   });
 
   it("flips the stt step to configured only once enabled and a provider key is set", () => {

@@ -39,17 +39,25 @@ export type WhisperDetection = {
     reason: string;
 };
 export declare const WHISPER_CPP_MODEL_MISSING_MESSAGE: string;
+export declare const MLX_WHISPER_MODEL_MISSING_MESSAGE: string;
 /**
  * Single source of truth for whether the local Whisper rung can actually RUN
- * (not merely whether a binary was detected): whisper.cpp additionally needs
- * a ggml model via CASTRECALL_WHISPER_MODEL. Status surfaces must use this,
- * never raw detection, or they report "ready" for a rung that will throw.
+ * at usable quality (not merely whether a binary was detected): whisper.cpp
+ * needs a ggml model via CASTRECALL_WHISPER_MODEL or it can't run at all;
+ * mlx-whisper can run without one, but silently falls back to Whisper's tiny
+ * model, so it additionally needs an explicit model (or an opt-in to accept
+ * that low quality) before it's quality-ready. Status surfaces must use this,
+ * never raw detection, or they report "ready" for a rung that will throw or
+ * quietly produce a toy-quality transcript.
  */
 export declare function localWhisperReadiness(detection: WhisperDetection, localWhisperConfig: {
     model?: string;
+    allowLowQuality?: boolean;
 }): {
     ready: boolean;
+    detected: boolean;
     needsModel: boolean;
+    reason?: string;
 };
 export type ExecResult = {
     code: number | null;
