@@ -106,6 +106,32 @@ export function compileGlossary(entries) {
                 canonical: v.canonical,
             });
         }
+        if (!caseSensitive) {
+            // toLowerCase() is only a faithful proxy for the pattern's /iu Unicode
+            // case folding when both variants are pure ASCII. A non-ASCII variant
+            // (e.g. Kelvin sign, micro sign, Greek final sigma) can /iu-fold
+            // against a DIFFERENT-canonical variant whose toLowerCase() key
+            // doesn't match it, so the fast path above can return the wrong
+            // canonical instead of merely missing. Detect those cross-key
+            // collisions — scoped to variants containing a non-ASCII character,
+            // since a same-length pure-ASCII pair can never diverge this way —
+            // and evict both keys so lookups fall through to the authoritative,
+            // alternation-ordered `fallback` below instead of the ambiguous key.
+            for (const a of classVariants) {
+                if (/^[\x00-\x7f]*$/.test(a.variant))
+                    continue;
+                const aExact = new RegExp(`^(?:${escapeRegExp(a.variant)})$`, "iu");
+                for (const b of classVariants) {
+                    if (b === a || b.canonical === a.canonical || b.variant.length !== a.variant.length) {
+                        continue;
+                    }
+                    if (aExact.test(b.variant)) {
+                        byMatch.delete(a.variant.toLowerCase());
+                        byMatch.delete(b.variant.toLowerCase());
+                    }
+                }
+            }
+        }
         scanners.push({
             pattern: new RegExp(`(?<![\\p{L}\\p{N}])(?=(${alternation})(?![\\p{L}\\p{N}]))`, caseSensitive ? "gu" : "giu"),
             caseSensitive,

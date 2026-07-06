@@ -265,6 +265,26 @@ describe("glossary", () => {
       ]);
     });
 
+    it("resolves the first-in-alternation canonical when two different-canonical variants fold together under /iu despite different toLowerCase() keys (issue #46 review: cross-key fold collision)", () => {
+      // Greek small mu (\u03bc) and the micro sign (\u00b5) case-fold to the same
+      // value under /iu, but their toLowerCase() results differ from each
+      // other ("\u03bc".toLowerCase() stays "\u03bc", "\u00b5".toLowerCase() stays "\u00b5") \u2014
+      // so a naive toLowerCase()-keyed fast path finds each canonical only
+      // for its OWN literal spelling and never notices the regex alternation
+      // can attribute either spelling to whichever alternative is listed
+      // first. Sorted longest-first then locale order, "\u03bc" (Mu) precedes
+      // "\u00b5" (Micro) in the alternation, so scanning the LITERAL micro sign
+      // must still resolve to "Mu" \u2014 the alternation's first match \u2014 not
+      // silently "Micro" via the fast-path's own-spelling lookup.
+      const compiled = compileGlossary([
+        { canonical: "Mu", variants: ["\u03bc"] },
+        { canonical: "Micro", variants: ["\u00b5"] },
+      ]);
+      const result = applyGlossary("read \u00b5 here", compiled);
+      expect(result.text).toBe("read Mu here");
+      expect(result.corrections).toEqual([{ canonical: "Mu", variant: "\u03bc", count: 1 }]);
+    });
+
     it("accepts a well-formed glossary", () => {
       const parsed = parseGlossary({
         terms: [{ canonical: "ChatGPT", variants: ["chat gpt"], matchCase: false }],
