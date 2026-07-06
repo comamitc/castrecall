@@ -165,4 +165,54 @@ describe("buildReviewCandidate", () => {
     expect(markdown).not.toContain("transcript_tool_version:");
     expect(markdown).not.toContain("- Generation:");
   });
+
+  it("renders an older generation shape (decode.ignored only, no applied/outputFormat/wordTimestamps) without crashing or printing undefined", () => {
+    // Provenance persisted by a build before the newer fields existed:
+    // decode carries only `ignored`, and outputFormat/wordTimestamps are
+    // absent entirely. Review generation must degrade gracefully, not
+    // throw or emit literal "undefined".
+    const legacyGeneration = {
+      kind: "local-whisper",
+      backend: "mlx-whisper",
+      modelSource: "explicit",
+      usesBackendDefault: false,
+      model: "mlx-community/whisper-large-v3-turbo",
+      decode: {
+        ignored: [{ option: "wordTimestamps", reason: "older shape" }],
+      },
+    } as unknown as NonNullable<Provenance["generation"]>;
+    const markdown = buildReviewCandidate({
+      record: RECORD,
+      provenance: { ...PROVENANCE, transcriptSource: "local-whisper", generation: legacyGeneration },
+      transcriptText: TRANSCRIPT_TEXT,
+      transcriptPath: "/tmp/transcript.txt",
+      generatedAt: new Date("2026-07-06T00:00:00.000Z"),
+    });
+    expect(markdown).toContain("transcript_backend: mlx-whisper");
+    expect(markdown).not.toContain("transcript_decode_options:");
+    expect(markdown).toContain("transcript_decode_ignored:");
+    expect(markdown).not.toContain("transcript_output_format:");
+    expect(markdown).not.toContain("transcript_word_timestamps:");
+    expect(markdown).not.toContain("undefined");
+    expect(markdown).toContain("dropped decode options: wordTimestamps");
+
+    // The fully-absent-decode shape degrades the same way.
+    const noDecode = {
+      kind: "local-whisper",
+      backend: "mlx-whisper",
+      modelSource: "explicit",
+      usesBackendDefault: false,
+    } as unknown as NonNullable<Provenance["generation"]>;
+    const minimal = buildReviewCandidate({
+      record: RECORD,
+      provenance: { ...PROVENANCE, transcriptSource: "local-whisper", generation: noDecode },
+      transcriptText: TRANSCRIPT_TEXT,
+      transcriptPath: "/tmp/transcript.txt",
+      generatedAt: new Date("2026-07-06T00:00:00.000Z"),
+    });
+    expect(minimal).toContain("transcript_backend: mlx-whisper");
+    expect(minimal).not.toContain("transcript_decode_options:");
+    expect(minimal).not.toContain("transcript_decode_ignored:");
+    expect(minimal).not.toContain("undefined");
+  });
 });

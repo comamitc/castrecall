@@ -24,6 +24,12 @@ export function buildReviewCandidate(options: {
   const excerpts = pickExcerpts(transcriptText);
   const wordCount = transcriptText.split(/\s+/).filter(Boolean).length;
   const gen = provenance.generation;
+  // Stored provenance predating newer generation fields (or written by a
+  // different build) may lack decode.applied, outputFormat, or
+  // wordTimestamps. Normalize before rendering so review generation never
+  // crashes on — or prints literal "undefined" for — an older shape.
+  const decodeApplied: Record<string, unknown> = gen?.decode?.applied ?? {};
+  const decodeIgnored: Array<{ option: string }> = gen?.decode?.ignored ?? [];
 
   const lines: Array<string | undefined> = [
     "---",
@@ -40,13 +46,15 @@ export function buildReviewCandidate(options: {
     gen?.model ? `transcript_model: ${yamlString(gen.model)}` : undefined,
     gen ? `transcript_model_source: ${gen.modelSource}` : undefined,
     gen?.preset ? `transcript_preset: ${yamlString(gen.preset)}` : undefined,
-    gen ? `transcript_output_format: ${gen.outputFormat}` : undefined,
-    gen ? `transcript_word_timestamps: ${gen.wordTimestamps}` : undefined,
-    gen && Object.keys(gen.decode.applied).length > 0
-      ? `transcript_decode_options: ${yamlString(JSON.stringify(gen.decode.applied))}`
+    gen?.outputFormat ? `transcript_output_format: ${gen.outputFormat}` : undefined,
+    gen && gen.wordTimestamps !== undefined
+      ? `transcript_word_timestamps: ${gen.wordTimestamps}`
       : undefined,
-    gen && gen.decode.ignored.length > 0
-      ? `transcript_decode_ignored: ${yamlString(JSON.stringify(gen.decode.ignored.map((entry) => entry.option)))}`
+    Object.keys(decodeApplied).length > 0
+      ? `transcript_decode_options: ${yamlString(JSON.stringify(decodeApplied))}`
+      : undefined,
+    decodeIgnored.length > 0
+      ? `transcript_decode_ignored: ${yamlString(JSON.stringify(decodeIgnored.map((entry) => entry.option)))}`
       : undefined,
     gen?.toolVersion ? `transcript_tool_version: ${yamlString(gen.toolVersion)}` : undefined,
     `generated_at: ${generatedAt.toISOString()}`,
@@ -68,7 +76,7 @@ export function buildReviewCandidate(options: {
     provenance.audioUrl ? `- Audio: ${reviewUrl(provenance.audioUrl)}` : undefined,
     `- Transcript: ${provenance.transcriptSource}${provenance.transcriptSourceUrl ? ` (${reviewUrl(provenance.transcriptSourceUrl)})` : ""}`,
     gen
-      ? `- Generation: ${gen.backend}${gen.model ? `:${gen.model}` : ""} (${gen.modelSource}${gen.usesBackendDefault ? ", backend default — check corpus quality" : ""})${gen.decode.ignored.length > 0 ? `; dropped decode options: ${gen.decode.ignored.map((entry) => entry.option).join(", ")}` : ""}`
+      ? `- Generation: ${gen.backend}${gen.model ? `:${gen.model}` : ""} (${gen.modelSource}${gen.usesBackendDefault ? ", backend default — check corpus quality" : ""})${decodeIgnored.length > 0 ? `; dropped decode options: ${decodeIgnored.map((entry) => entry.option).join(", ")}` : ""}`
       : undefined,
     `- Fetched: ${provenance.fetchedAt}`,
     `- Full transcript (${wordCount.toLocaleString()} words): ${transcriptPath}`,
