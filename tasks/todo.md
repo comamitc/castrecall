@@ -60,29 +60,29 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] #11 Listen Notes fallback — PR #49 squash-merged, issue closed. Feed resolution gains a keyed last-resort Listen Notes rung after Pocket Casts export + iTunes. Two pre-merge rounds: dist drift (rebuilt); wrong-show risk — title-only candidate acceptance replaced with per-candidate feed verification requiring enclosure-URL/GUID match (episode-title never sufficient; fail closed on ambiguity) + `matchEvidence` on resolved items + 3 regression tests. 393 tests green on main.
 - [x] release v0.9.0 — PR #50 merged, version 0.8.0→0.9.0 (manifest regenerated), tag pushed, GitHub release published, milestone closed.
 
-### v0.11.0–v0.13.0 — transcript quality track (added 2026-07-06, issues #41–#46)
+### v0.11.0–v0.13.0 — local-Whisper quality track (added 2026-07-06, issues #51–#56)
 
-User-added mid-goal; queued after the original roadmap (#11 → v0.9.0, #1 → v0.10.0).
-Milestones and order (dependency-driven): #42 loop detection is the bug and its
-detector feeds #41's scoring; #44 speaker turns ride on #43's persisted segments;
-#46 glossary corrections plug into #45's cleanup pass. All six triaged
-`pipeline:backlog` → `pipeline:ready` and milestoned accordingly.
+User-added mid-goal. REORDERED 2026-07-06 per user/OpenClaw guidance: this track is
+upstream prerequisites/guardrails and now runs BEFORE #41–#46 (originally queued the
+other way around; milestones reassigned to match). Order (dependency-driven): #51 is
+the fail-closed bug and #52's preset is the blessed way to satisfy it; #54 records
+the exact provider/model/decode settings that #52/#53 introduce; #55's preflight
+summarizes the #51–#53 config surface; #56 documents all of it last.
 
-- [ ] #42 Whisper repetition-loop detection/quarantine → then #41 transcript quality scoring → release v0.11.0
-- [ ] #43 timestamped segments through storage/export → then #44 speaker metadata/diarization → release v0.12.0
-- [ ] #45 transcript cleanup pass → then #46 proper-noun glossary → release v0.13.0
+- [ ] #51 explicit quality-ready MLX model (fail closed) → then #52 Apple Silicon large-v3-turbo preset → release v0.11.0
+- [ ] #53 loop-safe Whisper decoding options → then #54 exact provider/model/decode provenance → release v0.12.0
+- [ ] #55 corpus-scale transcription preflight/warnings → then #56 local-model docs → release v0.13.0
 
-### v0.14.0–v0.16.0 — local-Whisper quality track (added 2026-07-06, issues #51–#56)
+### v0.14.0–v0.16.0 — transcript quality track (added 2026-07-06, issues #41–#46)
 
-User-added mid-goal; queued after the transcript quality track. Order
-(dependency-driven): #51 is the fail-closed bug and #52's preset is the blessed way
-to satisfy it; #54 records the exact provider/model/decode settings that #52/#53
-introduce; #55's preflight summarizes the #51–#53 config surface; #56 documents all
-of it last. Issues arrived already `pipeline:ready`; milestoned v0.14.0–v0.16.0.
+User-added mid-goal; downstream quality/export layers, so they run after the
+guardrail track above. Order (dependency-driven): #42 loop detection is the bug and
+its detector feeds #41's scoring; #44 speaker turns ride on #43's persisted
+segments; #46 glossary corrections plug into #45's cleanup pass.
 
-- [ ] #51 explicit quality-ready MLX model (fail closed) → then #52 Apple Silicon large-v3-turbo preset → release v0.14.0
-- [ ] #53 loop-safe Whisper decoding options → then #54 exact provider/model/decode provenance → release v0.15.0
-- [ ] #55 corpus-scale transcription preflight/warnings → then #56 local-model docs → release v0.16.0
+- [ ] #42 Whisper repetition-loop detection/quarantine → then #41 transcript quality scoring → release v0.14.0
+- [ ] #43 timestamped segments through storage/export → then #44 speaker metadata/diarization → release v0.15.0
+- [ ] #45 transcript cleanup pass → then #46 proper-noun glossary → release v0.16.0
 
 > HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resumed from #9 on the new machine 2026-07-06.
 
