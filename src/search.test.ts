@@ -248,6 +248,31 @@ describe("SearchIndex", () => {
     expect(result.hits[0]?.episodeUuid).toBe("high-score");
   });
 
+  it("does not drop a lower-scoring document holding the exact contiguous phrase behind more than MAX_CANDIDATES higher-scoring non-contiguous matches", async () => {
+    const index = new SearchIndex(dir);
+    // Every noise doc contains both phrase tokens with a high term
+    // frequency (high keyword score) but never contiguously — "climate"
+    // and "policy" never sit next to each other.
+    const noiseEntries = Array.from({ length: MAX_CANDIDATES + 10 }, (_, i) =>
+      entry({
+        uuid: `noise-${i}`,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: `noise-${i}` },
+        text: "climate climate climate climate filler filler filler filler policy policy policy policy",
+      }),
+    );
+    // Lower keyword score (each term appears once) but the phrase is
+    // contiguous, so it deserves the phrase bonus and should rank in.
+    const trueMatchEntry = entry({
+      uuid: "true-match",
+      provenance: { ...BASE_PROVENANCE, episodeUuid: "true-match" },
+      text: "a short transcript mentioning climate policy exactly once in passing",
+    });
+    const corpus = [...noiseEntries, trueMatchEntry];
+
+    const result = await index.search('"climate policy"', { limit: 5 }, corpus);
+    expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
+  });
+
   it("bounds phase-2 reads to MAX_CANDIDATES even when a quoted phrase makes nearly every doc phrase-eligible", async () => {
     const index = new SearchIndex(dir);
     const text = "the quick fox and the lazy dog ran near the river";
