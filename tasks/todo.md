@@ -87,7 +87,8 @@ its detector feeds #41's scoring; #44 speaker turns ride on #43's persisted
 segments; #46 glossary corrections plug into #45's cleanup pass.
 
 - [x] #42 Whisper repetition-loop detection/quarantine — PR #75 squash-merged, issue closed. Clean run to ready-to-deploy (6 transitions, one internal fix round). Loop detection at normalization/storage; quarantined transcripts excluded from trusted corpus paths (search/review/digest/export) with old-state compatibility.
-- [ ] #41 transcript quality scoring → release v0.14.0
+- [x] #41 transcript quality scoring — PR #76 squash-merged, issue closed. Deterministic score/tier/reasons in provenance + corpus frontmatter with backfill and rescore re-export. Two review rounds: stale-verdict on auto-fixed cap (already addressed), then legacy-provenance guard (no-quality sidecar can never erase an existing score). 590 tests green.
+- [x] release v0.14.0 — PR merged, version 0.13.0→0.14.0 (manifest regenerated), tag on main squash commit, GitHub release published, milestone 16 closed.
 - [ ] #43 timestamped segments through storage/export → then #44 speaker metadata/diarization → release v0.15.0
 - [ ] #45 transcript cleanup pass → then #46 proper-noun glossary → release v0.16.0
 
