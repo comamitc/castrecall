@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.8.0 — 2026-07-06
+
+The first aggregate view: a cross-episode digest answering "what have I
+been absorbing lately?"
+
+- **`castrecall_digest`** (#4, PR #40): `{ days? }` looks across every
+  episode whose listen was first seen in the window (default 30 days) and
+  writes one structural document to `review/pending/digest-<window>.md` —
+  the same approval-gated lane as review candidates, never auto-promoted.
+  Heuristic aggregation only: episode/show counts, transcript-source
+  breakdown, recurring topics by term frequency, and a handful of verbatim
+  excerpts each attributed to its podcast and episode; a closing "For the
+  reviewing agent" section hands actual synthesis to the reader. Re-running
+  the same window reports `alreadyExists` instead of overwriting.
+- **Untrusted-text hardening** (same PR, review-driven): transcript
+  excerpts are blockquoted line-by-line across every Markdown line ending —
+  LF, CRLF, and lone CR — so transcript-controlled text cannot break out of
+  the quoted excerpt in the review document; untrusted titles stay
+  JSON-escaped inside headings.
+
 ## v0.7.0 — 2026-07-06
 
 The corpus becomes searchable: keyword and exact-phrase search over every
