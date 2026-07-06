@@ -142,6 +142,12 @@ async function fetchClassified(
   if (!response.ok) {
     const message = `Remote STT ${step} request failed with HTTP ${response.status}.`;
     if (isRetryableHttpStatus(response.status)) throw new RetryableSttError(message);
+    // A 404/410 while polling means the provider does not know this job id
+    // — the ONLY condition under which a resumed attempt may forget the
+    // saved job and submit fresh. Every other terminal error must surface.
+    if (step === "poll" && (response.status === 404 || response.status === 410)) {
+      throw new UnknownRemoteJobError(message);
+    }
     throw new Error(message);
   }
   return response;
@@ -263,6 +269,9 @@ function parseRemoteResult(body: RawRemoteResult): NormalizedRemoteResult {
   };
 }
 
+/** Thrown only when the provider explicitly does not recognize a polled job id (HTTP 404/410). */
+class UnknownRemoteJobError extends Error {}
+
 /**
  * Durable async-job state (issue #61 review): when a remote job outlives the
  * local poll deadline, its job_id is kept under
@@ -273,7 +282,12 @@ function parseRemoteResult(body: RawRemoteResult): NormalizedRemoteResult {
  * failure, and whenever the remote no longer recognizes the job.
  */
 function jobStatePath(config: ResolvedConfig, base: string, audioUrl: string): string {
-  const key = createHash("sha256").update(`${base}\n${audioUrl}`, "utf8").digest("hex").slice(0, 32);
+  // The key covers every request-shaping input (base, audio, model, submit
+  // mode): changing CASTRECALL_REMOTE_STT_MODEL or _UPLOAD between attempts
+  // must NOT resume a job produced under the old settings — provenance has
+  // to reflect the configuration the user actually retried with.
+  const signature = [base, audioUrl, config.stt.remoteModel ?? "", config.stt.remoteForceUpload ? "upload" : "audio_url"].join("\n");
+  const key = createHash("sha256").update(signature, "utf8").digest("hex").slice(0, 32);
   return path.join(config.dataDir, ".staging", "remote-stt-jobs", `${key}.json`);
 }
 
@@ -318,8 +332,9 @@ export async function transcribeWithRemoteStt(
   // fresh submit below.
   const priorJobId = await readJobState(statePath);
   if (priorJobId) {
+    let resumedBody: RawRemoteResult | undefined;
     try {
-      const resumedBody = await pollJob(
+      resumedBody = await pollJob(
         base,
         headers,
         priorJobId,
@@ -329,7 +344,26 @@ export async function transcribeWithRemoteStt(
         timeoutMs,
         now,
       );
+    } catch (error) {
+      if (error instanceof UnknownRemoteJobError) {
+        // Provider forgot the job — the one case where resubmitting is right.
+        await clearJobState(statePath);
+      } else if (error instanceof RetryableSttError || error instanceof CastrecallSetupError) {
+        // Still running / transient / auth: keep the state for the next run.
+        throw error;
+      } else {
+        // Terminal job failure: surface it. Clear the state so the NEXT
+        // scheduled attempt (under the transcript retry budget) submits
+        // fresh — but never silently swallow the failure in this run.
+        await clearJobState(statePath);
+        throw error;
+      }
+    }
+    if (resumedBody) {
       await clearJobState(statePath);
+      // Parsing stays OUTSIDE the recovery path: a malformed completed
+      // result is a terminal provider defect and must surface, not trigger
+      // a duplicate submission.
       const resumedNormalized = parseRemoteResult(resumedBody);
       const resumedModel = resumedNormalized.model ?? config.stt.remoteModel;
       return {
@@ -348,9 +382,6 @@ export async function transcribeWithRemoteStt(
           durationSeconds: resumedNormalized.durationSeconds,
         },
       };
-    } catch (error) {
-      if (error instanceof RetryableSttError || error instanceof CastrecallSetupError) throw error;
-      await clearJobState(statePath);
     }
   }
 

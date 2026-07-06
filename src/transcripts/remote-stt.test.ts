@@ -368,6 +368,109 @@ describe("transcribeWithRemoteStt — async job resume (issue #61 review)", () =
     expect(await jobStateFiles()).toHaveLength(0);
   });
 
+  it("surfaces a resumed job's terminal failure instead of silently resubmitting (issue #61 review 2)", async () => {
+    let submits = 0;
+    const slowFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ job_id: "job-doomed", status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    }) as FetchLike;
+    const clock1 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: slowFetch, sleep: clock1.sleep, now: clock1.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(RetryableSttError);
+
+    // The resumed job reports a terminal failure: that failure must surface
+    // — never be swallowed into a duplicate /transcribe submission.
+    const failedFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ text: "should never happen" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "failed", error: "GPU OOM" }), { status: 200 });
+    }) as FetchLike;
+    const clock2 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: failedFetch, sleep: clock2.sleep, now: clock2.now, pollIntervalMs: 1_000, timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/GPU OOM/);
+    expect(submits).toBe(1);
+    expect(await jobStateFiles()).toHaveLength(0);
+  });
+
+  it("surfaces a resumed job's malformed completed result instead of resubmitting (issue #61 review 2)", async () => {
+    let submits = 0;
+    const slowFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ job_id: "job-empty", status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    }) as FetchLike;
+    const clock1 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: slowFetch, sleep: clock1.sleep, now: clock1.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(RetryableSttError);
+
+    const emptyFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ text: "should never happen" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "completed", result: {} }), { status: 200 });
+    }) as FetchLike;
+    const clock2 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: emptyFetch, sleep: clock2.sleep, now: clock2.now, pollIntervalMs: 1_000, timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/empty.*invalid transcript/i);
+    expect(submits).toBe(1);
+  });
+
+  it("does not resume a job when request-shaping config changed (issue #61 review 2)", async () => {
+    let submits = 0;
+    const slowFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ job_id: "job-old-model", status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    }) as FetchLike;
+    const clock1 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: slowFetch, sleep: clock1.sleep, now: clock1.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(RetryableSttError);
+    expect(await jobStateFiles()).toHaveLength(1);
+
+    // Retrying with a DIFFERENT model must submit fresh — resuming the old
+    // job would attribute an old-model transcript to the new configuration.
+    const freshFetch: FetchLike = (async (url: string) => {
+      expect(String(url)).not.toContain("/jobs/job-old-model");
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ text: "new model transcript", model: "large-v3" }), { status: 200 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as FetchLike;
+    const result = await transcribeWithRemoteStt(
+      config({ CASTRECALL_REMOTE_STT_MODEL: "large-v3" }),
+      AUDIO_URL,
+      { fetchImpl: freshFetch },
+    );
+    expect(result.text).toBe("new model transcript");
+    expect(submits).toBe(2);
+  });
+
   it("clears job state when the job fails terminally", async () => {
     const failFetch: FetchLike = (async (url: string) => {
       if (String(url).endsWith("/transcribe")) {
