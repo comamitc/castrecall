@@ -92,7 +92,8 @@ segments; #46 glossary corrections plug into #45's cleanup pass.
 - [x] #43 timestamped segments — PR #78 squash-merged, issue closed. Clean run (6 transitions, internal fix rounds only). Normalized segments with start/end times persisted through storage and surfaced in corpus export.
 - [x] #44 speaker metadata/diarization — PR #79 squash-merged, issue closed. Clean run. Normalized speaker labels across provider/STT sources, speaker turns in corpus export on top of #43's segments.
 - [x] release v0.15.0 — PR merged, version 0.14.0→0.15.0 (manifest regenerated), tag on main, GitHub release published, milestone closed (resolved by title).
-- [ ] #45 transcript cleanup pass → then #46 proper-noun glossary → release v0.16.0
+- [x] #45 transcript cleanup pass — PR #81 squash-merged, issue closed. Conservative cleanup (punctuation/paragraphing/caption artifacts) with versioned `cleanup` provenance and applied-step tracking. FIVE review rounds incl. one human-input-gate false positive (pipeline's own review comments; cleared with a sentinel-less `## Pipeline: Scope override` acknowledgment anchor). Segment-recovery hardening converged on: timing-aware rawTextHash (text + cue timing) gating EVERY recovery path, exact step-list binding, legacy hash-less sidecars fall back to exact-text only. 661 tests green.
+- [ ] #46 proper-noun glossary → release v0.16.0
 
 ### v0.17.0–v0.18.0 — remote STT track (added 2026-07-06, issues #61–#64)
 
