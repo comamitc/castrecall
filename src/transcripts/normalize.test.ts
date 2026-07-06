@@ -148,6 +148,16 @@ describe("normalizeTranscript", () => {
     });
   });
 
+  it("parses numeric nested timestamps.from/to as seconds (not just string timecodes)", () => {
+    const result = normalizeTranscript(
+      JSON.stringify({
+        segments: [{ text: "Numeric nested timing.", timestamps: { from: 12.5, to: 18 } }],
+      }),
+      "json",
+    );
+    expect(result.segments?.[0]).toMatchObject({ startSeconds: 12.5, endSeconds: 18 });
+  });
+
   it("parses common non-standard JSON transcript shapes", () => {
     const stringArray = normalizeTranscript(JSON.stringify({ transcript: ["First paragraph.", "Second paragraph."] }), "json");
     expect(stringArray.text).toBe("First paragraph. Second paragraph.");

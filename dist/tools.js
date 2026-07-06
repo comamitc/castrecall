@@ -75,7 +75,11 @@ async function exportIfEnabled(config, storage, record) {
     if (!text || !provenance)
         return undefined;
     const contentHash = provenance.contentHash ?? createHash("sha256").update(text, "utf8").digest("hex");
-    const segments = await storage.readSegments(record.uuid);
+    // Episodes stored before the segments.json sidecar existed (issue #43)
+    // have no sidecar to read; recover timing on the fly from the still-present
+    // raw artifact rather than leaving them without timestamps forever.
+    const segments = (await storage.readSegments(record.uuid)) ??
+        (await storage.deriveSegmentsFromRaw(record.uuid, text));
     const exporter = new CorpusExporter(config.exportDir);
     return exporter.exportEpisode({ record, provenance, text, contentHash, segments });
 }

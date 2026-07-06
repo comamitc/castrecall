@@ -320,6 +320,8 @@ function jsonSegmentSeconds(record, flatKeys, subKey) {
     const timestamps = record.timestamps;
     if (timestamps && typeof timestamps === "object") {
         const value = timestamps[subKey];
+        if (typeof value === "number" && Number.isFinite(value))
+            return value;
         if (typeof value === "string" && value.trim())
             return timecodeToSeconds(value);
     }

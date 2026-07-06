@@ -1667,6 +1667,46 @@ describe("tools", () => {
     expect(indexContent).toContain('approx_end: "00:00:02"');
   });
 
+  it("backfills timestamps at export time for a transcript stored before the segments.json sidecar existed (issue #43)", async () => {
+    const exportDir = path.join(dir, "export");
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    // Simulate an episode transcribed before segments.json existed: only the
+    // raw VTT + transcript.txt + provenance.json triad is on disk, no sidecar.
+    await storage.storeTranscript("ep-1", {
+      raw: "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript body.",
+      ext: "vtt",
+      text: "A short transcript body.",
+      provenance: { ...PROVENANCE, format: "vtt" },
+    });
+    await storage.updateEpisode("ep-1", { transcriptStatus: "stored" });
+    expect(await storage.readSegments("ep-1")).toBeUndefined();
+
+    const result = (await fetchTranscript(
+      config({ CASTRECALL_EXPORT_DIR: exportDir }),
+      { episodeUuid: "ep-1" },
+    )) as Record<string, any>;
+    expect(result.status).toBe("already-stored");
+    expect(result.export.skipped).toBe(false);
+
+    // Still no persisted sidecar — timing was derived on the fly, not backfilled to disk.
+    expect(await storage.readSegments("ep-1")).toBeUndefined();
+
+    const episodeDir = path.join(exportDir, "podcasts", "example-show", "episode-one-25422834");
+    const indexContent = await fs.readFile(path.join(episodeDir, "index.md"), "utf8");
+    expect(indexContent).toContain('approx_start: "00:00:00"');
+    expect(indexContent).toContain('approx_end: "00:00:02"');
+  });
+
   it("recomputes the content hash for a legacy provenance sidecar missing contentHash", async () => {
     const exportDir = path.join(dir, "export");
     const storage = new Storage(dir);

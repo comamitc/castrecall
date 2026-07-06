@@ -23,7 +23,12 @@ import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
-import type { TranscriptSegment } from "./transcripts/normalize.js";
+import {
+  normalizeTranscript,
+  type NormalizedTranscript,
+  type TranscriptFormat,
+  type TranscriptSegment,
+} from "./transcripts/normalize.js";
 import type { TranscriptQuality } from "./transcripts/quality.js";
 
 /**
@@ -643,6 +648,42 @@ export class Storage {
   }
 
   /**
+   * Recover segment timing for a transcript stored before the `segments.json`
+   * sidecar existed (issue #43), by re-normalizing the still-present
+   * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
+   * freshly normalized text matches `expectedText` exactly, so a raw file
+   * that has drifted from the recorded transcript.txt can never contaminate
+   * export with mismatched timing. Returns `undefined` when there is no raw
+   * artifact, its format is unrecognized, it fails to parse, or its
+   * normalized text no longer matches.
+   */
+  async deriveSegmentsFromRaw(
+    episodeUuid: string,
+    expectedText: string,
+  ): Promise<TranscriptSegment[] | undefined> {
+    const provenance = await this.readProvenance(episodeUuid);
+    const format = provenance?.format;
+    if (!format || !isTranscriptFormat(format)) return undefined;
+    let raw: string;
+    try {
+      raw = await fs.readFile(
+        path.join(this.sourceDir(episodeUuid), `raw.${format}`),
+        "utf8",
+      );
+    } catch {
+      return undefined;
+    }
+    let normalized: NormalizedTranscript;
+    try {
+      normalized = normalizeTranscript(raw, format);
+    } catch {
+      return undefined;
+    }
+    if (normalized.text !== expectedText) return undefined;
+    return normalized.segments?.length ? normalized.segments : undefined;
+  }
+
+  /**
    * Store a transcript with its provenance sidecar. Idempotent: if a
    * transcript already exists for the episode, nothing is overwritten — the
    * content hash is computed once, at first write, and is stable thereafter.
@@ -924,4 +965,10 @@ export class Storage {
 
 function safeName(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+const TRANSCRIPT_FORMATS = new Set<TranscriptFormat>(["txt", "html", "vtt", "srt", "json"]);
+
+function isTranscriptFormat(value: string): value is TranscriptFormat {
+  return TRANSCRIPT_FORMATS.has(value as TranscriptFormat);
 }

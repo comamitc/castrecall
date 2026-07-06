@@ -20,6 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
+import { normalizeTranscript, } from "./transcripts/normalize.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
  * shape). Bump only for breaking changes; new fields are additive within a
@@ -474,6 +475,39 @@ export class Storage {
         }
     }
     /**
+     * Recover segment timing for a transcript stored before the `segments.json`
+     * sidecar existed (issue #43), by re-normalizing the still-present
+     * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
+     * freshly normalized text matches `expectedText` exactly, so a raw file
+     * that has drifted from the recorded transcript.txt can never contaminate
+     * export with mismatched timing. Returns `undefined` when there is no raw
+     * artifact, its format is unrecognized, it fails to parse, or its
+     * normalized text no longer matches.
+     */
+    async deriveSegmentsFromRaw(episodeUuid, expectedText) {
+        const provenance = await this.readProvenance(episodeUuid);
+        const format = provenance?.format;
+        if (!format || !isTranscriptFormat(format))
+            return undefined;
+        let raw;
+        try {
+            raw = await fs.readFile(path.join(this.sourceDir(episodeUuid), `raw.${format}`), "utf8");
+        }
+        catch {
+            return undefined;
+        }
+        let normalized;
+        try {
+            normalized = normalizeTranscript(raw, format);
+        }
+        catch {
+            return undefined;
+        }
+        if (normalized.text !== expectedText)
+            return undefined;
+        return normalized.segments?.length ? normalized.segments : undefined;
+    }
+    /**
      * Store a transcript with its provenance sidecar. Idempotent: if a
      * transcript already exists for the episode, nothing is overwritten — the
      * content hash is computed once, at first write, and is stable thereafter.
@@ -715,4 +749,8 @@ export class Storage {
 }
 function safeName(value) {
     return value.replace(/[^A-Za-z0-9._-]/g, "_");
+}
+const TRANSCRIPT_FORMATS = new Set(["txt", "html", "vtt", "srt", "json"]);
+function isTranscriptFormat(value) {
+    return TRANSCRIPT_FORMATS.has(value);
 }

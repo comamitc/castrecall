@@ -18,7 +18,7 @@
  */
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
-import type { TranscriptSegment } from "./transcripts/normalize.js";
+import { type TranscriptSegment } from "./transcripts/normalize.js";
 import type { TranscriptQuality } from "./transcripts/quality.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
@@ -319,6 +319,17 @@ export declare class Storage {
      * `undefined` rather than throwing, same tolerance as `readProvenance`.
      */
     readSegments(episodeUuid: string): Promise<TranscriptSegment[] | undefined>;
+    /**
+     * Recover segment timing for a transcript stored before the `segments.json`
+     * sidecar existed (issue #43), by re-normalizing the still-present
+     * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
+     * freshly normalized text matches `expectedText` exactly, so a raw file
+     * that has drifted from the recorded transcript.txt can never contaminate
+     * export with mismatched timing. Returns `undefined` when there is no raw
+     * artifact, its format is unrecognized, it fails to parse, or its
+     * normalized text no longer matches.
+     */
+    deriveSegmentsFromRaw(episodeUuid: string, expectedText: string): Promise<TranscriptSegment[] | undefined>;
     /**
      * Store a transcript with its provenance sidecar. Idempotent: if a
      * transcript already exists for the episode, nothing is overwritten — the
