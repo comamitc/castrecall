@@ -484,13 +484,16 @@ export class CorpusExporter {
       JSON.stringify(existing.quality) !== JSON.stringify(options.provenance.quality);
     // Same idea for timestamps (issue #43): an episode exported before
     // segments were available lacks approx_start/approx_end on index.md;
-    // once segments carrying numeric times show up, re-export once to
-    // backfill them, then settle (readExistingExportMeta will report
-    // hasTimestamps: true on the next call).
-    const segmentsHaveNumericTimes = (options.segments ?? []).some(
-      (segment) => segment.startSeconds !== undefined || segment.endSeconds !== undefined,
-    );
-    const timestampsStale = existing !== undefined && segmentsHaveNumericTimes && !existing.hasTimestamps;
+    // once segments carry enough timing to actually emit an anchor (matching
+    // buildSegmentTimeline's own criteria — non-empty text with both
+    // startSeconds and endSeconds), re-export once to backfill them, then
+    // settle (readExistingExportMeta will report hasTimestamps: true on the
+    // next call). Partial timing (only one of start/end, or timed-but-empty
+    // text) never yields an anchor, so it must not mark this stale either —
+    // otherwise buildCorpusPages can never emit approx_start and the export
+    // would re-run forever.
+    const canEmitTimestamps = buildSegmentTimeline(options.segments).anchors.length > 0;
+    const timestampsStale = existing !== undefined && canEmitTimestamps && !existing.hasTimestamps;
     if (existing?.contentHash === options.contentHash && !qualityStale && !timestampsStale) {
       return { exported: 0, skipped: true, dir: targetDir };
     }

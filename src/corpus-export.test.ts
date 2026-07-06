@@ -657,6 +657,35 @@ describe("CorpusExporter", () => {
     expect(third.skipped).toBe(true);
   });
 
+  it("stays idempotent on an unchanged content hash when segments only carry partial timing that can never emit approx_start (issue #43 review)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+
+    const partialSegments: TranscriptSegment[] = [{ text: "Some transcript text.", startSeconds: 0 }];
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments: partialSegments,
+    });
+    expect(second.skipped).toBe(true);
+
+    const third = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+      segments: partialSegments,
+    });
+    expect(third.skipped).toBe(true);
+  });
+
   it("replaces the episode dir with no stale files when the content hash changes", async () => {
     const exporter = new CorpusExporter(dir);
     const longText = Array.from({ length: 10 }, (_, i) => paragraph(60, `long${i}-`)).join("\n\n");
