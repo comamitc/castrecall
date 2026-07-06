@@ -390,7 +390,7 @@ describe("fetchPodchaserTranscript", () => {
     expect(result).toBeUndefined();
   });
 
-  it("GUID lookup scopes the identifier to the resolved feed when a feed URL is known", async () => {
+  it("GUID lookup never includes the feed URL in the identifier — scoping is local-only", async () => {
     let capturedVariables: unknown;
     const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
@@ -412,16 +412,15 @@ describe("fetchPodchaserTranscript", () => {
       RETRY,
     );
 
-    expect(capturedVariables).toEqual({
-      identifier: { id: "guid-1", type: "GUID", podcast: { id: FEED_URL, type: "RSS" } },
-    });
+    expect(capturedVariables).toEqual({ identifier: { id: "guid-1", type: "GUID" } });
   });
 
-  it("never transmits a tokenized private feed URL to Podchaser (query, userinfo, or fragment)", async () => {
+  it("never transmits a feed URL to Podchaser wherever its token hides (query, userinfo, fragment, path)", async () => {
     const tokenizedUrls = [
       "https://feeds.example.com/show.xml?auth=SECRET-SUBSCRIBER-TOKEN",
       "https://user:SECRET-SUBSCRIBER-TOKEN@feeds.example.com/show.xml",
       "https://feeds.example.com/show.xml#SECRET-SUBSCRIBER-TOKEN",
+      "https://feeds.example.com/private/SECRET-SUBSCRIBER-TOKEN/show.xml",
     ];
     for (const tokenizedFeedUrl of tokenizedUrls) {
       const requestBodies: string[] = [];
@@ -446,7 +445,7 @@ describe("fetchPodchaserTranscript", () => {
         expect(body).not.toContain("SECRET-SUBSCRIBER-TOKEN");
         expect(body).not.toContain("feeds.example.com");
       }
-      // The GUID identifier degrades to unscoped; local validation still gates the match.
+      // The GUID identifier is always unscoped; local validation gates the match.
       const guidVariables = JSON.parse(requestBodies[0]).variables;
       expect(guidVariables).toEqual({ identifier: { id: "guid-1", type: "GUID" } });
     }

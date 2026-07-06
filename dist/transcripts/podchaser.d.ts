@@ -22,6 +22,13 @@ export declare function podchaserConfigured(config: ResolvedConfig): boolean;
  * Podchaser episode GUIDs and titles are only unique within a podcast, so every candidate
  * is validated against the resolved feed's URL when one is known, or against the podcast
  * title otherwise — an unscoped or mismatched candidate is treated as a miss rather than a hit.
+ *
+ * PRIVACY INVARIANT: the resolved feed URL is used ONLY for that local comparison and is
+ * never placed in a Podchaser request. Feed URLs come from the user's Pocket Casts
+ * subscriptions, and private/paid feeds embed subscriber tokens anywhere in the URL
+ * (userinfo, query, fragment, or path) with no way to prove a given URL is public —
+ * so nothing derived from it may cross the Podchaser trust boundary.
+ *
  * Returns undefined when Podchaser knows the episode but has no usable transcript.
  */
 export declare function fetchPodchaserTranscript(config: ResolvedConfig, episode: {

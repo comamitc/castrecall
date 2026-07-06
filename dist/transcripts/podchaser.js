@@ -22,6 +22,13 @@ export function podchaserConfigured(config) {
  * Podchaser episode GUIDs and titles are only unique within a podcast, so every candidate
  * is validated against the resolved feed's URL when one is known, or against the podcast
  * title otherwise — an unscoped or mismatched candidate is treated as a miss rather than a hit.
+ *
+ * PRIVACY INVARIANT: the resolved feed URL is used ONLY for that local comparison and is
+ * never placed in a Podchaser request. Feed URLs come from the user's Pocket Casts
+ * subscriptions, and private/paid feeds embed subscriber tokens anywhere in the URL
+ * (userinfo, query, fragment, or path) with no way to prove a given URL is public —
+ * so nothing derived from it may cross the Podchaser trust boundary.
+ *
  * Returns undefined when Podchaser knows the episode but has no usable transcript.
  */
 export async function fetchPodchaserTranscript(config, episode, fetchImpl = fetch, retry = {}) {
@@ -34,7 +41,7 @@ export async function fetchPodchaserTranscript(config, episode, fetchImpl = fetc
     const attempts = [];
     if (episode.guid) {
         attempts.push(async () => {
-            const found = await lookupByGuid(config, episode.guid, episode.feedUrl, fetchImpl, retry);
+            const found = await lookupByGuid(config, episode.guid, fetchImpl, retry);
             return found ? [found] : [];
         });
     }
@@ -71,34 +78,13 @@ function matchesExpectedPodcast(candidatePodcast, expected) {
     }
     return false;
 }
-/**
- * Private/paid podcast feeds commonly embed a subscriber token in the URL's
- * userinfo, query string, or fragment. Those URLs must never cross the
- * Podchaser trust boundary (request bodies land in third-party logs), so the
- * scoped GUID lookup only shares a feed URL with none of those parts; unsafe
- * URLs still scope the match locally via matchesExpectedPodcast, which never
- * transmits anything. Path-embedded tokens are indistinguishable from normal
- * paths and are accepted — this guard covers every detectable token position.
- */
-function isSafeToShareFeedUrl(url) {
-    let parsed;
-    try {
-        parsed = new URL(url);
-    }
-    catch {
-        return false;
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:")
-        return false;
-    return !parsed.username && !parsed.password && !parsed.search && !parsed.hash;
-}
 function normalizeUrl(url) {
     return url.trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/\/+$/, "");
 }
 function normalizeTitle(title) {
     return title.trim().toLowerCase();
 }
-async function lookupByGuid(config, guid, feedUrl, fetchImpl, retry) {
+async function lookupByGuid(config, guid, fetchImpl, retry) {
     const query = `query GetEpisodeByGuid($identifier: EpisodeIdentifier!) {
     episode(identifier: $identifier) {
       title
@@ -106,10 +92,10 @@ async function lookupByGuid(config, guid, feedUrl, fetchImpl, retry) {
       podcast { title rssUrl }
     }
   }`;
+    // Deliberately unscoped: adding identifier.podcast would transmit the
+    // resolved feed URL (see the privacy invariant on fetchPodchaserTranscript).
+    // A wrong-podcast candidate is rejected by matchesExpectedPodcast locally.
     const identifier = { id: guid, type: "GUID" };
-    if (feedUrl && isSafeToShareFeedUrl(feedUrl)) {
-        identifier.podcast = { id: feedUrl, type: "RSS" };
-    }
     const result = await podchaserRequest(config, query, { identifier }, fetchImpl, retry);
     return result?.episode ?? undefined;
 }
