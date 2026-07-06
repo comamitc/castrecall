@@ -6,12 +6,15 @@ export type PluginSettings = {
     sttEnabled?: boolean;
     sttProvider?: SttProvider;
     exportDir?: string;
+    notesDir?: string;
 };
 export type ResolvedConfig = {
     dataDir: string;
     historyLimit: number;
     /** Corpus export: off (undefined) by default — see docs/ARCHITECTURE.md. */
     exportDir?: string;
+    /** Promoted-note destination for castrecall_resolve_review: off (undefined) until configured. */
+    notesDir?: string;
     pocketcasts: {
         email?: string;
         password?: string;
@@ -78,6 +81,12 @@ export declare function resolveConfig(settings?: PluginSettings, env?: NodeJS.Pr
 export declare class CastrecallSetupError extends Error {
     constructor(message: string);
 }
+/**
+ * Only the unconfigured case is an error here — a configured-but-missing
+ * directory is created on demand by `Storage.writePromotedNote`, mirroring
+ * `CorpusExporter`'s create-on-demand precedent.
+ */
+export declare function requireNotesDir(config: ResolvedConfig): string;
 export declare function requirePocketCastsCredentials(config: ResolvedConfig): {
     email: string;
     password: string;

@@ -11,7 +11,7 @@ import { Type } from "typebox";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { resolveConfig } from "./config.js";
 import { runPipeline } from "./pipeline.js";
-import { digest, fetchTranscript, generateReview, listRecent, search, setup, setupStatus, syncHistory, } from "./tools.js";
+import { digest, fetchTranscript, generateReview, listRecent, resolveReview, search, setup, setupStatus, syncHistory, } from "./tools.js";
 const configSchema = Type.Object({
     dataDir: Type.Optional(Type.String({
         description: "Where CastRecall stores transcripts and review candidates. Defaults to ~/.openclaw/castrecall. The CASTRECALL_DATA_DIR env var overrides this.",
@@ -30,6 +30,11 @@ const configSchema = Type.Object({
             "store (e.g. a gbrain inbox or a brain's sources/ root — the exporter always appends " +
             "podcasts/<show-slug>, so don't point this at sources/podcasts). Off by default. The " +
             "CASTRECALL_EXPORT_DIR env var overrides this.",
+    })),
+    notesDir: Type.Optional(Type.String({
+        description: "Destination for notes promoted via castrecall_resolve_review. Required before any " +
+            "promote (discard never needs it). Created on demand if it doesn't exist yet. The " +
+            "CASTRECALL_NOTES_DIR env var overrides this.",
     })),
 }, { additionalProperties: false });
 export default defineToolPlugin({
@@ -107,6 +112,32 @@ export default defineToolPlugin({
                 episodeUuid: Type.Optional(Type.String({ description: "Generate for one specific episode only." })),
             }),
             execute: async (params, settings) => generateReview(resolveConfig(settings), params),
+        }),
+        tool({
+            name: "castrecall_resolve_review",
+            description: "Disposition a pending review candidate: 'promote' or 'discard'. Call this ONLY after " +
+                "the human has explicitly confirmed, in conversation, what to keep or discard — never " +
+                "on an agent's own initiative. There is no approve/reject UI; the conversation is the " +
+                "gate. For 'promote', 'content' must be the exact text the human chose to keep (in their " +
+                "own words where possible) — CastRecall writes it verbatim to the configured notes " +
+                "destination (CASTRECALL_NOTES_DIR / notesDir), never into durable OpenClaw memory. For " +
+                "'discard', the candidate is simply moved out of review/pending/ with no content written " +
+                "anywhere. Either way the candidate moves to review/resolved/ and cannot be resolved again.",
+            parameters: Type.Object({
+                episodeUuid: Type.String({
+                    description: "Episode UUID of the pending review candidate (see castrecall_recent).",
+                }),
+                disposition: Type.Union([Type.Literal("promote"), Type.Literal("discard")], {
+                    description: "'promote' writes content to the notes destination; 'discard' writes nothing.",
+                }),
+                content: Type.Optional(Type.String({
+                    description: "Required when disposition is 'promote': the exact human-chosen text to keep.",
+                })),
+                title: Type.Optional(Type.String({
+                    description: "Optional note title/heading; defaults to the episode title.",
+                })),
+            }),
+            execute: async (params, settings) => resolveReview(resolveConfig(settings), params),
         }),
         tool({
             name: "castrecall_search",

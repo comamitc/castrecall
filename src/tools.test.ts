@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveConfig } from "./config.js";
 import type { ExecImpl } from "./pocketcasts/secret-store.js";
 import { clearPocketCastsSessionCache } from "./pocketcasts/session.js";
@@ -18,6 +18,7 @@ import {
   fetchTranscript,
   generateReview,
   listRecent,
+  resolveReview,
   setup,
   setupStatus,
   syncHistory,
@@ -1462,6 +1463,368 @@ describe("tools", () => {
     const again = (await generateReview(cfg, { episodeUuid: "ep-1" })) as Record<string, any>;
     expect(again.generated).toHaveLength(0);
     expect(again.skipped[0].reason).toContain("already exists");
+  });
+
+  describe("resolveReview", () => {
+    async function seedPendingReview(cfg: ReturnType<typeof config>): Promise<Storage> {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+      await storage.storeTranscript("ep-1", {
+        raw: "stored",
+        ext: "txt",
+        text: "stored transcript text with enough words to review later, covering a durable idea.",
+        provenance: PROVENANCE,
+      });
+      await storage.updateEpisode("ep-1", { transcriptStatus: "stored" });
+      await generateReview(cfg, { episodeUuid: "ep-1" });
+      return storage;
+    }
+
+    it("promote writes a note, moves the candidate, and records disposition in state", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+
+      const result = (await resolveReview(
+        cfg,
+        { episodeUuid: "ep-1", disposition: "promote", content: "The one durable idea." },
+        { now: () => new Date("2026-07-06T12:00:00.000Z") },
+      )) as Record<string, any>;
+
+      expect(result.disposition).toBe("promote");
+      expect(result.promotedNotePath).toBeTruthy();
+      const note = await fs.readFile(result.promotedNotePath, "utf8");
+      expect(note).toContain("The one durable idea.");
+      expect(note).toContain('episode: "Episode One"');
+      expect(note).toContain('podcast: "Example Show"');
+      expect(note).toContain("episode_uuid: ep-1");
+      expect(note).toContain("transcript_source: rss");
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).rejects.toThrow();
+      await expect(fs.access(result.resolvedPath)).resolves.toBeUndefined();
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("promote");
+      expect(state.episodes["ep-1"].reviewResolvedAt).toBe("2026-07-06T12:00:00.000Z");
+      expect(state.episodes["ep-1"].promotedNotePath).toBe(result.promotedNotePath);
+    });
+
+    it("promote writes content verbatim, without trimming leading/trailing whitespace", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      await seedPendingReview(cfg);
+      const content = "  Keep the indentation on this line.\n\nSecond paragraph.\n  ";
+
+      const result = (await resolveReview(
+        cfg,
+        { episodeUuid: "ep-1", disposition: "promote", content },
+        { now: () => new Date("2026-07-06T12:00:00.000Z") },
+      )) as Record<string, any>;
+
+      const note = await fs.readFile(result.promotedNotePath, "utf8");
+      expect(note).toContain(content);
+    });
+
+    it("promote auto-creates a not-yet-existing notesDir", async () => {
+      const notesDir = path.join(dir, "does", "not", "exist", "yet");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      await seedPendingReview(cfg);
+
+      const result = (await resolveReview(cfg, {
+        episodeUuid: "ep-1",
+        disposition: "promote",
+        content: "Body.",
+      })) as Record<string, any>;
+
+      expect(result.disposition).toBe("promote");
+      await expect(fs.access(result.promotedNotePath)).resolves.toBeUndefined();
+    });
+
+    it("promote never leaks secret query params from provenance", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      await seedPendingReview(cfg);
+
+      const result = (await resolveReview(cfg, {
+        episodeUuid: "ep-1",
+        disposition: "promote",
+        content: "Body.",
+      })) as Record<string, any>;
+
+      const note = await fs.readFile(result.promotedNotePath, "utf8");
+      expect(note).not.toContain("secret-audio");
+      expect(note).not.toContain("secret-transcript");
+    });
+
+    it("promote without notesDir throws, writes nothing, and leaves the candidate pending", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }),
+      ).rejects.toThrow(/CASTRECALL_NOTES_DIR/);
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+      await expect(fs.access(path.join(dir, "notes"))).rejects.toThrow();
+    });
+
+    it("promote with empty content throws before any write or move", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "   " }),
+      ).rejects.toThrow(/content/);
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+    });
+
+    it("promote throws on a note-path collision and leaves the candidate pending", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+      const now = () => new Date("2026-07-06T12:00:00.000Z");
+
+      // Pre-create the exact filename resolveReview will compute for this episode/date.
+      await fs.mkdir(notesDir, { recursive: true });
+      const collisionPath = path.join(notesDir, "2026-07-06-episode-one-ep-1.md");
+      await fs.writeFile(collisionPath, "existing note", "utf8");
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }, { now }),
+      ).rejects.toThrow(/already exists/);
+
+      expect(await fs.readFile(collisionPath, "utf8")).toBe("existing note");
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+    });
+
+    it("discard moves the candidate to resolved, records disposition, and writes no note", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+
+      const result = (await resolveReview(
+        cfg,
+        { episodeUuid: "ep-1", disposition: "discard" },
+        { now: () => new Date("2026-07-06T12:00:00.000Z") },
+      )) as Record<string, any>;
+
+      expect(result.disposition).toBe("discard");
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).rejects.toThrow();
+      await expect(fs.access(result.resolvedPath)).resolves.toBeUndefined();
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("discard");
+      expect(state.episodes["ep-1"].reviewResolvedAt).toBe("2026-07-06T12:00:00.000Z");
+      expect(state.episodes["ep-1"].promotedNotePath).toBeUndefined();
+      await expect(fs.access(path.join(dir, "notes"))).rejects.toThrow();
+    });
+
+    it("throws for an episode with no pending candidate (never generated)", async () => {
+      const cfg = config();
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
+      ).rejects.toThrow(/no pending review/i);
+    });
+
+    it("throws on a second resolve of the same episode", async () => {
+      const cfg = config();
+      await seedPendingReview(cfg);
+
+      await resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" });
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
+      ).rejects.toThrow(/no pending review/i);
+    });
+
+    it("rejects re-resolving an episode whose pending candidate reappears after resolution", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+
+      await resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" });
+      // Simulate a pending candidate reappearing for an already-resolved episode
+      // (e.g. regenerated or restored out-of-band).
+      await storage.writeReviewCandidate("ep-1", "# Review\n");
+
+      await expect(
+        resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }),
+      ).rejects.toThrow(/already (been )?resolved|already resolved/i);
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("discard");
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+    });
+
+    it("setup_status reports the notes destination and a reviewsResolved count from state", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      await seedPendingReview(cfg);
+
+      const before = (await setupStatus(cfg)) as Record<string, any>;
+      expect(before.notes).toEqual({ notesDir });
+      expect(before.counts.reviewsResolved).toBe(0);
+
+      await resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" });
+
+      const after = (await setupStatus(cfg)) as Record<string, any>;
+      expect(after.counts.reviewsResolved).toBe(1);
+    });
+
+    it("setup_status reports notesDir as null when unconfigured", async () => {
+      const cfg = config();
+      const status = (await setupStatus(cfg)) as Record<string, any>;
+      expect(status.notes).toEqual({ notesDir: null });
+    });
+
+    it("discard: losing a resolve race to a concurrent promote does not overwrite the winning disposition", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+      const originalResolve = Storage.prototype.resolvePendingReview;
+      // Simulate a concurrent castrecall_resolve_review promote call that
+      // completes its own move-and-record step in the middle of this call's
+      // resolvePendingReview — i.e. it wins the race.
+      const spy = vi
+        .spyOn(Storage.prototype, "resolvePendingReview")
+        .mockImplementationOnce(async function (this: Storage, uuid: string) {
+          await originalResolve.call(this, uuid);
+          await this.updateEpisode(uuid, {
+            reviewDisposition: "promote",
+            reviewResolvedAt: "2026-01-01T00:00:00.000Z",
+            promotedNotePath: "/tmp/winner.md",
+          });
+          return originalResolve.call(this, uuid);
+        });
+
+      try {
+        await expect(
+          resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
+        ).rejects.toThrow(/concurrent/i);
+      } finally {
+        spy.mockRestore();
+      }
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("promote");
+      expect(state.episodes["ep-1"].promotedNotePath).toBe("/tmp/winner.md");
+    });
+
+    it("promote: losing a resolve race to a concurrent discard removes the orphaned note and does not overwrite state", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+      const originalResolve = Storage.prototype.resolvePendingReview;
+      const spy = vi
+        .spyOn(Storage.prototype, "resolvePendingReview")
+        .mockImplementationOnce(async function (this: Storage, uuid: string) {
+          await originalResolve.call(this, uuid);
+          await this.updateEpisode(uuid, {
+            reviewDisposition: "discard",
+            reviewResolvedAt: "2026-01-01T00:00:00.000Z",
+          });
+          return originalResolve.call(this, uuid);
+        });
+
+      try {
+        await expect(
+          resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }),
+        ).rejects.toThrow(/concurrent/i);
+      } finally {
+        spy.mockRestore();
+      }
+
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBe("discard");
+      expect(state.episodes["ep-1"].promotedNotePath).toBeUndefined();
+      const noteFiles = await fs.readdir(notesDir).catch(() => []);
+      expect(noteFiles).toHaveLength(0);
+    });
+
+    it("discard: rolls the candidate back to pending if the state write fails after the move", async () => {
+      const cfg = config();
+      const storage = await seedPendingReview(cfg);
+      const spy = vi
+        .spyOn(Storage.prototype, "updateEpisode")
+        .mockImplementationOnce(async () => {
+          throw new Error("simulated state write failure");
+        });
+
+      try {
+        await expect(
+          resolveReview(cfg, { episodeUuid: "ep-1", disposition: "discard" }),
+        ).rejects.toThrow(/simulated state write failure/);
+      } finally {
+        spy.mockRestore();
+      }
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+
+      const result = (await resolveReview(cfg, {
+        episodeUuid: "ep-1",
+        disposition: "discard",
+      })) as Record<string, any>;
+      expect(result.disposition).toBe("discard");
+    });
+
+    it("promote: rolls the candidate back to pending and removes the note if the state write fails after the move", async () => {
+      const notesDir = path.join(dir, "notes");
+      const cfg = config({ CASTRECALL_NOTES_DIR: notesDir });
+      const storage = await seedPendingReview(cfg);
+      const spy = vi
+        .spyOn(Storage.prototype, "updateEpisode")
+        .mockImplementationOnce(async () => {
+          throw new Error("simulated state write failure");
+        });
+
+      try {
+        await expect(
+          resolveReview(cfg, { episodeUuid: "ep-1", disposition: "promote", content: "Body." }),
+        ).rejects.toThrow(/simulated state write failure/);
+      } finally {
+        spy.mockRestore();
+      }
+
+      await expect(fs.access(storage.reviewCandidatePath("ep-1"))).resolves.toBeUndefined();
+      const state = await storage.loadState();
+      expect(state.episodes["ep-1"].reviewDisposition).toBeUndefined();
+      const noteFiles = await fs.readdir(notesDir).catch(() => []);
+      expect(noteFiles).toHaveLength(0);
+
+      const result = (await resolveReview(cfg, {
+        episodeUuid: "ep-1",
+        disposition: "promote",
+        content: "Body.",
+      })) as Record<string, any>;
+      expect(result.disposition).toBe("promote");
+    });
   });
 
   describe("digest", () => {

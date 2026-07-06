@@ -15,6 +15,20 @@ export declare function buildReviewCandidate(options: {
     generatedAt: Date;
 }): string;
 /**
+ * Render a human-chosen promotion into a frontmattered note for the
+ * configured notes destination. The body is exactly the human's `content` —
+ * no heuristic excerpts, no full transcript — but attribution (podcast,
+ * episode, listen date, transcript source, episode UUID) travels with it so
+ * a promoted note is still traceable back to its source.
+ */
+export declare function buildPromotedNote(options: {
+    record: ListenRecord;
+    provenance: Provenance;
+    content: string;
+    title?: string;
+    resolvedAt: Date;
+}): string;
+/**
  * Heuristic excerpt selection: split into paragraph-ish chunks, keep the
  * most substantial ones in original order. Deliberately simple and honest —
  * semantic summarization belongs to the reviewing agent/human, not this plugin.

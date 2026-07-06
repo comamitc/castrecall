@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import {
   BACKOFF_BASE_MS,
@@ -117,6 +117,111 @@ describe("Storage", () => {
     const first = await storage.writeDigest("2026-07-06-30d", "original\n");
     expect(first.alreadyExists).toBe(false);
     const second = await storage.writeDigest("2026-07-06-30d", "replacement\n");
+    expect(second.alreadyExists).toBe(true);
+    expect(await fs.readFile(first.path, "utf8")).toBe("original\n");
+  });
+
+  it("hasPendingReview reflects whether a pending candidate file exists", async () => {
+    expect(await storage.hasPendingReview("ep-1")).toBe(false);
+    await storage.writeReviewCandidate("ep-1", "# Review\n");
+    expect(await storage.hasPendingReview("ep-1")).toBe(true);
+  });
+
+  it("resolvePendingReview moves a pending candidate into review/resolved/", async () => {
+    const written = await storage.writeReviewCandidate("ep-1", "# Review\n");
+    const result = await storage.resolvePendingReview("ep-1");
+    expect(result.moved).toBe(true);
+    expect(result.resolvedPath).toBe(storage.resolvedCandidatePath("ep-1"));
+    expect(result.resolvedPath).toContain(`${path.sep}review${path.sep}resolved${path.sep}`);
+    await expect(fs.access(written.path)).rejects.toThrow();
+    expect(await fs.readFile(result.resolvedPath, "utf8")).toBe("# Review\n");
+    expect(await storage.hasPendingReview("ep-1")).toBe(false);
+  });
+
+  it("resolvePendingReview reports moved: false when there is nothing pending", async () => {
+    const result = await storage.resolvePendingReview("ep-1");
+    expect(result.moved).toBe(false);
+    expect(result.alreadyResolved).toBe(false);
+  });
+
+  it("resolvePendingReview never clobbers an existing resolved candidate", async () => {
+    await fs.mkdir(path.dirname(storage.resolvedCandidatePath("ep-1")), { recursive: true });
+    await fs.writeFile(storage.resolvedCandidatePath("ep-1"), "original resolved\n", "utf8");
+    await storage.writeReviewCandidate("ep-1", "new pending\n");
+
+    const result = await storage.resolvePendingReview("ep-1");
+
+    expect(result.moved).toBe(false);
+    expect(result.alreadyResolved).toBe(true);
+    expect(await fs.readFile(storage.resolvedCandidatePath("ep-1"), "utf8")).toBe(
+      "original resolved\n",
+    );
+    expect(await storage.hasPendingReview("ep-1")).toBe(true);
+  });
+
+  it("resolvePendingReview compensates a failed pending-unlink so a retry can redo the whole move", async () => {
+    await storage.writeReviewCandidate("ep-1", "# Review\n");
+    const pendingPath = storage.reviewCandidatePath("ep-1");
+    const resolvedPath = storage.resolvedCandidatePath("ep-1");
+
+    // Fail only the unlink of the PENDING path (after the resolved link was
+    // created); the compensating unlink of the resolved path must proceed.
+    const realUnlink = fs.unlink.bind(fs);
+    const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (target) => {
+      if (String(target) === pendingPath) throw Object.assign(new Error("EBUSY: locked"), { code: "EBUSY" });
+      return realUnlink(target);
+    });
+    try {
+      await expect(storage.resolvePendingReview("ep-1")).rejects.toThrow("EBUSY");
+      // The half-created resolved copy was cleaned up — NOT left behind to
+      // strand every retry on EEXIST/alreadyResolved with no disposition.
+      await expect(fs.access(resolvedPath)).rejects.toThrow();
+      expect(await storage.hasPendingReview("ep-1")).toBe(true);
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+
+    // With the transient failure gone, the same call now completes.
+    const retry = await storage.resolvePendingReview("ep-1");
+    expect(retry.moved).toBe(true);
+    expect(await fs.readFile(resolvedPath, "utf8")).toBe("# Review\n");
+    expect(await storage.hasPendingReview("ep-1")).toBe(false);
+  });
+
+  it("resolvePendingReview treats ENOENT on the pending unlink as a completed move, never deleting the resolved copy", async () => {
+    await storage.writeReviewCandidate("ep-1", "# Review\n");
+    const pendingPath = storage.reviewCandidatePath("ep-1");
+    const resolvedPath = storage.resolvedCandidatePath("ep-1");
+
+    // Simulate another process removing the pending file between our link
+    // and our unlink: the unlink sees ENOENT. The resolved link is then the
+    // only surviving copy — compensation must NOT delete it.
+    const realUnlink = fs.unlink.bind(fs);
+    const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (target) => {
+      if (String(target) === pendingPath) {
+        await realUnlink(pendingPath);
+        throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+      }
+      return realUnlink(target);
+    });
+    try {
+      const result = await storage.resolvePendingReview("ep-1");
+      expect(result.moved).toBe(true);
+      expect(result.alreadyResolved).toBe(false);
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+    expect(await fs.readFile(resolvedPath, "utf8")).toBe("# Review\n");
+    expect(await storage.hasPendingReview("ep-1")).toBe(false);
+  });
+
+  it("writePromotedNote creates notesDir on demand and never overwrites an existing note", async () => {
+    const notesDir = path.join(dir, "does", "not", "exist", "yet");
+    const first = await storage.writePromotedNote(notesDir, "note.md", "original\n");
+    expect(first.alreadyExists).toBe(false);
+    expect(await fs.readFile(first.path, "utf8")).toBe("original\n");
+
+    const second = await storage.writePromotedNote(notesDir, "note.md", "replacement\n");
     expect(second.alreadyExists).toBe(true);
     expect(await fs.readFile(first.path, "utf8")).toBe("original\n");
   });

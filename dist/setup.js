@@ -59,6 +59,10 @@ export function classifyExportDir(exportDir) {
         return { exportDir: null, mode: "off" };
     return { exportDir, mode: looksLikeGbrainInbox(exportDir) ? "gbrain-inbox" : "custom" };
 }
+/** Promoted-note destination for castrecall_resolve_review: unconfigured (null) until set. */
+export function classifyNotesDir(notesDir) {
+    return { notesDir: notesDir ?? null };
+}
 /** Platform-appropriate keychain store recipe shown once a backend is detected. */
 function keychainStoreRecipe(service, secretBackend) {
     return secretBackend.kind === "libsecret"

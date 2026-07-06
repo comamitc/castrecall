@@ -9,6 +9,10 @@
  *     provenance.json              — where it came from and when
  *   review/pending/<episodeUuid>.md — approval-gated review candidates
  *   review/pending/digest-<slug>.md — approval-gated cross-episode digests
+ *   review/resolved/<episodeUuid>.md — candidates moved out after castrecall_resolve_review
+ *
+ * Promoted note content itself goes to the user-configured notes
+ * destination (CASTRECALL_NOTES_DIR / notesDir), never here.
  *
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
@@ -98,6 +102,11 @@ export type ListenRecord = {
     /** Last corpus-export failure for this episode, if any; cleared on the next successful export. */
     exportError?: string;
     reviewGeneratedAt?: string;
+    /** Disposition history recorded by castrecall_resolve_review — set once a pending review is resolved. */
+    reviewDisposition?: "promote" | "discard";
+    reviewResolvedAt?: string;
+    /** Path of the note written under notesDir; only set when reviewDisposition is "promote". */
+    promotedNotePath?: string;
     updatedAt: string;
 };
 export type CastrecallState = {
@@ -146,6 +155,7 @@ export declare class Storage {
     private get statePath();
     sourceDir(episodeUuid: string): string;
     reviewPendingDir(): string;
+    reviewResolvedDir(): string;
     /** Private, rebuildable search-index cache — see search.ts. */
     indexDir(): string;
     init(): Promise<void>;
@@ -284,6 +294,42 @@ export declare class Storage {
         path: string;
         alreadyExists: boolean;
     }>;
+    resolvedCandidatePath(episodeUuid: string): string;
+    hasPendingReview(episodeUuid: string): Promise<boolean>;
+    /**
+     * Move a pending review candidate into review/resolved/. Returns
+     * `moved: false` (instead of throwing) when there is nothing pending for
+     * this episode — either it was never generated, or a prior resolve
+     * already moved it — so the caller can surface an actionable error rather
+     * than silently no-op. Uses link+unlink rather than rename so an existing
+     * resolved candidate at the destination is never silently clobbered —
+     * `fs.rename` would replace it outright; `alreadyResolved: true` lets the
+     * caller surface that conflict instead.
+     */
+    resolvePendingReview(episodeUuid: string): Promise<{
+        moved: boolean;
+        resolvedPath: string;
+        alreadyResolved: boolean;
+    }>;
+    /**
+     * Undo a successful `resolvePendingReview` move — used only when the
+     * follow-up state write (updateEpisode) fails after the move succeeded, so
+     * a retry lands on the same pending-review path instead of a candidate
+     * that is resolved-on-disk but has no recorded disposition.
+     */
+    revertResolvedReview(episodeUuid: string): Promise<void>;
+    /**
+     * Write a promoted note once; never overwrite an existing note at the same
+     * path. Creates `notesDir` on demand — same create-on-demand precedent as
+     * `CorpusExporter.exportEpisode` — so a configured-but-not-yet-existing
+     * destination is a normal write, not a failure.
+     */
+    writePromotedNote(notesDir: string, filename: string, markdown: string): Promise<{
+        path: string;
+        alreadyExists: boolean;
+    }>;
+    /** Remove a written promoted note — used to clean up an orphan when the caller loses a resolve race. */
+    deletePromotedNote(filePath: string): Promise<void>;
     digestPath(slug: string): string;
     /** Write a digest once; never overwrite a pending digest — same write-once semantics as writeReviewCandidate. */
     writeDigest(slug: string, markdown: string): Promise<{

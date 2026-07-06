@@ -9,6 +9,10 @@
  *     provenance.json              — where it came from and when
  *   review/pending/<episodeUuid>.md — approval-gated review candidates
  *   review/pending/digest-<slug>.md — approval-gated cross-episode digests
+ *   review/resolved/<episodeUuid>.md — candidates moved out after castrecall_resolve_review
+ *
+ * Promoted note content itself goes to the user-configured notes
+ * destination (CASTRECALL_NOTES_DIR / notesDir), never here.
  *
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
@@ -62,6 +66,9 @@ export class Storage {
     reviewPendingDir() {
         return path.join(this.dataDir, "review", "pending");
     }
+    reviewResolvedDir() {
+        return path.join(this.dataDir, "review", "resolved");
+    }
     /** Private, rebuildable search-index cache — see search.ts. */
     indexDir() {
         return path.join(this.dataDir, ".index");
@@ -69,6 +76,7 @@ export class Storage {
     async init() {
         await fs.mkdir(path.join(this.dataDir, "sources"), { recursive: true });
         await fs.mkdir(this.reviewPendingDir(), { recursive: true });
+        await fs.mkdir(this.reviewResolvedDir(), { recursive: true });
     }
     async loadState() {
         try {
@@ -492,6 +500,108 @@ export class Storage {
             }
             throw error;
         }
+    }
+    resolvedCandidatePath(episodeUuid) {
+        return path.join(this.reviewResolvedDir(), `${safeName(episodeUuid)}.md`);
+    }
+    async hasPendingReview(episodeUuid) {
+        try {
+            await fs.access(this.reviewCandidatePath(episodeUuid));
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }
+    /**
+     * Move a pending review candidate into review/resolved/. Returns
+     * `moved: false` (instead of throwing) when there is nothing pending for
+     * this episode — either it was never generated, or a prior resolve
+     * already moved it — so the caller can surface an actionable error rather
+     * than silently no-op. Uses link+unlink rather than rename so an existing
+     * resolved candidate at the destination is never silently clobbered —
+     * `fs.rename` would replace it outright; `alreadyResolved: true` lets the
+     * caller surface that conflict instead.
+     */
+    async resolvePendingReview(episodeUuid) {
+        await this.init();
+        const resolvedPath = this.resolvedCandidatePath(episodeUuid);
+        const pendingPath = this.reviewCandidatePath(episodeUuid);
+        try {
+            await fs.link(pendingPath, resolvedPath);
+        }
+        catch (error) {
+            if (error.code === "EEXIST") {
+                return { moved: false, resolvedPath, alreadyResolved: true };
+            }
+            if (error.code === "ENOENT") {
+                return { moved: false, resolvedPath, alreadyResolved: false };
+            }
+            throw error;
+        }
+        try {
+            await fs.unlink(pendingPath);
+        }
+        catch (unlinkError) {
+            // ENOENT means someone else already removed the pending entry after
+            // our link succeeded — the move is effectively complete (the resolved
+            // link is the surviving review copy), so compensating here would
+            // delete the only remaining copy and leave nothing to retry from.
+            if (unlinkError.code === "ENOENT") {
+                return { moved: true, resolvedPath, alreadyResolved: false };
+            }
+            // Any other failure leaves a genuinely half-done move: the resolved
+            // link already exists, so every retry would hit EEXIST →
+            // alreadyResolved while no disposition was ever recorded — a stranded
+            // candidate. Removing the resolved link restores the pre-call state
+            // so a retry can run the whole move again.
+            try {
+                await fs.unlink(resolvedPath);
+            }
+            catch (cleanupError) {
+                throw new Error(`Failed to unlink pending review candidate (${String(unlinkError)}) AND failed to ` +
+                    `clean up the half-created resolved copy at ${resolvedPath} (${String(cleanupError)}). ` +
+                    "Remove the resolved copy manually, then retry the disposition.");
+            }
+            throw unlinkError;
+        }
+        return { moved: true, resolvedPath, alreadyResolved: false };
+    }
+    /**
+     * Undo a successful `resolvePendingReview` move — used only when the
+     * follow-up state write (updateEpisode) fails after the move succeeded, so
+     * a retry lands on the same pending-review path instead of a candidate
+     * that is resolved-on-disk but has no recorded disposition.
+     */
+    async revertResolvedReview(episodeUuid) {
+        const resolvedPath = this.resolvedCandidatePath(episodeUuid);
+        const pendingPath = this.reviewCandidatePath(episodeUuid);
+        await fs.link(resolvedPath, pendingPath);
+        await fs.unlink(resolvedPath);
+    }
+    /**
+     * Write a promoted note once; never overwrite an existing note at the same
+     * path. Creates `notesDir` on demand — same create-on-demand precedent as
+     * `CorpusExporter.exportEpisode` — so a configured-but-not-yet-existing
+     * destination is a normal write, not a failure.
+     */
+    async writePromotedNote(notesDir, filename, markdown) {
+        await fs.mkdir(notesDir, { recursive: true });
+        const filePath = path.join(notesDir, filename);
+        try {
+            await fs.writeFile(filePath, markdown, { encoding: "utf8", flag: "wx" });
+            return { path: filePath, alreadyExists: false };
+        }
+        catch (error) {
+            if (error.code === "EEXIST") {
+                return { path: filePath, alreadyExists: true };
+            }
+            throw error;
+        }
+    }
+    /** Remove a written promoted note — used to clean up an orphan when the caller loses a resolve race. */
+    async deletePromotedNote(filePath) {
+        await fs.rm(filePath, { force: true });
     }
     digestPath(slug) {
         return path.join(this.reviewPendingDir(), `digest-${safeName(slug)}.md`);

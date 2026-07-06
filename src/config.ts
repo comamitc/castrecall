@@ -10,6 +10,7 @@ export type PluginSettings = {
   sttEnabled?: boolean;
   sttProvider?: SttProvider;
   exportDir?: string;
+  notesDir?: string;
 };
 
 export type ResolvedConfig = {
@@ -17,6 +18,8 @@ export type ResolvedConfig = {
   historyLimit: number;
   /** Corpus export: off (undefined) by default — see docs/ARCHITECTURE.md. */
   exportDir?: string;
+  /** Promoted-note destination for castrecall_resolve_review: off (undefined) until configured. */
+  notesDir?: string;
   pocketcasts: {
     email?: string;
     password?: string;
@@ -116,6 +119,7 @@ export function resolveConfig(
     providerRaw === "openai" || providerRaw === "deepgram" ? providerRaw : "assemblyai";
 
   const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
+  const notesDir = nonEmpty(env.CASTRECALL_NOTES_DIR) ?? nonEmpty(settings.notesDir);
 
   const envMinRatio = Number.parseFloat(env.CASTRECALL_MIN_LISTEN_RATIO ?? "");
   const minRatio =
@@ -133,6 +137,7 @@ export function resolveConfig(
     dataDir,
     historyLimit,
     exportDir,
+    notesDir,
     pocketcasts: {
       email: nonEmpty(env.POCKETCASTS_EMAIL),
       password: nonEmpty(env.POCKETCASTS_PASSWORD),
@@ -181,6 +186,22 @@ export class CastrecallSetupError extends Error {
     super(message);
     this.name = "CastrecallSetupError";
   }
+}
+
+/**
+ * Only the unconfigured case is an error here — a configured-but-missing
+ * directory is created on demand by `Storage.writePromotedNote`, mirroring
+ * `CorpusExporter`'s create-on-demand precedent.
+ */
+export function requireNotesDir(config: ResolvedConfig): string {
+  if (!config.notesDir) {
+    throw new CastrecallSetupError(
+      "No notes destination configured. Set CASTRECALL_NOTES_DIR (or the notesDir plugin setting) " +
+        "to the directory promoted notes should be written to before calling castrecall_resolve_review " +
+        "with disposition: \"promote\".",
+    );
+  }
+  return config.notesDir;
 }
 
 export function requirePocketCastsCredentials(config: ResolvedConfig): {
