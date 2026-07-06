@@ -184,12 +184,16 @@ export type Provenance = {
      * Present whenever cleanup ran, even with `applied: []` (ran, no-op) —
      * omitted entirely when cleanup was disabled
      * (`CASTRECALL_TRANSCRIPT_CLEANUP=0`), distinguishing "ran, no-op" from
-     * "never ran". Additive; pre-#45 sidecars simply lack it.
+     * "never ran". Additive; pre-#45 sidecars simply lack it, and sidecars
+     * written before the hash existed carry `version`/`applied` without
+     * `rawTextHash` — the type keeps the field optional so those supported
+     * legacy shapes are representable without casts; new writes always
+     * include it, and recovery falls back to exact-match when it's absent.
      */
     cleanup?: {
         version: number;
         applied: string[];
-        rawTextHash: string;
+        rawTextHash?: string;
     };
     fetchedAt: string;
     privacyClass: "private-source";
