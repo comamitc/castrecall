@@ -368,6 +368,44 @@ describe("transcribeWithRemoteStt — async job resume (issue #61 review)", () =
     expect(await jobStateFiles()).toHaveLength(0);
   });
 
+  it("resets the ambiguous-auth counter after an authenticated resume window (issue #61 review 4)", async () => {
+    const submitFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        return new Response(JSON.stringify({ job_id: "job-blip", status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    }) as FetchLike;
+    const clock0 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: submitFetch, sleep: clock0.sleep, now: clock0.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(RetryableSttError);
+
+    const authFail: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) throw new Error("must not resubmit");
+      return new Response("forbidden", { status: 403 });
+    }) as FetchLike;
+    const processing: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) throw new Error("must not resubmit");
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    }) as FetchLike;
+
+    // Two auth blips, separated by an authenticated processing window that
+    // resets the counter, then two more blips: cumulative failures would
+    // have crossed the forget-bound (3) without the reset — the handle
+    // must survive all of it.
+    for (const fetchImpl of [authFail, authFail, processing, authFail, authFail]) {
+      const clock = fakeClock();
+      await expect(
+        transcribeWithRemoteStt(config(), AUDIO_URL, {
+          fetchImpl, sleep: clock.sleep, now: clock.now, pollIntervalMs: 1_000, timeoutMs: 3_000,
+        }),
+      ).rejects.toThrow();
+      expect(await jobStateFiles()).toHaveLength(1);
+    }
+  });
+
   it("surfaces a resumed job's terminal failure instead of silently resubmitting (issue #61 review 2)", async () => {
     let submits = 0;
     const slowFetch: FetchLike = (async (url: string) => {

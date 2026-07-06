@@ -166,7 +166,7 @@ async function pollJob(base, headers, jobId, fetchImpl, sleep, pollIntervalMs, t
     // A local poll deadline is not evidence the JOB failed — the remote side
     // may still finish. Retryable keeps the episode eligible under the
     // bounded transcriptRetry backoff instead of marking it terminally failed.
-    throw new RetryableSttError(`Remote STT transcription did not complete within ${Math.round(timeoutMs / 60_000)} minutes; ` +
+    throw new PollDeadlineError(`Remote STT transcription did not complete within ${Math.round(timeoutMs / 60_000)} minutes; ` +
         "the job may still finish on the remote side — the episode stays eligible for a later run.");
 }
 function parseRemoteResult(body) {
@@ -193,6 +193,13 @@ function parseRemoteResult(body) {
 }
 /** Thrown only when the provider explicitly does not recognize a polled job id (HTTP 404/410). */
 class UnknownRemoteJobError extends Error {
+}
+/**
+ * Deadline expiry after a window of SUCCESSFUL (authenticated, 200) polls —
+ * distinct from transient RetryableSttError failures so the resume path can
+ * treat it as proof the token currently works.
+ */
+class PollDeadlineError extends RetryableSttError {
 }
 /**
  * Durable async-job state (issue #61 review): when a remote job outlives the
@@ -283,7 +290,14 @@ export async function transcribeWithRemoteStt(config, audioUrl, deps = {}) {
                 throw error;
             }
             else if (error instanceof RetryableSttError) {
-                // Still running / transient: keep the state for the next run.
+                // Still running / transient: keep the state for the next run. A
+                // deadline expiry means every poll in the window was authenticated
+                // (200/processing), so any accumulated ambiguous-auth failures are
+                // proven stale — reset the counter rather than letting separated
+                // blips add up to a false forget.
+                if (error instanceof PollDeadlineError && prior.authFailures > 0) {
+                    await writeJobState(statePath, prior.jobId, 0);
+                }
                 throw error;
             }
             else {
