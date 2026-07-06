@@ -39,6 +39,7 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] #10 Podchaser transcript rung — PR #33 squash-merged, issue closed. FIVE pre-merge review rounds, all privacy/trust-boundary: stale dist; feed URL sent to Podchaser (tokenized private feeds) → guard; path-embedded tokens → feed URL never transmitted (local-only scoping); URL-like RSS GUIDs → opaque-GUID gate; percent-encoded structure → bounded-decode classification. 283 tests green.
 - [x] release v0.5.0 — PR #34 merged, version 0.4.0→0.5.0, tag pushed, GitHub release published, milestone closed.
 - [x] #9 Taddy webhooks (as polling recheck) — PR #35 squash-merged, issue closed. Three pre-merge rounds: implementation review approved; dist drift after review-fix commits (rebuilt); manual-recovery finding — spent STT retry budget now gates scheduled runs only, a direct `castrecall_fetch_transcript` call re-attempts STT as the skipped-rung message advertises (+ regression test). 307 tests green on main.
+- [x] release v0.6.0 — PR #36 merged, version 0.5.0→0.6.0, tag pushed, GitHub release published, milestone closed.
 - [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
 
 > HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resumed from #9 on the new machine 2026-07-06.
