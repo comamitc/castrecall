@@ -539,7 +539,25 @@ export class Storage {
             }
             throw error;
         }
-        await fs.unlink(pendingPath);
+        try {
+            await fs.unlink(pendingPath);
+        }
+        catch (unlinkError) {
+            // Compensate the half-done move: without this, the resolved link
+            // already exists, so every retry would hit EEXIST → alreadyResolved
+            // while no disposition was ever recorded — a stranded candidate.
+            // Removing the resolved link restores the pre-call state so a retry
+            // can run the whole move again.
+            try {
+                await fs.unlink(resolvedPath);
+            }
+            catch (cleanupError) {
+                throw new Error(`Failed to unlink pending review candidate (${String(unlinkError)}) AND failed to ` +
+                    `clean up the half-created resolved copy at ${resolvedPath} (${String(cleanupError)}). ` +
+                    "Remove the resolved copy manually, then retry the disposition.");
+            }
+            throw unlinkError;
+        }
         return { moved: true, resolvedPath, alreadyResolved: false };
     }
     /**

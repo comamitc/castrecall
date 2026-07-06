@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import {
   BACKOFF_BASE_MS,
@@ -157,6 +157,35 @@ describe("Storage", () => {
       "original resolved\n",
     );
     expect(await storage.hasPendingReview("ep-1")).toBe(true);
+  });
+
+  it("resolvePendingReview compensates a failed pending-unlink so a retry can redo the whole move", async () => {
+    await storage.writeReviewCandidate("ep-1", "# Review\n");
+    const pendingPath = storage.reviewCandidatePath("ep-1");
+    const resolvedPath = storage.resolvedCandidatePath("ep-1");
+
+    // Fail only the unlink of the PENDING path (after the resolved link was
+    // created); the compensating unlink of the resolved path must proceed.
+    const realUnlink = fs.unlink.bind(fs);
+    const unlinkSpy = vi.spyOn(fs, "unlink").mockImplementation(async (target) => {
+      if (String(target) === pendingPath) throw Object.assign(new Error("EBUSY: locked"), { code: "EBUSY" });
+      return realUnlink(target);
+    });
+    try {
+      await expect(storage.resolvePendingReview("ep-1")).rejects.toThrow("EBUSY");
+      // The half-created resolved copy was cleaned up — NOT left behind to
+      // strand every retry on EEXIST/alreadyResolved with no disposition.
+      await expect(fs.access(resolvedPath)).rejects.toThrow();
+      expect(await storage.hasPendingReview("ep-1")).toBe(true);
+    } finally {
+      unlinkSpy.mockRestore();
+    }
+
+    // With the transient failure gone, the same call now completes.
+    const retry = await storage.resolvePendingReview("ep-1");
+    expect(retry.moved).toBe(true);
+    expect(await fs.readFile(resolvedPath, "utf8")).toBe("# Review\n");
+    expect(await storage.hasPendingReview("ep-1")).toBe(false);
   });
 
   it("writePromotedNote creates notesDir on demand and never overwrites an existing note", async () => {

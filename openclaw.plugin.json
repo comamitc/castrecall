@@ -39,6 +39,10 @@
       "exportDir": {
         "type": "string",
         "description": "Opt-in: also write section-split, frontmattered markdown pages here on transcript store (e.g. a gbrain inbox or a brain's sources/ root — the exporter always appends podcasts/<show-slug>, so don't point this at sources/podcasts). Off by default. The CASTRECALL_EXPORT_DIR env var overrides this."
+      },
+      "notesDir": {
+        "type": "string",
+        "description": "Destination for notes promoted via castrecall_resolve_review. Required before any promote (discard never needs it). Created on demand if it doesn't exist yet. The CASTRECALL_NOTES_DIR env var overrides this."
       }
     },
     "additionalProperties": false
@@ -54,6 +58,7 @@
       "castrecall_recent",
       "castrecall_fetch_transcript",
       "castrecall_generate_review",
+      "castrecall_resolve_review",
       "castrecall_search",
       "castrecall_digest",
       "castrecall_run_pipeline"
