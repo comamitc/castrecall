@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.3.0 — 2026-07-05
+
+Robustness: credentials move off plaintext env vars, every Pocket Casts call
+survives transient failures, and history sync stops recording episodes you
+never actually listened to.
+
+- **OS-keychain credential handling** (#7, PR #26): Pocket Casts credentials
+  and session-token records can live in the OS keychain (macOS `security`,
+  Linux libsecret) instead of plaintext env vars, with env vars still
+  supported as a fallback. Session tokens are cached in memory and persisted
+  with concurrency-safe single-flight login and per-service serialization of
+  durable writes — no duplicate logins, no torn token records.
+- **Retry/backoff for the unofficial API** (#6, PR #27): new shared
+  `fetchWithRetry` primitive retries network errors, 5xx, and 429 with
+  capped exponential backoff (3 attempts, request-scale delays), applied to
+  Pocket Casts login and history calls — deliberately independent of the
+  cross-run sync cooldown, which keeps governing run-scale pacing.
+- **Listened-episode filter** (#24, PR #28): history sync now records only
+  episodes that were meaningfully listened to — completed (playingStatus 3),
+  ≥80% played by duration, or ≥5 minutes when Pocket Casts reports no usable
+  duration — instead of everything ever touched. Thresholds configurable via
+  `CASTRECALL_MIN_LISTEN_RATIO`, `CASTRECALL_MIN_LISTEN_SECONDS`, and
+  `CASTRECALL_RECORD_UNKNOWN_LISTENS`; already-stored episodes are never
+  re-filtered.
+
 ## v0.2.0 — 2026-07-05
 
 Freshness & onboarding: the corpus now feeds itself on a schedule, and setup
