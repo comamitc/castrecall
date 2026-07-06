@@ -48,14 +48,22 @@ type CompiledScanner = {
   pattern: RegExp;
   caseSensitive: boolean;
   /**
-   * Group i (1-indexed) of `pattern` corresponds to `entries[i - 1]`, so the
-   * matched alternative is identified positionally rather than by
-   * `matched.toLowerCase()`. Regex /iu Unicode case folding isn't equivalent
-   * to `String.prototype.toLowerCase()` for every character (e.g. Kelvin
-   * sign vs "k", Greek final sigma vs sigma), so a string-keyed lookup can
-   * silently miss a variant the regex legitimately matched.
+   * Constant-time common-path lookup: matched text (lowercased for the
+   * insensitive class) → its variant/canonical. Not authoritative on its
+   * own — regex /iu Unicode case folding isn't equivalent to
+   * `String.prototype.toLowerCase()` for every character (Greek final
+   * sigma, micro sign vs Greek mu, Kelvin sign…), so a miss here falls
+   * through to `fallback` instead of dropping the correction.
    */
-  entries: { variant: string; canonical: string }[];
+  byMatch: Map<string, { variant: string; canonical: string }>;
+  /**
+   * Authoritative rare-path identification for the insensitive class: each
+   * variant carries an anchored /iu matcher — the SAME semantics that
+   * produced the scanner match — so scan and lookup can never disagree.
+   * Simple case folding is 1:1, so candidates are filtered by exact length
+   * first; this path only runs when the toLowerCase fast path misses.
+   */
+  fallback: Array<{ variant: string; canonical: string; exact: RegExp }>;
 };
 
 export type CompiledGlossary = {
@@ -155,18 +163,33 @@ export function compileGlossary(entries: GlossaryEntry[]): CompiledGlossary {
     // Longest-first alternation: at any given start position the regex
     // engine takes the first alternative that fits, so the longest variant
     // at that position wins within the class — the same rank rule the
-    // per-variant sort encodes.
-    // Each alternative gets its own capture group (rather than one group
-    // around the whole alternation) so the matched alternative can be
-    // identified by group index — see the CompiledScanner.entries doc.
-    const alternation = classVariants.map((v) => `(${escapeRegExp(v.variant)})`).join("|");
+    // per-variant sort encodes. One capture group wraps the WHOLE
+    // alternation (per-variant groups would attach thousands of empty
+    // capture slots to every hit and force an O(variants) group scan per
+    // match); the matched alternative is identified by the constant-time
+    // byMatch fast path with the /iu-exact fallback for fold divergence.
+    const alternation = classVariants.map((v) => escapeRegExp(v.variant)).join("|");
+    const byMatch = new Map<string, { variant: string; canonical: string }>();
+    for (const v of classVariants) {
+      byMatch.set(caseSensitive ? v.variant : v.variant.toLowerCase(), {
+        variant: v.variant,
+        canonical: v.canonical,
+      });
+    }
     scanners.push({
       pattern: new RegExp(
-        `(?<![\\p{L}\\p{N}])(?=(?:${alternation})(?![\\p{L}\\p{N}]))`,
+        `(?<![\\p{L}\\p{N}])(?=(${alternation})(?![\\p{L}\\p{N}]))`,
         caseSensitive ? "gu" : "giu",
       ),
       caseSensitive,
-      entries: classVariants.map((v) => ({ variant: v.variant, canonical: v.canonical })),
+      byMatch,
+      fallback: caseSensitive
+        ? []
+        : classVariants.map((v) => ({
+            variant: v.variant,
+            canonical: v.canonical,
+            exact: new RegExp(`^(?:${escapeRegExp(v.variant)})$`, "iu"),
+          })),
     });
   }
 
@@ -190,18 +213,23 @@ function collectSpans(text: string, compiled: CompiledGlossary): Span[] {
   const spans: Span[] = [];
   for (const scanner of compiled.scanners) {
     for (const match of text.matchAll(scanner.pattern)) {
-      for (let i = 0; i < scanner.entries.length; i++) {
-        const matched = match[i + 1];
-        if (matched === undefined) continue;
-        const hit = scanner.entries[i];
-        spans.push({
-          start: match.index,
-          end: match.index + matched.length,
-          canonical: hit.canonical,
-          variant: hit.variant,
-        });
-        break;
+      const matched = match[1];
+      let hit = scanner.byMatch.get(scanner.caseSensitive ? matched : matched.toLowerCase());
+      if (!hit && !scanner.caseSensitive) {
+        // toLowerCase missed but the /iu scanner matched (case-fold
+        // divergence): identify the variant with the same /iu semantics.
+        // Rare path — runs only on fast-path misses, never per ordinary hit.
+        hit = scanner.fallback.find(
+          (candidate) => candidate.variant.length === matched.length && candidate.exact.test(matched),
+        );
       }
+      if (!hit) continue;
+      spans.push({
+        start: match.index,
+        end: match.index + matched.length,
+        canonical: hit.canonical,
+        variant: hit.variant,
+      });
     }
   }
   return spans;

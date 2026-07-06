@@ -42,17 +42,29 @@ type CompiledScanner = {
     pattern: RegExp;
     caseSensitive: boolean;
     /**
-     * Group i (1-indexed) of `pattern` corresponds to `entries[i - 1]`, so the
-     * matched alternative is identified positionally rather than by
-     * `matched.toLowerCase()`. Regex /iu Unicode case folding isn't equivalent
-     * to `String.prototype.toLowerCase()` for every character (e.g. Kelvin
-     * sign vs "k", Greek final sigma vs sigma), so a string-keyed lookup can
-     * silently miss a variant the regex legitimately matched.
+     * Constant-time common-path lookup: matched text (lowercased for the
+     * insensitive class) → its variant/canonical. Not authoritative on its
+     * own — regex /iu Unicode case folding isn't equivalent to
+     * `String.prototype.toLowerCase()` for every character (Greek final
+     * sigma, micro sign vs Greek mu, Kelvin sign…), so a miss here falls
+     * through to `fallback` instead of dropping the correction.
      */
-    entries: {
+    byMatch: Map<string, {
         variant: string;
         canonical: string;
-    }[];
+    }>;
+    /**
+     * Authoritative rare-path identification for the insensitive class: each
+     * variant carries an anchored /iu matcher — the SAME semantics that
+     * produced the scanner match — so scan and lookup can never disagree.
+     * Simple case folding is 1:1, so candidates are filtered by exact length
+     * first; this path only runs when the toLowerCase fast path misses.
+     */
+    fallback: Array<{
+        variant: string;
+        canonical: string;
+        exact: RegExp;
+    }>;
 };
 export type CompiledGlossary = {
     /** At most two scanners: case-sensitive and case-insensitive classes. */

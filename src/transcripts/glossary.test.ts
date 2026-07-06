@@ -251,6 +251,20 @@ describe("glossary", () => {
       expect(elapsedMs).toBeLessThan(1500);
     });
 
+    it("applies corrections when the micro sign folds to Greek mu under /iu but not under toLowerCase", () => {
+      // U+00B5 MICRO SIGN case-folds to U+03BC GREEK SMALL MU under /iu, but
+      // "\u00b5".toLowerCase() stays U+00B5 — the constant-time fast path
+      // misses and the anchored-/iu fallback must identify the variant.
+      const compiled = compileGlossary([
+        { canonical: "MicroService", variants: ["\u03bcservice"] },
+      ]);
+      const result = applyGlossary("we shipped \u00b5service last week", compiled);
+      expect(result.text).toContain("we shipped MicroService last week");
+      expect(result.corrections).toEqual([
+        { canonical: "MicroService", variant: "\u03bcservice", count: 1 },
+      ]);
+    });
+
     it("accepts a well-formed glossary", () => {
       const parsed = parseGlossary({
         terms: [{ canonical: "ChatGPT", variants: ["chat gpt"], matchCase: false }],
