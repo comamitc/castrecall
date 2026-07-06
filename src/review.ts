@@ -23,6 +23,7 @@ export function buildReviewCandidate(options: {
   const { record, provenance, transcriptText, transcriptPath, generatedAt } = options;
   const excerpts = pickExcerpts(transcriptText);
   const wordCount = transcriptText.split(/\s+/).filter(Boolean).length;
+  const gen = provenance.generation;
 
   const lines: Array<string | undefined> = [
     "---",
@@ -35,6 +36,12 @@ export function buildReviewCandidate(options: {
     `transcript_source: ${provenance.transcriptSource}`,
     `transcript_format: ${provenance.format}`,
     provenance.provider ? `transcript_provider: ${provenance.provider}` : undefined,
+    gen ? `transcript_backend: ${gen.backend}` : undefined,
+    gen?.model ? `transcript_model: ${yamlString(gen.model)}` : undefined,
+    gen ? `transcript_model_source: ${gen.modelSource}` : undefined,
+    gen && gen.decode.ignored.length > 0
+      ? `transcript_decode_ignored: ${yamlString(JSON.stringify(gen.decode.ignored.map((entry) => entry.option)))}`
+      : undefined,
     `generated_at: ${generatedAt.toISOString()}`,
     "---",
     "",
@@ -53,6 +60,9 @@ export function buildReviewCandidate(options: {
     provenance.episodeUrl ? `- Episode page: ${reviewUrl(provenance.episodeUrl)}` : undefined,
     provenance.audioUrl ? `- Audio: ${reviewUrl(provenance.audioUrl)}` : undefined,
     `- Transcript: ${provenance.transcriptSource}${provenance.transcriptSourceUrl ? ` (${reviewUrl(provenance.transcriptSourceUrl)})` : ""}`,
+    gen
+      ? `- Generation: ${gen.backend}${gen.model ? `:${gen.model}` : ""} (${gen.modelSource}${gen.usesBackendDefault ? ", backend default — check corpus quality" : ""})${gen.decode.ignored.length > 0 ? `; dropped decode options: ${gen.decode.ignored.map((entry) => entry.option).join(", ")}` : ""}`
+      : undefined,
     `- Fetched: ${provenance.fetchedAt}`,
     `- Full transcript (${wordCount.toLocaleString()} words): ${transcriptPath}`,
     "",

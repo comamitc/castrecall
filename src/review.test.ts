@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildPromotedNote } from "./review.js";
+import { buildPromotedNote, buildReviewCandidate } from "./review.js";
 import type { ListenRecord, Provenance } from "./storage.js";
 
 const RECORD: ListenRecord = {
@@ -96,5 +96,60 @@ describe("buildPromotedNote", () => {
     });
     expect(markdown).toContain('episode: "Title with \\"quotes\\" and: a colon"');
     expect(markdown).toContain("Line one.\n\nLine two with a : colon and \"quotes\".");
+  });
+});
+
+describe("buildReviewCandidate", () => {
+  const TRANSCRIPT_TEXT =
+    "This is a long enough paragraph of transcript text for the excerpt picker to consider it substantial. ".repeat(
+      3,
+    );
+
+  it("surfaces exact local-whisper generation provenance in frontmatter and the provenance section (issue #54)", () => {
+    const markdown = buildReviewCandidate({
+      record: RECORD,
+      provenance: {
+        ...PROVENANCE,
+        transcriptSource: "local-whisper",
+        generation: {
+          kind: "local-whisper",
+          backend: "mlx-whisper",
+          model: undefined,
+          modelSource: "backend-default",
+          usesBackendDefault: true,
+          outputFormat: "txt",
+          wordTimestamps: false,
+          decode: {
+            applied: { conditionOnPreviousText: false },
+            ignored: [{ option: "wordTimestamps", reason: "txt output cannot carry word timing" }],
+          },
+        },
+      },
+      transcriptText: TRANSCRIPT_TEXT,
+      transcriptPath: "/tmp/transcript.txt",
+      generatedAt: new Date("2026-07-06T00:00:00.000Z"),
+    });
+    expect(markdown).toContain("transcript_backend: mlx-whisper");
+    expect(markdown).toContain("transcript_model_source: backend-default");
+    expect(markdown).not.toContain("transcript_model:");
+    expect(markdown).toContain("transcript_decode_ignored:");
+    expect(markdown).toContain("wordTimestamps");
+    expect(markdown).toContain("- Generation: mlx-whisper (backend-default, backend default — check corpus quality)");
+    expect(markdown).toContain("dropped decode options: wordTimestamps");
+  });
+
+  it("omits every transcript_* generation line and the Generation provenance line for a legacy provenance with no generation", () => {
+    const markdown = buildReviewCandidate({
+      record: RECORD,
+      provenance: PROVENANCE,
+      transcriptText: TRANSCRIPT_TEXT,
+      transcriptPath: "/tmp/transcript.txt",
+      generatedAt: new Date("2026-07-06T00:00:00.000Z"),
+    });
+    expect(markdown).not.toContain("transcript_backend:");
+    expect(markdown).not.toContain("transcript_model:");
+    expect(markdown).not.toContain("transcript_model_source:");
+    expect(markdown).not.toContain("transcript_decode_ignored:");
+    expect(markdown).not.toContain("- Generation:");
   });
 });

@@ -226,6 +226,87 @@ export function resolveWhisperDecodeArgs(flavor, decode) {
     });
     return { args, applied, ignored, outputFormat };
 }
+function deriveModelSource(flavor, resolved) {
+    if (resolved.source !== "none")
+        return resolved.source;
+    return flavor === "custom" ? "none" : "backend-default";
+}
+function buildDecodeApplied(decode, applied) {
+    const values = {};
+    for (const option of applied) {
+        switch (option) {
+            case "language":
+                if (decode.language)
+                    values.language = decode.language;
+                break;
+            case "conditionOnPreviousText":
+                // Only ever applied when the resolved value is false (CastRecall's loop-prevention default).
+                values.conditionOnPreviousText = false;
+                break;
+            case "wordTimestamps":
+                values.wordTimestamps = true;
+                break;
+            case "noSpeechThreshold":
+                if (decode.noSpeechThreshold !== undefined)
+                    values.noSpeechThreshold = decode.noSpeechThreshold;
+                break;
+            case "logprobThreshold":
+                if (decode.logprobThreshold !== undefined)
+                    values.logprobThreshold = decode.logprobThreshold;
+                break;
+            case "compressionRatioThreshold":
+                if (decode.compressionRatioThreshold !== undefined) {
+                    values.compressionRatioThreshold = decode.compressionRatioThreshold;
+                }
+                break;
+            case "hallucinationSilenceThreshold":
+                if (decode.hallucinationSilenceThreshold !== undefined) {
+                    values.hallucinationSilenceThreshold = decode.hallucinationSilenceThreshold;
+                }
+                break;
+        }
+    }
+    return values;
+}
+function buildGeneration(flavor, resolved, decodeResolution, decode, toolVersion) {
+    const modelSource = deriveModelSource(flavor, resolved);
+    return {
+        kind: "local-whisper",
+        backend: flavor,
+        model: resolved.model,
+        modelSource,
+        usesBackendDefault: modelSource === "backend-default",
+        preset: resolved.preset,
+        outputFormat: decodeResolution.outputFormat,
+        wordTimestamps: decodeResolution.applied.includes("wordTimestamps"),
+        decode: {
+            applied: buildDecodeApplied(decode, decodeResolution.applied),
+            ignored: decodeResolution.ignored,
+        },
+        toolVersion,
+    };
+}
+/**
+ * Best-effort `<tool> --version` probe, cheap enough to run on every
+ * transcription: short timeout, every failure mode (non-zero exit, throw,
+ * timeout) swallowed to `undefined` so a broken/slow `--version` can never
+ * fail or meaningfully delay a transcription. Skipped for the `custom`
+ * flavor, whose `command` is an `{input}` template rather than a directly
+ * runnable binary.
+ */
+async function probeToolVersion(detected, execImpl) {
+    if (detected.flavor === "custom")
+        return undefined;
+    try {
+        const result = await execImpl([detected.command, "--version"], { timeoutMs: 5_000 });
+        if (result.code !== 0)
+            return undefined;
+        return result.stdout.trim().split("\n")[0]?.trim() || undefined;
+    }
+    catch {
+        return undefined;
+    }
+}
 function applyThreshold(flavor, value, option, args, applied, ignore, flagByFlavor) {
     if (value === undefined)
         return;
@@ -333,6 +414,7 @@ export async function transcribeWithLocalWhisper(config, audioUrl, deps = {}) {
             format: produced.format,
             provider: providerLabel(detection.detected, config),
             ignoredOptions: produced.ignoredOptions,
+            generation: produced.generation,
         };
     }
     finally {
@@ -354,6 +436,7 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
     const resolved = resolveWhisperModel(detected.flavor, config.localWhisper);
     const model = resolved.model;
     const decodeResolution = resolveWhisperDecodeArgs(detected.flavor, config.localWhisper.decode);
+    const generation = (toolVersion) => buildGeneration(detected.flavor, resolved, decodeResolution, config.localWhisper.decode, toolVersion);
     switch (detected.flavor) {
         case "custom": {
             const command = detected.command
@@ -363,18 +446,29 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
                 timeoutMs: TRANSCRIBE_TIMEOUT_MS,
             });
             assertExitOk(result, "custom whisper command");
-            return { raw: result.stdout, format: "txt", ignoredOptions: decodeResolution.ignored };
+            return {
+                raw: result.stdout,
+                format: "txt",
+                ignoredOptions: decodeResolution.ignored,
+                generation: generation(undefined),
+            };
         }
         case "whisper.cpp": {
             if (!model) {
                 throw new CastrecallSetupError(WHISPER_CPP_MODEL_MISSING_MESSAGE);
             }
+            const toolVersion = await probeToolVersion(detected, execImpl);
             const input = await ensureWav(audioPath, workDir, execImpl, env);
             const format = decodeResolution.outputFormat;
             if (format === "txt") {
                 const result = await execImpl([detected.command, "-m", model, "-f", input, "-np", "-nt", ...decodeResolution.args], { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
                 assertExitOk(result, "whisper.cpp");
-                return { raw: result.stdout, format, ignoredOptions: decodeResolution.ignored };
+                return {
+                    raw: result.stdout,
+                    format,
+                    ignoredOptions: decodeResolution.ignored,
+                    generation: generation(toolVersion),
+                };
             }
             // Controlled output base: whisper.cpp appends .<format> to -of itself,
             // so the exact file we read is the exact path we asked it to write —
@@ -399,10 +493,11 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
             catch {
                 throw new Error(`whisper.cpp produced no ${format} output.`);
             }
-            return { raw, format, ignoredOptions: decodeResolution.ignored };
+            return { raw, format, ignoredOptions: decodeResolution.ignored, generation: generation(toolVersion) };
         }
         case "openai-whisper":
         case "whisper-ctranslate2": {
+            const toolVersion = await probeToolVersion(detected, execImpl);
             const format = decodeResolution.outputFormat;
             const argv = [
                 detected.command,
@@ -419,7 +514,7 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
             const result = await execImpl(argv, { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
             assertExitOk(result, detected.flavor);
             const raw = await readProduced(workDir, audioPath, format, format === "txt");
-            return { raw, format, ignoredOptions: decodeResolution.ignored };
+            return { raw, format, ignoredOptions: decodeResolution.ignored, generation: generation(toolVersion) };
         }
         case "mlx-whisper": {
             if (!model) {
@@ -430,6 +525,7 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
                     throw new CastrecallSetupError(MLX_WHISPER_MODEL_MISSING_MESSAGE);
                 }
             }
+            const toolVersion = await probeToolVersion(detected, execImpl);
             const format = decodeResolution.outputFormat;
             const argv = [
                 detected.command,
@@ -444,7 +540,7 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
             const result = await execImpl(argv, { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
             assertExitOk(result, "mlx-whisper");
             const raw = await readProduced(workDir, audioPath, format, format === "txt");
-            return { raw, format, ignoredOptions: decodeResolution.ignored };
+            return { raw, format, ignoredOptions: decodeResolution.ignored, generation: generation(toolVersion) };
         }
     }
 }

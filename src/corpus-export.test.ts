@@ -206,6 +206,66 @@ describe("buildCorpusPages", () => {
     const secondDir = second[0].relativePath.split("/")[2];
     expect(firstDir).not.toBe(secondDir);
   });
+
+  it("surfaces exact local-whisper generation provenance in frontmatter when present (issue #54)", () => {
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: {
+        ...PROVENANCE,
+        transcriptSource: "local-whisper",
+        generation: {
+          kind: "local-whisper",
+          backend: "mlx-whisper",
+          model: "mlx-community/whisper-large-v3-turbo",
+          modelSource: "preset",
+          usesBackendDefault: false,
+          preset: "best",
+          outputFormat: "json",
+          wordTimestamps: true,
+          decode: {
+            applied: { conditionOnPreviousText: false, wordTimestamps: true },
+            ignored: [{ option: "noSpeechThreshold", reason: "not configured" }],
+          },
+          toolVersion: "mlx_whisper 1.2.3",
+        },
+      },
+      text: "Body text.",
+      contentHash: "hash",
+    });
+    for (const page of pages) {
+      expect(page.content).toContain('transcript_backend: "mlx-whisper"');
+      expect(page.content).toContain('transcript_model: "mlx-community/whisper-large-v3-turbo"');
+      expect(page.content).toContain('transcript_model_source: "preset"');
+      expect(page.content).toContain('transcript_preset: "best"');
+      expect(page.content).toContain('transcript_output_format: "json"');
+      expect(page.content).toContain("transcript_word_timestamps: true");
+      expect(page.content).toContain("transcript_decode_options:");
+      expect(page.content).toContain("conditionOnPreviousText");
+      expect(page.content).toContain("transcript_decode_ignored:");
+      expect(page.content).toContain("noSpeechThreshold");
+      expect(page.content).toContain('transcript_tool_version: "mlx_whisper 1.2.3"');
+    }
+  });
+
+  it("omits every transcript_* generation line for a legacy provenance with no generation", () => {
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Body text.",
+      contentHash: "hash",
+    });
+    for (const page of pages) {
+      expect(page.content).not.toContain("transcript_backend:");
+      expect(page.content).not.toContain("transcript_model:");
+      expect(page.content).not.toContain("transcript_model_source:");
+      expect(page.content).not.toContain("transcript_preset:");
+      expect(page.content).not.toContain("transcript_output_format:");
+      expect(page.content).not.toContain("transcript_word_timestamps:");
+      expect(page.content).not.toContain("transcript_decode_options:");
+      expect(page.content).not.toContain("transcript_decode_ignored:");
+      expect(page.content).not.toContain("transcript_tool_version:");
+    }
+  });
 });
 
 describe("CorpusExporter", () => {

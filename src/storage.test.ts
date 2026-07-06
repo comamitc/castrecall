@@ -350,6 +350,9 @@ describe("Storage", () => {
     const read = await storage.readProvenance("ep-1");
     expect(read?.transcriptSource).toBe("rss");
     expect(read?.contentHash).toBeUndefined();
+    // Issue #54: `generation` is additive — a sidecar written before it
+    // existed loads fine and simply omits it.
+    expect(read?.generation).toBeUndefined();
   });
 
   it("throws instead of reporting alreadyStored when a stale partial directory blocks publish", async () => {

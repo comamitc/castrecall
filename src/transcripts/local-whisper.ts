@@ -306,6 +306,138 @@ export function resolveWhisperDecodeArgs(
   return { args, applied, ignored, outputFormat };
 }
 
+export type LocalWhisperModelSource = "explicit" | "preset" | "backend-default" | "none";
+
+/**
+ * Exact local-transcription provenance (issue #54): which backend family,
+ * concrete model/preset, decode settings, and output shape actually produced
+ * a transcript — not merely "local-whisper", which hides the difference
+ * between e.g. whisper-tiny and large-v3-turbo. Assembled once, in
+ * `buildGeneration`, from the exact `resolveWhisperModel`/
+ * `resolveWhisperDecodeArgs` results a run used — it can never disagree with
+ * the argv actually executed.
+ */
+export type LocalWhisperGeneration = {
+  kind: "local-whisper";
+  backend: WhisperFlavor;
+  /** Concrete model id/path; undefined when the backend ran its own default or the flavor is custom. */
+  model?: string;
+  modelSource: LocalWhisperModelSource;
+  /**
+   * True when no model was pinned (no explicit model, no preset) and the
+   * backend ran with its own internal default — the auditable "this corpus
+   * may have been generated with a poor default model" red flag the issue
+   * exists to surface. CastRecall never fabricates a concrete default model
+   * string here: it genuinely doesn't observe one (no --model flag is passed).
+   */
+  usesBackendDefault: boolean;
+  preset?: string;
+  outputFormat: WhisperOutputFormat;
+  /** Whether word-level timestamps actually survived into the stored artifact (not merely requested). */
+  wordTimestamps: boolean;
+  decode: {
+    /** Effective option -> concrete value, for the decode options this run actually applied. */
+    applied: Record<string, string | number | boolean>;
+    /** Decode options this run bypassed, verbatim from resolveWhisperDecodeArgs, with reasons. */
+    ignored: WhisperDecodeIgnored[];
+  };
+  /** Best-effort `<tool> --version` output; undefined when unavailable or not cheaply probeable (custom flavor). */
+  toolVersion?: string;
+};
+
+function deriveModelSource(
+  flavor: WhisperFlavor,
+  resolved: WhisperModelResolution,
+): LocalWhisperModelSource {
+  if (resolved.source !== "none") return resolved.source;
+  return flavor === "custom" ? "none" : "backend-default";
+}
+
+function buildDecodeApplied(
+  decode: WhisperDecodeConfig,
+  applied: string[],
+): Record<string, string | number | boolean> {
+  const values: Record<string, string | number | boolean> = {};
+  for (const option of applied) {
+    switch (option) {
+      case "language":
+        if (decode.language) values.language = decode.language;
+        break;
+      case "conditionOnPreviousText":
+        // Only ever applied when the resolved value is false (CastRecall's loop-prevention default).
+        values.conditionOnPreviousText = false;
+        break;
+      case "wordTimestamps":
+        values.wordTimestamps = true;
+        break;
+      case "noSpeechThreshold":
+        if (decode.noSpeechThreshold !== undefined) values.noSpeechThreshold = decode.noSpeechThreshold;
+        break;
+      case "logprobThreshold":
+        if (decode.logprobThreshold !== undefined) values.logprobThreshold = decode.logprobThreshold;
+        break;
+      case "compressionRatioThreshold":
+        if (decode.compressionRatioThreshold !== undefined) {
+          values.compressionRatioThreshold = decode.compressionRatioThreshold;
+        }
+        break;
+      case "hallucinationSilenceThreshold":
+        if (decode.hallucinationSilenceThreshold !== undefined) {
+          values.hallucinationSilenceThreshold = decode.hallucinationSilenceThreshold;
+        }
+        break;
+    }
+  }
+  return values;
+}
+
+function buildGeneration(
+  flavor: WhisperFlavor,
+  resolved: WhisperModelResolution,
+  decodeResolution: WhisperDecodeResolution,
+  decode: WhisperDecodeConfig,
+  toolVersion: string | undefined,
+): LocalWhisperGeneration {
+  const modelSource = deriveModelSource(flavor, resolved);
+  return {
+    kind: "local-whisper",
+    backend: flavor,
+    model: resolved.model,
+    modelSource,
+    usesBackendDefault: modelSource === "backend-default",
+    preset: resolved.preset,
+    outputFormat: decodeResolution.outputFormat,
+    wordTimestamps: decodeResolution.applied.includes("wordTimestamps"),
+    decode: {
+      applied: buildDecodeApplied(decode, decodeResolution.applied),
+      ignored: decodeResolution.ignored,
+    },
+    toolVersion,
+  };
+}
+
+/**
+ * Best-effort `<tool> --version` probe, cheap enough to run on every
+ * transcription: short timeout, every failure mode (non-zero exit, throw,
+ * timeout) swallowed to `undefined` so a broken/slow `--version` can never
+ * fail or meaningfully delay a transcription. Skipped for the `custom`
+ * flavor, whose `command` is an `{input}` template rather than a directly
+ * runnable binary.
+ */
+async function probeToolVersion(
+  detected: DetectedWhisper,
+  execImpl: ExecImpl,
+): Promise<string | undefined> {
+  if (detected.flavor === "custom") return undefined;
+  try {
+    const result = await execImpl([detected.command, "--version"], { timeoutMs: 5_000 });
+    if (result.code !== 0) return undefined;
+    return result.stdout.trim().split("\n")[0]?.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function applyThreshold(
   flavor: WhisperFlavor,
   value: number | undefined,
@@ -419,6 +551,7 @@ export async function transcribeWithLocalWhisper(
   format: WhisperOutputFormat;
   provider: string;
   ignoredOptions: WhisperDecodeIgnored[];
+  generation: LocalWhisperGeneration;
 }> {
   const detection = await detectLocalWhisper(config, deps.env ?? process.env);
   if (!detection.detected) throw new CastrecallSetupError(detection.reason);
@@ -443,6 +576,7 @@ export async function transcribeWithLocalWhisper(
       format: produced.format,
       provider: providerLabel(detection.detected, config),
       ignoredOptions: produced.ignoredOptions,
+      generation: produced.generation,
     };
   } finally {
     await fs.rm(workDir, { recursive: true, force: true });
@@ -472,10 +606,17 @@ async function runWhisper(
   workDir: string,
   execImpl: ExecImpl,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{ raw: string; format: WhisperOutputFormat; ignoredOptions: WhisperDecodeIgnored[] }> {
+): Promise<{
+  raw: string;
+  format: WhisperOutputFormat;
+  ignoredOptions: WhisperDecodeIgnored[];
+  generation: LocalWhisperGeneration;
+}> {
   const resolved = resolveWhisperModel(detected.flavor, config.localWhisper);
   const model = resolved.model;
   const decodeResolution = resolveWhisperDecodeArgs(detected.flavor, config.localWhisper.decode);
+  const generation = (toolVersion: string | undefined) =>
+    buildGeneration(detected.flavor, resolved, decodeResolution, config.localWhisper.decode, toolVersion);
   switch (detected.flavor) {
     case "custom": {
       const command = detected.command
@@ -485,12 +626,18 @@ async function runWhisper(
         timeoutMs: TRANSCRIBE_TIMEOUT_MS,
       });
       assertExitOk(result, "custom whisper command");
-      return { raw: result.stdout, format: "txt", ignoredOptions: decodeResolution.ignored };
+      return {
+        raw: result.stdout,
+        format: "txt",
+        ignoredOptions: decodeResolution.ignored,
+        generation: generation(undefined),
+      };
     }
     case "whisper.cpp": {
       if (!model) {
         throw new CastrecallSetupError(WHISPER_CPP_MODEL_MISSING_MESSAGE);
       }
+      const toolVersion = await probeToolVersion(detected, execImpl);
       const input = await ensureWav(audioPath, workDir, execImpl, env);
       const format = decodeResolution.outputFormat;
       if (format === "txt") {
@@ -499,7 +646,12 @@ async function runWhisper(
           { timeoutMs: TRANSCRIBE_TIMEOUT_MS },
         );
         assertExitOk(result, "whisper.cpp");
-        return { raw: result.stdout, format, ignoredOptions: decodeResolution.ignored };
+        return {
+          raw: result.stdout,
+          format,
+          ignoredOptions: decodeResolution.ignored,
+          generation: generation(toolVersion),
+        };
       }
       // Controlled output base: whisper.cpp appends .<format> to -of itself,
       // so the exact file we read is the exact path we asked it to write —
@@ -526,10 +678,11 @@ async function runWhisper(
       } catch {
         throw new Error(`whisper.cpp produced no ${format} output.`);
       }
-      return { raw, format, ignoredOptions: decodeResolution.ignored };
+      return { raw, format, ignoredOptions: decodeResolution.ignored, generation: generation(toolVersion) };
     }
     case "openai-whisper":
     case "whisper-ctranslate2": {
+      const toolVersion = await probeToolVersion(detected, execImpl);
       const format = decodeResolution.outputFormat;
       const argv = [
         detected.command,
@@ -546,7 +699,7 @@ async function runWhisper(
       const result = await execImpl(argv, { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
       assertExitOk(result, detected.flavor);
       const raw = await readProduced(workDir, audioPath, format, format === "txt");
-      return { raw, format, ignoredOptions: decodeResolution.ignored };
+      return { raw, format, ignoredOptions: decodeResolution.ignored, generation: generation(toolVersion) };
     }
     case "mlx-whisper": {
       if (!model) {
@@ -557,6 +710,7 @@ async function runWhisper(
           throw new CastrecallSetupError(MLX_WHISPER_MODEL_MISSING_MESSAGE);
         }
       }
+      const toolVersion = await probeToolVersion(detected, execImpl);
       const format = decodeResolution.outputFormat;
       const argv = [
         detected.command,
@@ -571,7 +725,7 @@ async function runWhisper(
       const result = await execImpl(argv, { timeoutMs: TRANSCRIBE_TIMEOUT_MS });
       assertExitOk(result, "mlx-whisper");
       const raw = await readProduced(workDir, audioPath, format, format === "txt");
-      return { raw, format, ignoredOptions: decodeResolution.ignored };
+      return { raw, format, ignoredOptions: decodeResolution.ignored, generation: generation(toolVersion) };
     }
   }
 }

@@ -16,7 +16,12 @@ import type { ListenRecord } from "../storage.js";
 import { fetchRssTranscript } from "./rss.js";
 import { fetchTaddyTranscript, taddyConfigured } from "./taddy.js";
 import { fetchPodchaserTranscript, podchaserConfigured } from "./podchaser.js";
-import { detectLocalWhisper, localWhisperReadiness, transcribeWithLocalWhisper } from "./local-whisper.js";
+import {
+  detectLocalWhisper,
+  localWhisperReadiness,
+  transcribeWithLocalWhisper,
+  type LocalWhisperGeneration,
+} from "./local-whisper.js";
 import { RetryableSttError, sttAvailability, transcribeAudio } from "./stt.js";
 
 export type LadderRung = "rss" | "taddy" | "podchaser" | "local-whisper" | "stt";
@@ -39,6 +44,8 @@ export type LadderResult = {
     text: string;
     sourceUrl?: string;
     provider?: string;
+    /** Exact local-transcription provenance (issue #54); only set on a local-whisper hit. */
+    generation?: LocalWhisperGeneration;
   };
   feedItem?: ResolvedFeedItem;
   rungs: RungOutcome[];
@@ -254,6 +261,7 @@ export async function runTranscriptLadder(
           raw: result.raw,
           text: result.text,
           provider: result.provider,
+          generation: result.generation,
         },
         feedItem,
         rungs,

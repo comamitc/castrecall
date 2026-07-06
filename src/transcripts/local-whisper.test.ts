@@ -744,3 +744,298 @@ describe("transcribeWithLocalWhisper decode options (issue #53)", () => {
     expect(loopGuard?.reason).toContain("loop-prevention");
   });
 });
+
+describe("transcribeWithLocalWhisper generation provenance (issue #54)", () => {
+  const audioFetch = (async () =>
+    new Response("fake audio bytes standing in for a transcript", { status: 200 })) as typeof fetch;
+
+  it("records exact backend/model/modelSource/outputFormat for an explicit model (mlx-whisper)", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        { CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo" },
+      );
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          if (argv[1] === "--version") return { code: 0, stdout: "mlx_whisper 1.0.0\n", stderr: "" };
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "transcribed text");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.generation).toMatchObject({
+        kind: "local-whisper",
+        backend: "mlx-whisper",
+        model: "mlx-community/whisper-large-v3-turbo",
+        modelSource: "explicit",
+        usesBackendDefault: false,
+        outputFormat: "txt",
+        toolVersion: "mlx_whisper 1.0.0",
+      });
+      expect(result.generation.decode.applied).toMatchObject({ conditionOnPreviousText: false });
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records modelSource preset and the resolved concrete model", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig({}, { CASTRECALL_LOCAL_WHISPER_PRESET: "best" });
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          if (argv[1] === "--version") return { code: 0, stdout: "", stderr: "" };
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "high-quality transcript");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.generation).toMatchObject({
+        backend: "mlx-whisper",
+        model: "mlx-community/whisper-large-v3-turbo",
+        modelSource: "preset",
+        preset: "best",
+        usesBackendDefault: false,
+      });
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records modelSource backend-default (the auditable 'poor default' marker) when mlx-whisper runs with no model pinned", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig({}, { CASTRECALL_WHISPER_ALLOW_LOW_QUALITY: "true" });
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          if (argv[1] === "--version") return { code: 0, stdout: "", stderr: "" };
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "low-quality but private transcript");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.generation.backend).toBe("mlx-whisper");
+      expect(result.generation.model).toBeUndefined();
+      expect(result.generation.modelSource).toBe("backend-default");
+      expect(result.generation.usesBackendDefault).toBe(true);
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records modelSource backend-default for openai-whisper with no model pinned", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig({}, {});
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          if (argv[1] === "--version") return { code: 0, stdout: "", stderr: "" };
+          const workDir = argv[argv.indexOf("--output_dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "openai default transcript");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.generation.backend).toBe("openai-whisper");
+      expect(result.generation.model).toBeUndefined();
+      expect(result.generation.modelSource).toBe("backend-default");
+      expect(result.generation.usesBackendDefault).toBe(true);
+      // Empty --version stdout probes to no toolVersion, not an empty string.
+      expect(result.generation.toolVersion).toBeUndefined();
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("carries decode.ignored reasons for options a flavor drops (whisper.cpp + hallucinationSilenceThreshold)", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "whisper-cli"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        {
+          CASTRECALL_WHISPER_MODEL: "/path/to/ggml.bin",
+          CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD: "2",
+        },
+      );
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.wav", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async () => ({ code: 0, stdout: "plain transcript", stderr: "" }),
+      });
+      expect(result.generation.decode.ignored).toEqual(
+        expect.arrayContaining([expect.objectContaining({ option: "hallucinationSilenceThreshold" })]),
+      );
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records wordTimestamps: false and an ignored entry when requested with txt output (not actually stored)", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        {
+          CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo",
+          CASTRECALL_WHISPER_WORD_TIMESTAMPS: "true",
+        },
+      );
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          if (argv[1] === "--version") return { code: 0, stdout: "", stderr: "" };
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "transcript without stored timestamps");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.generation.wordTimestamps).toBe(false);
+      expect(result.generation.decode.ignored.map((entry) => entry.option)).toContain("wordTimestamps");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records wordTimestamps: true when the stored output format is json", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        {
+          CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo",
+          CASTRECALL_WHISPER_OUTPUT_FORMAT: "json",
+          CASTRECALL_WHISPER_WORD_TIMESTAMPS: "true",
+        },
+      );
+      const jsonBody = JSON.stringify({
+        text: "Hello world.",
+        segments: [{ start: 0, end: 1.2, text: "Hello world." }],
+      });
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          if (argv[1] === "--version") return { code: 0, stdout: "", stderr: "" };
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.json"), jsonBody);
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.generation.wordTimestamps).toBe(true);
+      expect(result.generation.decode.applied).toMatchObject({ wordTimestamps: true });
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("records modelSource none, no toolVersion, and populated decode.ignored for the custom flavor", async () => {
+    const config = resolveConfig({}, { CASTRECALL_WHISPER_COMMAND: "cat {input}" });
+    const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+      fetchImpl: audioFetch,
+      env: { PATH: "" },
+    });
+    expect(result.generation).toMatchObject({
+      backend: "custom",
+      model: undefined,
+      modelSource: "none",
+      usesBackendDefault: false,
+      toolVersion: undefined,
+    });
+    expect(result.generation.decode.applied).toEqual({});
+    expect(result.generation.decode.ignored.length).toBeGreaterThan(0);
+  });
+
+  it("produces sidecars whose generation.model differs when only CASTRECALL_WHISPER_MODEL differs", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const execImpl = async (argv: string[]) => {
+        if (argv[1] === "--version") return { code: 0, stdout: "", stderr: "" };
+        const workDir = argv[argv.indexOf("--output-dir") + 1];
+        await fs.writeFile(path.join(workDir, "episode.txt"), "transcript");
+        return { code: 0, stdout: "", stderr: "" };
+      };
+      const tiny = await transcribeWithLocalWhisper(
+        resolveConfig({}, { CASTRECALL_WHISPER_MODEL: "whisper-tiny" }),
+        "https://cdn.example.com/ep.mp3",
+        { fetchImpl: audioFetch, env: { PATH: binDir }, execImpl },
+      );
+      const large = await transcribeWithLocalWhisper(
+        resolveConfig({}, { CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo" }),
+        "https://cdn.example.com/ep.mp3",
+        { fetchImpl: audioFetch, env: { PATH: binDir }, execImpl },
+      );
+      expect(tiny.generation.model).toBe("whisper-tiny");
+      expect(large.generation.model).toBe("mlx-community/whisper-large-v3-turbo");
+      expect(tiny.generation.model).not.toBe(large.generation.model);
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves toolVersion undefined without throwing when the --version probe exits non-zero", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        { CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo" },
+      );
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          if (argv[1] === "--version") return { code: 1, stdout: "", stderr: "unknown flag" };
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "transcript despite probe failure");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.generation.toolVersion).toBeUndefined();
+      expect(result.text).toBe("transcript despite probe failure");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("leaves toolVersion undefined without throwing or failing the transcription when the --version probe throws", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        { CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo" },
+      );
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          if (argv[1] === "--version") throw new Error("--version hung and was killed");
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "transcript despite probe error");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.generation.toolVersion).toBeUndefined();
+      expect(result.text).toBe("transcript despite probe error");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+});

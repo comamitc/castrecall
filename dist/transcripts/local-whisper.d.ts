@@ -105,6 +105,43 @@ export type WhisperDecodeResolution = {
  * command is running without.
  */
 export declare function resolveWhisperDecodeArgs(flavor: WhisperFlavor, decode: WhisperDecodeConfig): WhisperDecodeResolution;
+export type LocalWhisperModelSource = "explicit" | "preset" | "backend-default" | "none";
+/**
+ * Exact local-transcription provenance (issue #54): which backend family,
+ * concrete model/preset, decode settings, and output shape actually produced
+ * a transcript — not merely "local-whisper", which hides the difference
+ * between e.g. whisper-tiny and large-v3-turbo. Assembled once, in
+ * `buildGeneration`, from the exact `resolveWhisperModel`/
+ * `resolveWhisperDecodeArgs` results a run used — it can never disagree with
+ * the argv actually executed.
+ */
+export type LocalWhisperGeneration = {
+    kind: "local-whisper";
+    backend: WhisperFlavor;
+    /** Concrete model id/path; undefined when the backend ran its own default or the flavor is custom. */
+    model?: string;
+    modelSource: LocalWhisperModelSource;
+    /**
+     * True when no model was pinned (no explicit model, no preset) and the
+     * backend ran with its own internal default — the auditable "this corpus
+     * may have been generated with a poor default model" red flag the issue
+     * exists to surface. CastRecall never fabricates a concrete default model
+     * string here: it genuinely doesn't observe one (no --model flag is passed).
+     */
+    usesBackendDefault: boolean;
+    preset?: string;
+    outputFormat: WhisperOutputFormat;
+    /** Whether word-level timestamps actually survived into the stored artifact (not merely requested). */
+    wordTimestamps: boolean;
+    decode: {
+        /** Effective option -> concrete value, for the decode options this run actually applied. */
+        applied: Record<string, string | number | boolean>;
+        /** Decode options this run bypassed, verbatim from resolveWhisperDecodeArgs, with reasons. */
+        ignored: WhisperDecodeIgnored[];
+    };
+    /** Best-effort `<tool> --version` output; undefined when unavailable or not cheaply probeable (custom flavor). */
+    toolVersion?: string;
+};
 /**
  * Single source of truth for whether the local Whisper rung can actually RUN
  * at usable quality (not merely whether a binary was detected): whisper.cpp
@@ -145,5 +182,6 @@ export declare function transcribeWithLocalWhisper(config: ResolvedConfig, audio
     format: WhisperOutputFormat;
     provider: string;
     ignoredOptions: WhisperDecodeIgnored[];
+    generation: LocalWhisperGeneration;
 }>;
 export {};

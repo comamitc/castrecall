@@ -12,6 +12,7 @@ import { type ResolvedConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
 import { type ResolvedFeedItem } from "../resolver.js";
 import type { ListenRecord } from "../storage.js";
+import { type LocalWhisperGeneration } from "./local-whisper.js";
 export type LadderRung = "rss" | "taddy" | "podchaser" | "local-whisper" | "stt";
 export type RungOutcome = {
     rung: LadderRung;
@@ -30,6 +31,8 @@ export type LadderResult = {
         text: string;
         sourceUrl?: string;
         provider?: string;
+        /** Exact local-transcription provenance (issue #54); only set on a local-whisper hit. */
+        generation?: LocalWhisperGeneration;
     };
     feedItem?: ResolvedFeedItem;
     rungs: RungOutcome[];

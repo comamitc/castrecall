@@ -17,6 +17,7 @@
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
+import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
  * shape). Bump only for breaking changes; new fields are additive within a
@@ -131,6 +132,13 @@ export type Provenance = {
     transcriptSourceUrl?: string;
     format: string;
     provider?: string;
+    /**
+     * Exact local-transcription provenance (issue #54): backend, concrete
+     * model/preset, decode settings, output shape. Only set when
+     * `transcriptSource` is `"local-whisper"`; additive, so pre-#54 sidecars
+     * simply lack it.
+     */
+    generation?: LocalWhisperGeneration;
     fetchedAt: string;
     privacyClass: "private-source";
 };

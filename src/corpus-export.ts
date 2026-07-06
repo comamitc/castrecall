@@ -13,6 +13,7 @@ import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import type { ListenRecord, Provenance } from "./storage.js";
+import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
 
 const DEFAULT_TARGET_WORDS = 1500;
 const DEFAULT_MAX_WORDS = 2000;
@@ -160,9 +161,11 @@ type PageMeta = {
   listenDate: string;
   transcriptSource: string;
   contentHash: string;
+  generation?: LocalWhisperGeneration;
 };
 
 function frontmatterLines(title: string, meta: PageMeta): string[] {
+  const gen = meta.generation;
   const lines: Array<string | undefined> = [
     "---",
     `title: ${yamlString(title)}`,
@@ -174,6 +177,19 @@ function frontmatterLines(title: string, meta: PageMeta): string[] {
     `transcript_source: ${yamlString(meta.transcriptSource)}`,
     `content_hash: ${yamlString(meta.contentHash)}`,
     "generated: false",
+    gen ? `transcript_backend: ${yamlString(gen.backend)}` : undefined,
+    gen?.model ? `transcript_model: ${yamlString(gen.model)}` : undefined,
+    gen ? `transcript_model_source: ${yamlString(gen.modelSource)}` : undefined,
+    gen?.preset ? `transcript_preset: ${yamlString(gen.preset)}` : undefined,
+    gen ? `transcript_output_format: ${yamlString(gen.outputFormat)}` : undefined,
+    gen ? `transcript_word_timestamps: ${gen.wordTimestamps}` : undefined,
+    gen && Object.keys(gen.decode.applied).length > 0
+      ? `transcript_decode_options: ${yamlString(JSON.stringify(gen.decode.applied))}`
+      : undefined,
+    gen && gen.decode.ignored.length > 0
+      ? `transcript_decode_ignored: ${yamlString(JSON.stringify(gen.decode.ignored.map((entry) => entry.option)))}`
+      : undefined,
+    gen?.toolVersion ? `transcript_tool_version: ${yamlString(gen.toolVersion)}` : undefined,
     "---",
   ];
   return lines.filter((line): line is string => line !== undefined);
@@ -208,6 +224,7 @@ export function buildCorpusPages(options: {
     listenDate: (provenance.listenTimestamp ?? record.firstSeenAt).slice(0, 10),
     transcriptSource: provenance.transcriptSource,
     contentHash,
+    generation: provenance.generation,
   };
 
   const pages: CorpusPage[] = [];

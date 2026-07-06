@@ -13,7 +13,7 @@ import { resolveFeedItem, resolveFeedUrl } from "../resolver.js";
 import { fetchRssTranscript } from "./rss.js";
 import { fetchTaddyTranscript, taddyConfigured } from "./taddy.js";
 import { fetchPodchaserTranscript, podchaserConfigured } from "./podchaser.js";
-import { detectLocalWhisper, localWhisperReadiness, transcribeWithLocalWhisper } from "./local-whisper.js";
+import { detectLocalWhisper, localWhisperReadiness, transcribeWithLocalWhisper, } from "./local-whisper.js";
 import { RetryableSttError, sttAvailability, transcribeAudio } from "./stt.js";
 export async function runTranscriptLadder(config, record, options = {}) {
     const fetchImpl = options.fetchImpl ?? fetch;
@@ -206,6 +206,7 @@ export async function runTranscriptLadder(config, record, options = {}) {
                     raw: result.raw,
                     text: result.text,
                     provider: result.provider,
+                    generation: result.generation,
                 },
                 feedItem,
                 rungs,

@@ -118,6 +118,8 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
     // Real subprocess (mirrors the "custom command" tests elsewhere): a stub
     // script that mimics mlx_whisper's --output-dir/--output-format txt
     // contract, so the ladder's real (non-injectable) exec path is exercised.
+    // Writes nothing when --output-dir is absent (e.g. issue #54's
+    // best-effort `--version` probe), the same as a real CLI would.
     await fs.writeFile(
       path.join(binDir, "mlx_whisper"),
       "#!/bin/sh\n" +
@@ -127,9 +129,11 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
         '  if [ "$1" = "--output-dir" ]; then outdir="$2"; shift; fi\n' +
         "  shift\n" +
         "done\n" +
+        'if [ -n "$outdir" ]; then\n' +
         'base=$(basename "$audio")\n' +
         'name="${base%.*}"\n' +
-        'echo "transcribed via mlx preset" > "$outdir/$name.txt"\n',
+        'echo "transcribed via mlx preset" > "$outdir/$name.txt"\n' +
+        "fi\n",
       { mode: 0o755 },
     );
 
@@ -155,6 +159,15 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
     expect(whisperRung.outcome).toBe("hit");
     expect(whisperRung.detail).toContain("whisper-large-v3-turbo");
     expect(result.transcript?.provider).toBe("local-whisper:mlx-whisper:whisper-large-v3-turbo");
+    // Issue #54: the exact generation provenance rides along on the ladder hit,
+    // not just the "local-whisper:<model>" provider label.
+    expect(result.transcript?.generation).toMatchObject({
+      kind: "local-whisper",
+      backend: "mlx-whisper",
+      model: "mlx-community/whisper-large-v3-turbo",
+      modelSource: "preset",
+      preset: "best",
+    });
   });
 });
 
@@ -172,7 +185,9 @@ describe("runTranscriptLadder local-whisper rung with structured output (issue #
   it("returns a json transcript.format/raw/text trio and surfaces an ignored decode option in the hit detail", async () => {
     // Real subprocess mimicking whisper.cpp's -oj/-of contract: parses argv
     // for -of's value and writes whisper.cpp-shaped JSON (a "transcription"
-    // array with nested "offsets") to <that base>.json.
+    // array with nested "offsets") to <that base>.json. Writes nothing when
+    // -of is absent (e.g. issue #54's best-effort `--version` probe), the
+    // same as a real CLI would for a version check.
     await fs.writeFile(
       path.join(binDir, "whisper-cli"),
       "#!/bin/sh\n" +
@@ -181,9 +196,11 @@ describe("runTranscriptLadder local-whisper rung with structured output (issue #
         '  if [ "$1" = "-of" ]; then outbase="$2"; fi\n' +
         "  shift\n" +
         "done\n" +
+        'if [ -n "$outbase" ]; then\n' +
         "cat > \"$outbase.json\" <<'JSON'\n" +
         '{"transcription":[{"text":"Hello from whisper.cpp.","offsets":{"from":0,"to":1200}}]}\n' +
-        "JSON\n",
+        "JSON\n" +
+        "fi\n",
       { mode: 0o755 },
     );
 
