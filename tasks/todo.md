@@ -38,6 +38,26 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] release v0.4.0 — PR #32 merged, version 0.3.0→0.4.0, tag pushed, GitHub release published, milestone closed.
 - [ ] #10 → v0.5.0 · [ ] #9 → v0.6.0 · [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
 
+#### #10 Podchaser transcript rung — implementation checklist
+- [x] `resolveConfig` resolves `PODCHASER_API_KEY` into `config.podchaser.apiKey` (empty string → undefined)
+- [x] `podchaserConfigured(config)` true iff apiKey set
+- [x] `src/transcripts/podchaser.ts`: two-hop GraphQL lookup (GUID → title exact-match) + transcript-URL fetch + normalize (beautified_JSON object / raw_JSON array)
+- [x] `CastrecallSetupError` on 401/403 GraphQL; plain `Error` on other non-ok GraphQL and non-ok transcript-URL fetch; no token in any thrown message
+- [x] Unrecognized/whitespace transcript shape → miss (undefined), not a throw
+- [x] `ladder.ts`: new Rung 3 "podchaser" between taddy and local-whisper; skip/hit/miss/failed outcomes; header doc + rung renumbering
+- [x] `storage.ts`: add `"podchaser"` to `transcriptSource` union
+- [x] `setup.ts`: `providers.podchaser` step between taddy and localWhisper
+- [x] `tools.ts`: `transcriptLadder.podchaser` status string
+- [x] Tests: `podchaser.test.ts` (new, 13 tests), extend `config.test.ts`, `setup.test.ts`, `tools.test.ts`
+- [x] Docs: `.env.example`, `README.md` (list/table/ladder line/troubleshooting), `docs/ARCHITECTURE.md` (file tree, data flow, transcriptSource union) — note bearer-token semantics
+- [x] `npm run typecheck && npm run build && npm test` green; `dist/transcripts/podchaser.js` emitted
+- [x] Verification/review section appended below
+
+##### Review
+- `npm run typecheck`: pass. `npm run build`: pass, `dist/transcripts/podchaser.js` + `.d.ts` emitted. `npm test`: **274/274 passed** (was 257 before this change; +17: 13 in `podchaser.test.ts`, 2 in `config.test.ts`, 1 in `setup.test.ts` flip test, 1 new `tools.test.ts` podchaser-hit case; existing ladder-skip/setup-order/status tests extended in place).
+- Design decisions: `PODCHASER_API_KEY` is documented (not silently assumed) as a pre-minted bearer access token, matching the issue's single-secret contract without adding undisclosed config. The rung mirrors Taddy's GUID→title fall-through loop but adds a second hop (fetch the ~10-min transcript URL, normalize `beautified_JSON`/`raw_JSON` shapes) per `rss.ts`'s fetch-and-normalize precedent. Placed above local Whisper per the issue (cheap transcript-lookup tier, same reasoning as Taddy — not the "local before paid cloud STT" rule, which governs the transcription tier below).
+- No dist regressions: only additive rung insertion; `ladder.ts`/`config.js`/`setup.js`/`tools.js`/`storage.d.ts` diffs are the renumbering + new field/step, no unrelated changes.
+
 ### v0.10.0 — memory-curation lane
 - [ ] #1 review disposition tool · [ ] release v0.10.0
 

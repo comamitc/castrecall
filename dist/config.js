@@ -50,6 +50,9 @@ export function resolveConfig(settings = {}, env = process.env) {
             apiKey: nonEmpty(env.TADDY_API_KEY),
             userId: nonEmpty(env.TADDY_USER_ID),
         },
+        podchaser: {
+            apiKey: nonEmpty(env.PODCHASER_API_KEY),
+        },
         localWhisper: {
             disabled: envFlag(env.CASTRECALL_DISABLE_LOCAL_WHISPER) ?? false,
             command: nonEmpty(env.CASTRECALL_WHISPER_COMMAND),

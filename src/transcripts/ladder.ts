@@ -2,8 +2,9 @@
  * The transcript ladder, cheapest and most-open first:
  *   1. RSS `<podcast:transcript>` links (open standard, free)
  *   2. Taddy API (optional, needs TADDY_API_KEY + TADDY_USER_ID)
- *   3. Local Whisper (free and private; auto-detected CLI, skipped when absent)
- *   4. Cloud speech-to-text (optional, costs money, must be explicitly enabled)
+ *   3. Podchaser API (optional, needs PODCHASER_API_KEY)
+ *   4. Local Whisper (free and private; auto-detected CLI, skipped when absent)
+ *   5. Cloud speech-to-text (optional, costs money, must be explicitly enabled)
  *
  * Each rung reports why it was skipped or failed so the outcome is explainable.
  */
@@ -14,10 +15,11 @@ import { resolveFeedItem, resolveFeedUrl, type ResolvedFeedItem } from "../resol
 import type { ListenRecord } from "../storage.js";
 import { fetchRssTranscript } from "./rss.js";
 import { fetchTaddyTranscript, taddyConfigured } from "./taddy.js";
+import { fetchPodchaserTranscript, podchaserConfigured } from "./podchaser.js";
 import { detectLocalWhisper, transcribeWithLocalWhisper } from "./local-whisper.js";
 import { RetryableSttError, sttAvailability, transcribeAudio } from "./stt.js";
 
-export type LadderRung = "rss" | "taddy" | "local-whisper" | "stt";
+export type LadderRung = "rss" | "taddy" | "podchaser" | "local-whisper" | "stt";
 
 export type RungOutcome = {
   rung: LadderRung;
@@ -49,10 +51,11 @@ export async function runTranscriptLadder(
   const env = options.env ?? process.env;
   const rungs: RungOutcome[] = [];
   let feedItem: ResolvedFeedItem | undefined;
+  let feedUrl: string | undefined;
 
   // Rung 1: RSS <podcast:transcript>
   try {
-    const feedUrl = await resolveFeedUrl(record.podcastUuid, record.podcastTitle, fetchImpl);
+    feedUrl = await resolveFeedUrl(record.podcastUuid, record.podcastTitle, fetchImpl);
     if (!feedUrl) {
       rungs.push({
         rung: "rss",
@@ -154,7 +157,54 @@ export async function runTranscriptLadder(
     }
   }
 
-  // Rung 3: local Whisper (free, private; used whenever a CLI is detected)
+  // Rung 3: Podchaser
+  if (!podchaserConfigured(config)) {
+    rungs.push({
+      rung: "podchaser",
+      outcome: "skipped",
+      detail:
+        "Podchaser not configured (set PODCHASER_API_KEY to enable this rung; a bearer access " +
+        "token minted via Podchaser's requestAccessToken mutation — " +
+        "see https://api-docs.podchaser.com/docs/authorization/).",
+    });
+  } else {
+    try {
+      const podchaser = await fetchPodchaserTranscript(
+        config,
+        {
+          guid: feedItem?.itemGuid,
+          title: record.title,
+          feedUrl,
+          podcastTitle: record.podcastTitle,
+        },
+        fetchImpl,
+      );
+      if (podchaser) {
+        rungs.push({ rung: "podchaser", outcome: "hit", detail: "Transcript returned by Podchaser." });
+        return {
+          transcript: {
+            source: "podchaser",
+            format: "txt",
+            raw: podchaser.text,
+            text: podchaser.text,
+            sourceUrl: podchaser.sourceUrl,
+            provider: "podchaser",
+          },
+          feedItem,
+          rungs,
+        };
+      }
+      rungs.push({
+        rung: "podchaser",
+        outcome: "miss",
+        detail: "Podchaser has no usable transcript for this episode.",
+      });
+    } catch (error) {
+      rungs.push({ rung: "podchaser", outcome: "failed", detail: describeError(error) });
+    }
+  }
+
+  // Rung 4: local Whisper (free, private; used whenever a CLI is detected)
   const whisper = await detectLocalWhisper(config, env);
   if (!whisper.detected) {
     rungs.push({ rung: "local-whisper", outcome: "skipped", detail: whisper.reason });
@@ -182,7 +232,7 @@ export async function runTranscriptLadder(
     }
   }
 
-  // Rung 4: cloud speech-to-text (explicitly enabled only — costs money)
+  // Rung 5: cloud speech-to-text (explicitly enabled only — costs money)
   const stt = sttAvailability(config);
   if (!stt.ok) {
     rungs.push({ rung: "stt", outcome: "skipped", detail: stt.reason ?? "STT unavailable." });

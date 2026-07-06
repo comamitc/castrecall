@@ -29,6 +29,7 @@ import {
 } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
+import { podchaserConfigured } from "./transcripts/podchaser.js";
 import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
@@ -224,6 +225,7 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
     transcriptLadder: {
       rss: "always on (open <podcast:transcript> standard)",
       taddy: taddyConfigured(config) ? "configured" : "not configured (TADDY_API_KEY, TADDY_USER_ID)",
+      podchaser: podchaserConfigured(config) ? "configured" : "not configured (PODCHASER_API_KEY)",
       localWhisper: whisper.detected
         ? localWhisperReadiness(whisper, config.localWhisper).ready
           ? `detected (${whisper.detected.flavor}) — free, private transcription`
