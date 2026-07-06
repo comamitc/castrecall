@@ -4,6 +4,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { CastrecallSetupError, requireNotesDir, type ResolvedConfig } from "./config.js";
 import { CorpusExporter, slugify, type ExportResult } from "./corpus-export.js";
 import type { FetchLike } from "./pocketcasts/client.js";
@@ -25,6 +26,13 @@ import {
   PRIVACY_DEFAULTS,
 } from "./setup.js";
 import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
+import {
+  applyGlossary,
+  compileGlossary,
+  GLOSSARY_VERSION,
+  parseGlossary,
+  type CompiledGlossary,
+} from "./transcripts/glossary.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { detectRepetitionLoop } from "./transcripts/loop-detection.js";
 import { hashNormalizedTranscript } from "./transcripts/normalize.js";
@@ -135,6 +143,28 @@ async function exportIfEnabled(
     (await storage.deriveSegmentsFromRaw(record.uuid, text));
   const exporter = new CorpusExporter(config.exportDir);
   return exporter.exportEpisode({ record, provenance, text, contentHash, segments });
+}
+
+/**
+ * Loads and compiles the optional proper-noun glossary (issue #46). Returns
+ * `undefined` when no glossary file is configured — the off-by-default case.
+ * Any read/parse/shape/ambiguity failure is rethrown as a `CastrecallSetupError`
+ * naming the configured file path, since `parseGlossary`/`compileGlossary`
+ * themselves have no knowledge of where the JSON came from.
+ */
+async function loadGlossary(config: ResolvedConfig): Promise<CompiledGlossary | undefined> {
+  const file = config.glossary.file;
+  if (!file) return undefined;
+  try {
+    const raw = await readFile(file, "utf8");
+    return compileGlossary(parseGlossary(JSON.parse(raw)).terms);
+  } catch (error) {
+    if (error instanceof CastrecallSetupError) {
+      throw new CastrecallSetupError(`Glossary file ${file} is invalid: ${error.message}`);
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CastrecallSetupError(`Failed to load glossary file ${file}: ${message}`);
+  }
 }
 
 /**
@@ -498,6 +528,10 @@ export async function fetchTranscript(
   const sttRetryBudgetSpent =
     params.scheduled === true &&
     (record.transcriptRetry?.consecutiveFailures ?? 0) >= TRANSCRIPT_RETRY_MAX_ATTEMPTS;
+  // Glossary validation (issue #46) is independent of transcript content, so
+  // it runs before the ladder rather than after: a bad config fails fast
+  // instead of discarding a just-fetched/paid transcript on every retry.
+  const compiledGlossary = await loadGlossary(config);
   const result = await runTranscriptLadder(config, record, {
     fetchImpl: deps.fetchImpl,
     env: deps.env,
@@ -672,6 +706,31 @@ export async function fetchTranscript(
   // which stay on the raw-normalized text so their coverage/quality math is
   // unchanged either way. Only the stored transcript.txt is affected.
   const cleaned = config.transcriptCleanup.enabled ? cleanTranscript(result.transcript.text) : undefined;
+  // Glossary correction (issue #46) runs after cleanup, on the cleaned text —
+  // cleanup normalizes token boundaries first, which the glossary's
+  // whole-token matching depends on. A separate pass from cleanup itself:
+  // see transcripts/glossary.ts for why it can't be folded into cleanTranscript.
+  // (compiledGlossary itself was already loaded/validated above, before the ladder ran.)
+  const corrected = compiledGlossary
+    ? applyGlossary(cleaned?.text ?? result.transcript.text, compiledGlossary)
+    : undefined;
+  // Segments are corrected the same way so stored/exported timed text never
+  // shows a mangled variant the top-level transcript.txt has already fixed.
+  // Each segment is cleaned first (mirroring the top-level cleaned/corrected
+  // pass above) since the glossary's whole-token matching depends on the same
+  // token-boundary normalization cleanup provides.
+  const correctedSegments =
+    compiledGlossary && result.transcript.segments
+      ? result.transcript.segments.map((segment) => {
+          const segmentText = config.transcriptCleanup.enabled
+            ? cleanTranscript(segment.text).text
+            : segment.text;
+          return {
+            ...segment,
+            text: applyGlossary(segmentText, compiledGlossary).text,
+          };
+        })
+      : result.transcript.segments;
   const provenance: Provenance = {
     platform: "pocketcasts",
     podcastTitle: record.podcastTitle,
@@ -697,15 +756,23 @@ export async function fetchTranscript(
           },
         }
       : {}),
+    ...(corrected
+      ? {
+          glossary: {
+            version: GLOSSARY_VERSION,
+            corrections: corrected.corrections,
+          },
+        }
+      : {}),
     fetchedAt: now().toISOString(),
     privacyClass: "private-source",
   };
   const stored = await storage.storeTranscript(record.uuid, {
     raw: result.transcript.raw,
     ext: result.transcript.format,
-    text: cleaned?.text ?? result.transcript.text,
+    text: corrected?.text ?? cleaned?.text ?? result.transcript.text,
     provenance,
-    segments: result.transcript.segments,
+    segments: correctedSegments,
   });
   await storage.updateEpisode(
     record.uuid,

@@ -213,6 +213,23 @@ Before a transcript is stored, `transcript.txt` gets a conservative, determinist
 
 `raw.<ext>` is always the verbatim source, untouched by cleanup, so the pre-cleanup text is always recoverable by re-normalizing it. Every stored transcript's `provenance.json` carries a `cleanup: { version, applied }` field naming which transform steps actually changed the text (`applied: []` when the input was already clean) — omitted entirely when `CASTRECALL_TRANSCRIPT_CLEANUP=false`, so "ran, no-op" is distinguishable from "never ran."
 
+## Proper-noun correction glossary
+
+Off by default. Set `CASTRECALL_GLOSSARY_FILE` to the path of a JSON file to correct known STT mangling of product names, people, and company names — e.g. "chat gpt" → "ChatGPT" — after the cleanup pass runs. The file shape is:
+
+```json
+{
+  "terms": [
+    { "canonical": "ChatGPT", "variants": ["chat gpt", "chatgpt"] },
+    { "canonical": "NASA", "variants": ["NASA"], "matchCase": true }
+  ]
+}
+```
+
+Each `variants` entry is matched as a whole token (case-insensitive by default; set `matchCase: true` for exact-case matching) — never a fuzzy or partial match, so `cat` never rewrites inside `category` and `Astral` never touches `Astralis`. When variants from different terms overlap (e.g. `"open ai"` and `"open ai labs"`), the longest match always wins, regardless of which term is listed first; the same variant string can never map to two different canonicals — a glossary file that does so fails to load. Corrections are applied once, in a single pass over the original text, so a corrected canonical is never re-scanned by another rule.
+
+Applied corrections are recorded in `provenance.json` as `glossary: { version, corrections: [{ canonical, variant, count }] }` — present (even with `corrections: []`) whenever a glossary file is configured, omitted entirely when `CASTRECALL_GLOSSARY_FILE` is unset, so "ran, no matches" is distinguishable from "never ran." A malformed or unreadable glossary file fails `castrecall_fetch_transcript` outright, naming the file path, rather than silently skipping correction.
+
 ## Corpus-scale transcription preflight
 
 Processing dozens of episodes with local Whisper can take hours, so CastRecall never starts that work silently. Before generating any transcripts, `castrecall_run_pipeline` computes a preflight from the same detection/model-resolution logic the ladder itself uses: how many synced episodes are still missing a transcript and could fall through to local generation, the selected backend and concrete model, whether that model is **quality-approved**, **low-quality**, or **unknown**, a rough runtime class (with an explicit "this is a rough estimate" caveat — no audio durations are known ahead of time), whether timestamps/segments will survive into the stored transcript, and that local audio is always temporary (downloaded to a temp dir, deleted right after transcription, never retained).
@@ -299,6 +316,7 @@ Pocket Casts' `/user/history` endpoint returns everything you've opened, includi
 | `CASTRECALL_DATA_DIR` | no | Data dir (default `~/.openclaw/castrecall`). |
 | `CASTRECALL_HISTORY_LIMIT` | no | Max entries per sync (default 100). |
 | `CASTRECALL_TRANSCRIPT_CLEANUP` | no | `false` to store `transcript.txt` exactly as normalized, with no cleanup pass (default `true`). See "Transcript cleanup pass" above. |
+| `CASTRECALL_GLOSSARY_FILE` | no | Path to a JSON proper-noun correction glossary. Off by default. See "Proper-noun correction glossary" above. |
 | `CASTRECALL_MIN_LISTEN_RATIO` | no | Minimum `playedUpTo`/`duration` ratio to accept a partial listen (default `0.8`). See "Listened-episode filter" above. |
 | `CASTRECALL_MIN_LISTEN_SECONDS` | no | Minimum `playedUpTo` seconds to accept a listen when duration is missing (default `300`). |
 | `CASTRECALL_RECORD_UNKNOWN_LISTENS` | no | `true` to record episodes with no usable duration/playedUpTo/playingStatus (default off — skipped). |

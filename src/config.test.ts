@@ -124,6 +124,24 @@ describe("resolveConfig", () => {
     expect(config.notesDir).toBe("/from/settings");
   });
 
+  it("leaves the glossary file unconfigured (undefined) by default", () => {
+    const config = resolveConfig({}, {});
+    expect(config.glossary.file).toBeUndefined();
+  });
+
+  it("lets CASTRECALL_GLOSSARY_FILE override the glossaryFile plugin setting", () => {
+    const config = resolveConfig(
+      { glossaryFile: "/from/settings" },
+      { CASTRECALL_GLOSSARY_FILE: "/from/env" },
+    );
+    expect(config.glossary.file).toBe("/from/env");
+  });
+
+  it("uses the glossaryFile plugin setting when the env var is unset", () => {
+    const config = resolveConfig({ glossaryFile: "/from/settings" }, {});
+    expect(config.glossary.file).toBe("/from/settings");
+  });
+
   it("defaults listenFilter to a 0.8 ratio, 300s floor, and recordUnknown off", () => {
     const config = resolveConfig({}, {});
     expect(config.listenFilter).toEqual({ minRatio: 0.8, minSeconds: 300, recordUnknown: false });

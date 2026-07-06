@@ -1522,6 +1522,254 @@ describe("tools", () => {
     });
   });
 
+  describe("fetch_transcript proper-noun glossary (issue #46)", () => {
+    function txtFetchImpl(transcriptText: string): typeof fetch {
+      return (async (input: any) => {
+        const url = String(input);
+        if (url.includes("export_feed_urls")) {
+          return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+            status: 200,
+          });
+        }
+        if (url === "https://example.com/feed.xml") {
+          return new Response(
+            `<?xml version="1.0"?>
+            <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>ep-1</guid>
+                  <enclosure url="https://cdn.example.com/ep1.mp3" />
+                  <podcast:transcript url="https://cdn.example.com/ep1.txt" type="text/plain" />
+                </item>
+              </channel>
+            </rss>`,
+            { status: 200 },
+          );
+        }
+        if (url === "https://cdn.example.com/ep1.txt") {
+          return new Response(transcriptText, { status: 200, headers: { "content-type": "text/plain" } });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+    }
+
+    async function seedEpisode() {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+      return storage;
+    }
+
+    async function writeGlossary(terms: unknown): Promise<string> {
+      const file = path.join(dir, "glossary.json");
+      await fs.writeFile(file, JSON.stringify({ terms }), "utf8");
+      return file;
+    }
+
+    it("stores glossary-corrected text, keeps raw verbatim, and records provenance.glossary.corrections", async () => {
+      const storage = await seedEpisode();
+      const glossaryFile = await writeGlossary([{ canonical: "ChatGPT", variants: ["chat gpt"] }]);
+      const result = (await fetchTranscript(
+        config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: txtFetchImpl("I really love chat gpt these days.") },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe("I really love ChatGPT these days.");
+
+      const raw = await fs.readFile(path.join(storage.sourceDir("ep-1"), "raw.txt"), "utf8");
+      expect(raw).toBe("I really love chat gpt these days.");
+
+      const provenance = await storage.readProvenance("ep-1");
+      expect(provenance?.glossary).toEqual({
+        version: expect.any(Number),
+        corrections: [{ canonical: "ChatGPT", variant: "chat gpt", count: 1 }],
+      });
+    });
+
+    it("omits provenance.glossary entirely when no glossary file is configured", async () => {
+      const storage = await seedEpisode();
+      const result = (await fetchTranscript(
+        config(),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: txtFetchImpl("I really love chat gpt these days.") },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe("I really love chat gpt these days.");
+
+      const provenance = await storage.readProvenance("ep-1");
+      expect(provenance?.glossary).toBeUndefined();
+    });
+
+    it("records an empty corrections list when the glossary is configured but matches nothing", async () => {
+      const storage = await seedEpisode();
+      const glossaryFile = await writeGlossary([{ canonical: "ChatGPT", variants: ["chat gpt"] }]);
+      const result = (await fetchTranscript(
+        config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: txtFetchImpl("Nothing to correct in this transcript.") },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe("Nothing to correct in this transcript.");
+
+      const provenance = await storage.readProvenance("ep-1");
+      expect(provenance?.glossary).toEqual({ version: expect.any(Number), corrections: [] });
+    });
+
+    it("surfaces a CastrecallSetupError naming the file path for a malformed glossary file", async () => {
+      await seedEpisode();
+      const glossaryFile = path.join(dir, "bad-glossary.json");
+      await fs.writeFile(glossaryFile, "not json", "utf8");
+      await expect(
+        fetchTranscript(
+          config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+          { episodeUuid: "ep-1" },
+          { fetchImpl: txtFetchImpl("some transcript text") },
+        ),
+      ).rejects.toThrow(glossaryFile);
+    });
+
+    it("rejects a malformed glossary before the transcript ladder makes any network calls", async () => {
+      await seedEpisode();
+      const glossaryFile = path.join(dir, "bad-glossary.json");
+      await fs.writeFile(glossaryFile, "not json", "utf8");
+      let fetchCalled = false;
+      const fetchImpl = (async () => {
+        fetchCalled = true;
+        throw new Error("the transcript ladder should never run for an invalid glossary");
+      }) as typeof fetch;
+      await expect(
+        fetchTranscript(
+          config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+          { episodeUuid: "ep-1" },
+          { fetchImpl },
+        ),
+      ).rejects.toThrow(glossaryFile);
+      expect(fetchCalled).toBe(false);
+    });
+
+    it("applies the same corrections to stored segment text as the stored transcript text", async () => {
+      const storage = await seedEpisode();
+      const glossaryFile = await writeGlossary([{ canonical: "ChatGPT", variants: ["chat gpt"] }]);
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.includes("export_feed_urls")) {
+          return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+            status: 200,
+          });
+        }
+        if (url === "https://example.com/feed.xml") {
+          return new Response(
+            `<?xml version="1.0"?>
+            <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>ep-1</guid>
+                  <enclosure url="https://cdn.example.com/ep1.mp3" />
+                  <podcast:transcript url="https://cdn.example.com/ep1.vtt" type="text/vtt" />
+                </item>
+              </channel>
+            </rss>`,
+            { status: 200 },
+          );
+        }
+        if (url === "https://cdn.example.com/ep1.vtt") {
+          return new Response(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nI really love chat gpt these days.",
+            { status: 200, headers: { "content-type": "text/vtt" } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      const result = (await fetchTranscript(
+        config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+        { episodeUuid: "ep-1" },
+        { fetchImpl },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe("I really love ChatGPT these days.");
+
+      const segments = await storage.readSegments("ep-1");
+      expect(segments).toEqual([
+        expect.objectContaining({ text: "I really love ChatGPT these days." }),
+      ]);
+    });
+
+    it("corrects a segment whose glossary variant only becomes a whole-token match after cleanup normalization", async () => {
+      const storage = await seedEpisode();
+      const glossaryFile = await writeGlossary([{ canonical: "ChatGPT", variants: ["chat gpt"] }]);
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.includes("export_feed_urls")) {
+          return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+            status: 200,
+          });
+        }
+        if (url === "https://example.com/feed.xml") {
+          return new Response(
+            `<?xml version="1.0"?>
+            <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>ep-1</guid>
+                  <enclosure url="https://cdn.example.com/ep1.mp3" />
+                  <podcast:transcript url="https://cdn.example.com/ep1.vtt" type="text/vtt" />
+                </item>
+              </channel>
+            </rss>`,
+            { status: 200 },
+          );
+        }
+        if (url === "https://cdn.example.com/ep1.vtt") {
+          // The double space between "chat" and "gpt" survives into segment.text
+          // (only segmentsToText's join collapses whitespace for the top-level
+          // text), so the "chat gpt" variant's single-space literal match only
+          // succeeds once cleanup's collapse-whitespace step normalizes it.
+          return new Response(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nI really love chat  gpt these days.",
+            { status: 200, headers: { "content-type": "text/vtt" } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      const result = (await fetchTranscript(
+        config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+        { episodeUuid: "ep-1" },
+        { fetchImpl },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe("I really love ChatGPT these days.");
+
+      const segments = await storage.readSegments("ep-1");
+      expect(segments).toEqual([
+        expect.objectContaining({ text: "I really love ChatGPT these days." }),
+      ]);
+    });
+  });
+
   describe("fetch_transcript repetition-loop quarantine (issue #42)", () => {
     function rssFetchImpl(transcriptText: string): typeof fetch {
       return (async (input: any) => {

@@ -230,6 +230,19 @@ export type Provenance = {
    * include it, and recovery falls back to exact-match when it's absent.
    */
   cleanup?: { version: number; applied: string[]; rawTextHash?: string };
+  /**
+   * Optional proper-noun correction glossary provenance (issue #46): version
+   * and the canonical/variant/count triples that actually fired. Present
+   * whenever the glossary ran, even with `corrections: []` (configured, no
+   * match) — omitted entirely when no glossary file was configured,
+   * distinguishing "ran, no matches" from "never ran", mirroring `cleanup?`.
+   * Additive; pre-#46 sidecars simply lack it. Glossary-corrected
+   * `storedText` intentionally diverges from `cleanTranscript(raw).text`, so
+   * `deriveSegmentsFromRaw`'s cleanup-equivalent recovery never matches for
+   * these writes — harmless, since these are new writes that always land a
+   * `segments.json` sidecar; recovery logic itself is unchanged.
+   */
+  glossary?: { version: number; corrections: Array<{ canonical: string; variant: string; count: number }> };
   fetchedAt: string;
   privacyClass: "private-source";
 };

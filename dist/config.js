@@ -40,6 +40,7 @@ export function resolveConfig(settings = {}, env = process.env) {
     const provider = providerRaw === "openai" || providerRaw === "deepgram" ? providerRaw : "assemblyai";
     const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
     const notesDir = nonEmpty(env.CASTRECALL_NOTES_DIR) ?? nonEmpty(settings.notesDir);
+    const glossaryFile = nonEmpty(env.CASTRECALL_GLOSSARY_FILE) ?? nonEmpty(settings.glossaryFile);
     const envMinRatio = Number.parseFloat(env.CASTRECALL_MIN_LISTEN_RATIO ?? "");
     const minRatio = Number.isFinite(envMinRatio) && envMinRatio > 0 && envMinRatio <= 1
         ? envMinRatio
@@ -98,6 +99,9 @@ export function resolveConfig(settings = {}, env = process.env) {
         },
         transcriptCleanup: {
             enabled: envFlag(env.CASTRECALL_TRANSCRIPT_CLEANUP) ?? true,
+        },
+        glossary: {
+            file: glossaryFile,
         },
         listenFilter: {
             minRatio,
