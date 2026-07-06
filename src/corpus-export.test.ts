@@ -372,6 +372,38 @@ describe("CorpusExporter", () => {
     }
   });
 
+  it("re-exports on an unchanged content hash to backfill quality frontmatter missing from a pre-upgrade export (issue #41)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    const beforeIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(beforeIndex).not.toContain("transcript_quality_score:");
+
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 82, tier: "reviewable", reasons: ["no-timestamps"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    expect(second.skipped).toBe(false);
+    expect(second.exported).toBeGreaterThan(0);
+
+    const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(afterIndex).toContain("transcript_quality_score: 82");
+
+    const third = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 82, tier: "reviewable", reasons: ["no-timestamps"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    expect(third.skipped).toBe(true);
+  });
+
   it("replaces the episode dir with no stale files when the content hash changes", async () => {
     const exporter = new CorpusExporter(dir);
     const longText = Array.from({ length: 10 }, (_, i) => paragraph(60, `long${i}-`)).join("\n\n");

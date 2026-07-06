@@ -113,12 +113,27 @@ describe("scoreTranscriptQuality", () => {
     expect(result.reasons).toContain("no-speaker-labels");
   });
 
-  it("does not flag no-timestamps/no-speaker-labels when at least one segment has them", () => {
+  it("flags no-timestamps/no-speaker-labels when only a minority of segments have them", () => {
     const segments = [
       { start: "00:00:00.000", end: "00:00:02.000", speaker: "Host", text: words(30, "a") },
       { text: words(30, "b") },
     ];
     const text = words(60);
+    const result = scoreTranscriptQuality({ text, source: "rss", segments });
+    expect(result.reasons).toContain("no-timestamps");
+    expect(result.reasons).toContain("no-speaker-labels");
+  });
+
+  it("does not flag no-timestamps/no-speaker-labels when nearly all segments have them", () => {
+    const segments = Array.from({ length: 10 }, (_, i) => ({
+      start: `00:00:${String(i * 2).padStart(2, "0")}.000`,
+      end: `00:00:${String(i * 2 + 2).padStart(2, "0")}.000`,
+      speaker: i % 2 === 0 ? "Host" : "Guest",
+      text: `Segment number ${i} covers a distinct topic with plenty of unique words.`,
+    }));
+    // Last segment is missing both timestamp and speaker — 9/10 coverage still clears the 0.9 threshold.
+    segments[segments.length - 1] = { text: segments[segments.length - 1].text };
+    const text = segments.map((s) => s.text).join(" ") + " " + words(60, "extra");
     const result = scoreTranscriptQuality({ text, source: "rss", segments });
     expect(result.reasons).not.toContain("no-timestamps");
     expect(result.reasons).not.toContain("no-speaker-labels");

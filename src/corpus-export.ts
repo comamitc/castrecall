@@ -267,11 +267,17 @@ export function buildCorpusPages(options: {
 }
 
 const CONTENT_HASH_LINE = /^content_hash: "([^"]*)"$/m;
+const QUALITY_SCORE_LINE = /^transcript_quality_score: /m;
 
-async function readExistingContentHash(episodeDir: string): Promise<string | undefined> {
+type ExistingExportMeta = { contentHash?: string; hasQuality: boolean };
+
+async function readExistingExportMeta(episodeDir: string): Promise<ExistingExportMeta | undefined> {
   try {
     const indexContent = await fs.readFile(path.join(episodeDir, "index.md"), "utf8");
-    return indexContent.match(CONTENT_HASH_LINE)?.[1];
+    return {
+      contentHash: indexContent.match(CONTENT_HASH_LINE)?.[1],
+      hasQuality: QUALITY_SCORE_LINE.test(indexContent),
+    };
   } catch {
     return undefined;
   }
@@ -281,7 +287,10 @@ export type ExportResult = { exported: number; skipped: boolean; dir: string };
 
 /**
  * Publishes corpus pages under `<exportDir>/podcasts/<show-slug>/<episode-slug>/`.
- * Idempotent by content hash: an unchanged episode re-exports nothing. A
+ * Idempotent by content hash: an unchanged episode re-exports nothing, unless
+ * provenance now carries quality scoring (issue #41) that the existing export
+ * predates — that forces a re-export so upgraded installs backfill the new
+ * frontmatter instead of staying stale until the transcript text changes. A
  * changed hash replaces the whole episode directory so no stale section
  * files from a previous, longer transcript survive.
  */
@@ -298,8 +307,9 @@ export class CorpusExporter {
     const episodeSlug = episodeDirSlug(options.record);
     const targetDir = path.join(this.exportDir, "podcasts", showSlug, episodeSlug);
 
-    const existingHash = await readExistingContentHash(targetDir);
-    if (existingHash === options.contentHash) {
+    const existing = await readExistingExportMeta(targetDir);
+    const backfillingQuality = Boolean(options.provenance.quality) && existing !== undefined && !existing.hasQuality;
+    if (existing?.contentHash === options.contentHash && !backfillingQuality) {
       return { exported: 0, skipped: true, dir: targetDir };
     }
 

@@ -48,6 +48,9 @@ export const DEFAULT_QUALITY_THRESHOLDS = {
   SUSPICIOUS_SEGMENT_FRACTION: 0.3,
   SUSPICIOUS_SEGMENT_PENALTY: 15,
   LOW_SOURCE_CONFIDENCE_PENALTY: 10,
+  /** Fraction of non-empty segments that must carry a timestamp/speaker label to suppress the corresponding reason — a single labeled segment among many unlabeled ones shouldn't count as covered. */
+  MIN_TIMESTAMP_COVERAGE: 0.9,
+  MIN_SPEAKER_COVERAGE: 0.9,
   NO_TIMESTAMPS_PENALTY: 10,
   NO_SPEAKER_LABELS_PENALTY: 5,
   QUOTE_SAFE_MIN: 90,
@@ -121,12 +124,23 @@ export function scoreTranscriptQuality(
     score -= t.LOW_SOURCE_CONFIDENCE_PENALTY;
   }
 
-  if (!segments.some((segment) => Boolean(segment.start?.trim() || segment.end?.trim()))) {
+  const labelableSegments = segments.filter((segment) => segment.text.trim() !== "");
+
+  const timestampCoverage =
+    labelableSegments.length === 0
+      ? 0
+      : labelableSegments.filter((segment) => Boolean(segment.start?.trim() || segment.end?.trim())).length /
+        labelableSegments.length;
+  if (timestampCoverage < t.MIN_TIMESTAMP_COVERAGE) {
     reasons.push("no-timestamps");
     score -= t.NO_TIMESTAMPS_PENALTY;
   }
 
-  if (!segments.some((segment) => Boolean(segment.speaker?.trim()))) {
+  const speakerCoverage =
+    labelableSegments.length === 0
+      ? 0
+      : labelableSegments.filter((segment) => Boolean(segment.speaker?.trim())).length / labelableSegments.length;
+  if (speakerCoverage < t.MIN_SPEAKER_COVERAGE) {
     reasons.push("no-speaker-labels");
     score -= t.NO_SPEAKER_LABELS_PENALTY;
   }

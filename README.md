@@ -394,8 +394,11 @@ was flagged). See `docs/ARCHITECTURE.md`'s `provenance.quality` fields for
 the full scoring rules.
 
 Export is idempotent: an episode whose transcript content hash hasn't changed
-re-exports nothing. It only ever reads a stored transcript + its provenance
-sidecar — review candidates and `state.json` are never exported.
+re-exports nothing — unless provenance now carries a quality score that the
+existing export predates, in which case it re-exports once to backfill the
+`transcript_quality_*` frontmatter even though the transcript text itself is
+unchanged. It only ever reads a stored transcript + its provenance sidecar —
+review candidates and `state.json` are never exported.
 
 **Two ways to point gbrain at it:**
 
