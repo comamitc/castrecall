@@ -86,6 +86,7 @@ Ask your agent to run `castrecall_setup` — it walks through everything below i
 | `castrecall_recent` | Lists synced listens with transcript status and episode UUIDs. |
 | `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |
 | `castrecall_generate_review` | Writes approval-gated review candidates for stored transcripts. |
+| `castrecall_search` | Keyword/phrase search over stored transcripts. Every result carries provenance and an attributable snippet — see "Search" below. |
 | `castrecall_run_pipeline` | Chains sync → fetch transcripts (new listens only) → generate reviews (episodes newly stored this run) → corpus export. The tool a scheduler recipe should call — see "Scheduled / periodic sync" below. |
 
 ## Screenshots
@@ -154,6 +155,39 @@ Cheapest and most open first; every rung reports why it hit, missed, or was skip
 5. **Cloud speech-to-text** (optional, **costs money**, disabled by default) — enable explicitly with `CASTRECALL_ENABLE_STT=true`. Providers: **AssemblyAI** (default; transcribes straight from the audio URL), **OpenAI** (`gpt-4o-transcribe`; requires downloading and uploading the audio, 25 MB API limit), or **Deepgram** (`nova-3`; also transcribes straight from the audio URL, with diarized speaker labels).
 
 If no rung produces a transcript, the episode is marked `failed` with the per-rung reasons — no fake output, ever. Two exceptions stay `none` instead of failing outright, because the transcript may simply not exist *yet*: Taddy reporting the episode is actively transcribing, and an RSS feed item that currently declares no `<podcast:transcript>` links. Those episodes are automatically re-checked on later scheduled runs — see "Scheduled / periodic sync" below.
+
+## Search
+
+`castrecall_search { query, limit? }` runs keyword/phrase search over every
+stored transcript — the private corpus, never durable memory. `query`
+accepts bare keywords and `"quoted phrases"`; a quoted phrase ranks a
+transcript where the words appear in that exact order above one where the
+same words are merely scattered across the episode. `limit` caps how many
+results come back (default `10`, hard max `25`; `0`, a negative number, or
+omitting it falls back to the default).
+
+Every result carries full provenance so anything quoted stays attributable:
+
+```json
+{
+  "episodeUuid": "3f9c1e2a-...",
+  "podcast": "Some Great Podcast",
+  "episode": "Episode 42: The One About Memory",
+  "listenDate": "2026-07-04",
+  "transcriptSource": "rss",
+  "transcriptPath": "~/.openclaw/castrecall/sources/3f9c1e2a-.../transcript.txt",
+  "score": 4.12,
+  "snippet": "...the core idea is that **memory** is reconstructive, not a **recording**...",
+  "snippetText": "the core idea is that memory is reconstructive, not a recording"
+}
+```
+
+`snippet` is display-formatted (`**term**`-highlighted, `…`-elided);
+`snippetText` is the exact, verbatim transcript slice it was built from.
+Search is backed by a small on-disk term-frequency index under
+`.index/search-index.json` in the data dir — private, rebuildable, and never
+containing transcript prose. It's reconciled automatically as transcripts are
+added or change; deleting it just costs the next search a rebuild.
 
 ## Listened-episode filter
 
@@ -271,7 +305,8 @@ sidecar — review candidates and `state.json` are never exported.
 │   └── provenance.json           # platform, feed, URLs, timestamps, source, privacy class,
 │                                  # contentHash, schemaVersion
 ├── review/pending/<episodeUuid>.md   # approval-gated review candidates
-└── .staging/                     # reserved scratch for atomic writes — ignore it
+├── .staging/                     # reserved scratch for atomic writes — ignore it
+└── .index/                       # reserved: castrecall_search's rebuildable term-freq cache — ignore it
 ```
 
 `state.json` and `provenance.json` are a versioned, machine-readable

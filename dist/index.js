@@ -11,7 +11,7 @@ import { Type } from "typebox";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { resolveConfig } from "./config.js";
 import { runPipeline } from "./pipeline.js";
-import { fetchTranscript, generateReview, listRecent, setup, setupStatus, syncHistory, } from "./tools.js";
+import { fetchTranscript, generateReview, listRecent, search, setup, setupStatus, syncHistory, } from "./tools.js";
 const configSchema = Type.Object({
     dataDir: Type.Optional(Type.String({
         description: "Where CastRecall stores transcripts and review candidates. Defaults to ~/.openclaw/castrecall. The CASTRECALL_DATA_DIR env var overrides this.",
@@ -107,6 +107,23 @@ export default defineToolPlugin({
                 episodeUuid: Type.Optional(Type.String({ description: "Generate for one specific episode only." })),
             }),
             execute: async (params, settings) => generateReview(resolveConfig(settings), params),
+        }),
+        tool({
+            name: "castrecall_search",
+            description: "Keyword/phrase search over the privately stored transcript corpus (not durable memory — " +
+                "CastRecall never writes there). Supports bare keywords and \"quoted phrases\" (ranked above " +
+                "the same words scattered out of order). Every result carries provenance (episode, podcast, " +
+                "listen date, transcript source, transcript path) plus a highlighted snippet and its raw " +
+                "verbatim source slice, so anything quoted stays attributable.",
+            parameters: Type.Object({
+                query: Type.String({
+                    description: "Keywords and/or \"quoted phrases\" to search for.",
+                }),
+                limit: Type.Optional(Type.Number({
+                    description: "Max results to return (default 10, max 25).",
+                })),
+            }),
+            execute: async (params, settings) => search(resolveConfig(settings), params),
         }),
         tool({
             name: "castrecall_run_pipeline",

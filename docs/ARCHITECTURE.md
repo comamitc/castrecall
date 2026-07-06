@@ -16,13 +16,14 @@ Three invariants shape everything:
 
 ```
 src/
-├── index.ts               # OpenClaw plugin entry: defineToolPlugin + 6 tools
+├── index.ts               # OpenClaw plugin entry: defineToolPlugin + 8 tools
 ├── tools.ts               # Tool implementations, pure over (config, params, deps)
 ├── pipeline.ts            # castrecall_run_pipeline: sync → transcript → review, locked + cooldown-gated
 ├── config.ts              # Env-first config resolution; secrets never in plugin config
 ├── storage.ts             # Data dir layout, state.json, idempotent writes, pipeline lock + sync backoff
 ├── review.ts              # Review-candidate markdown generation (heuristic excerpts)
 ├── corpus-export.ts       # Opt-in export: section-split, frontmattered markdown pages (gbrain, etc.)
+├── search.ts              # castrecall_search: on-disk term-freq index + keyword/phrase ranking
 ├── resolver.ts            # Pocket Casts listen → RSS feed URL → feed item + transcript links
 ├── retry.ts               # Per-request retry: capped exponential backoff for transient fetch failures
 ├── pocketcasts/
@@ -226,6 +227,33 @@ artifacts a transcript store already produces. Idempotency is keyed off
 `contentHash` (see below); a changed hash replaces the whole episode's page
 set atomically so no stale section files survive a shorter re-transcription.
 
+### Search over the corpus
+
+`castrecall_search` (`search.ts`) is a read-only keyword/phrase search over
+stored transcripts, backed by a private, rebuildable term-frequency index
+under `.index/search-index.json`. Scoring is two-phase: Phase 1 scores every
+document from the persisted index (tf-length-normalized + idf-lite) and
+selects a bounded candidate set — docs matching any bare keyword term, plus
+docs containing every token of a quoted phrase (always retained, since a doc
+with the exact phrase necessarily contains every phrase token, so it can
+never be missed by the index alone). Phase 2 re-reads only that capped
+candidate set's live `transcript.txt`, applies an exact contiguous-phrase
+bonus, and builds snippets. The index therefore stores **term frequencies
+only** — never prose, never positional data — and is reconciled by
+`contentHash` on every search: an unchanged corpus re-tokenizes nothing, a
+changed transcript re-tokenizes just that document, and a corrupt or missing
+index self-heals via full rescan (same tolerant idiom as `Storage.loadState`,
+same tmp+rename write idiom as `Storage.saveState`).
+
+Every hit carries both a `snippet` (display-formatted, `**term**`-highlighted,
+`…`-elided) and a `snippetText` (the raw, verbatim transcript slice it was
+built from), so quoted material always stays attributable to the transcript
+and its provenance — never to a mutated string. A document with a final score
+of zero (no keyword term present and no phrase match) is excluded from
+results, not merely ranked low. Like corpus export, the tool assembles an
+explicit `CorpusEntry[]` from `state.json` + `sources/<uuid>/` and passes it
+in; `SearchIndex` never performs its own storage or provenance lookups.
+
 ## Data dir: versioned machine-readable interface
 
 The data dir (`~/.openclaw/castrecall` by default) is the integration surface
@@ -240,14 +268,17 @@ sources/<episodeUuid>/
   provenance.json
 review/pending/<episodeUuid>.md
 .staging/          # reserved: in-flight atomic writes + pipeline.lock — consumers must ignore it
+.index/            # reserved: rebuildable castrecall_search term-freq cache — consumers must ignore it
 ```
 
 `.staging/` is CastRecall's private scratch namespace: transcript artifacts are
 assembled there and published into `sources/` with a single atomic rename, so
 directories CastRecall publishes appear all-at-once, never half-written. The
 periodic-sync run lock (`pipeline.lock`) also lives here, exclusive-created
-for the same reason. Downstream scans must skip `.staging/` (and any future
-dot-prefixed top-level entry).
+for the same reason. `.index/search-index.json` is `castrecall_search`'s
+private, derived cache (term frequencies only, never prose) — safe to delete
+at any time; the next search rebuilds it from `sources/`. Downstream scans
+must skip both dot-prefixed namespaces (and any future one).
 
 **Completeness marker:** consumers must treat `transcript.txt` as the marker
 that a `sources/<episodeUuid>/` entry is complete. An entry lacking it (for

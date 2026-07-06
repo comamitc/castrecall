@@ -55,3 +55,13 @@ export declare function fetchTranscript(config: ResolvedConfig, params: {
 export declare function generateReview(config: ResolvedConfig, params: {
     episodeUuid?: string;
 }, deps?: ToolDeps): Promise<unknown>;
+/**
+ * Keyword/phrase search over stored transcripts. Read-only: assembles the
+ * corpus from state.json + sources/<uuid>/ (mirroring exportIfEnabled's
+ * contentHash ?? sha256(text) legacy fallback) and delegates reconciliation,
+ * scoring, and snippet-building to SearchIndex — see search.ts.
+ */
+export declare function search(config: ResolvedConfig, params: {
+    query: string;
+    limit?: number;
+}): Promise<unknown>;

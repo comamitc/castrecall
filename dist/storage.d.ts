@@ -145,6 +145,8 @@ export declare class Storage {
     private get statePath();
     sourceDir(episodeUuid: string): string;
     reviewPendingDir(): string;
+    /** Private, rebuildable search-index cache — see search.ts. */
+    indexDir(): string;
     init(): Promise<void>;
     loadState(): Promise<CastrecallState>;
     saveState(state: CastrecallState): Promise<void>;
