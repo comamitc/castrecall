@@ -41,11 +41,18 @@ type CompiledScanner = {
      */
     pattern: RegExp;
     caseSensitive: boolean;
-    /** Matched text (lowercased for the insensitive class) → its variant/canonical. */
-    byMatch: Map<string, {
+    /**
+     * Group i (1-indexed) of `pattern` corresponds to `entries[i - 1]`, so the
+     * matched alternative is identified positionally rather than by
+     * `matched.toLowerCase()`. Regex /iu Unicode case folding isn't equivalent
+     * to `String.prototype.toLowerCase()` for every character (e.g. Kelvin
+     * sign vs "k", Greek final sigma vs sigma), so a string-keyed lookup can
+     * silently miss a variant the regex legitimately matched.
+     */
+    entries: {
         variant: string;
         canonical: string;
-    }>;
+    }[];
 };
 export type CompiledGlossary = {
     /** At most two scanners: case-sensitive and case-insensitive classes. */

@@ -94,18 +94,14 @@ export function compileGlossary(entries) {
         // engine takes the first alternative that fits, so the longest variant
         // at that position wins within the class — the same rank rule the
         // per-variant sort encodes.
-        const alternation = classVariants.map((v) => escapeRegExp(v.variant)).join("|");
-        const byMatch = new Map();
-        for (const v of classVariants) {
-            byMatch.set(caseSensitive ? v.variant : v.variant.toLowerCase(), {
-                variant: v.variant,
-                canonical: v.canonical,
-            });
-        }
+        // Each alternative gets its own capture group (rather than one group
+        // around the whole alternation) so the matched alternative can be
+        // identified by group index — see the CompiledScanner.entries doc.
+        const alternation = classVariants.map((v) => `(${escapeRegExp(v.variant)})`).join("|");
         scanners.push({
-            pattern: new RegExp(`(?<![\\p{L}\\p{N}])(?=(${alternation})(?![\\p{L}\\p{N}]))`, caseSensitive ? "gu" : "giu"),
+            pattern: new RegExp(`(?<![\\p{L}\\p{N}])(?=(?:${alternation})(?![\\p{L}\\p{N}]))`, caseSensitive ? "gu" : "giu"),
             caseSensitive,
-            byMatch,
+            entries: classVariants.map((v) => ({ variant: v.variant, canonical: v.canonical })),
         });
     }
     return { scanners };
@@ -125,16 +121,19 @@ function collectSpans(text, compiled) {
     const spans = [];
     for (const scanner of compiled.scanners) {
         for (const match of text.matchAll(scanner.pattern)) {
-            const matched = match[1];
-            const hit = scanner.byMatch.get(scanner.caseSensitive ? matched : matched.toLowerCase());
-            if (!hit)
-                continue;
-            spans.push({
-                start: match.index,
-                end: match.index + matched.length,
-                canonical: hit.canonical,
-                variant: hit.variant,
-            });
+            for (let i = 0; i < scanner.entries.length; i++) {
+                const matched = match[i + 1];
+                if (matched === undefined)
+                    continue;
+                const hit = scanner.entries[i];
+                spans.push({
+                    start: match.index,
+                    end: match.index + matched.length,
+                    canonical: hit.canonical,
+                    variant: hit.variant,
+                });
+                break;
+            }
         }
     }
     return spans;
