@@ -118,6 +118,19 @@ export type CastrecallState = {
     episodes: Record<string, ListenRecord>;
     sync?: SyncHealth;
 };
+/**
+ * Episodes still missing a stored transcript (transcriptStatus "none"),
+ * honoring per-episode retry/recheck backoff: an episode whose last attempt
+ * carries a future nextEligibleAt is reported as deferred, not pending, so
+ * scheduled runs and the transcription preflight (issue #55) agree on the
+ * same worklist a real run would use. Shared by runPipeline and
+ * transcriptionPreflight so the preflight's episode count can never drift
+ * from what a run would actually attempt.
+ */
+export declare function selectPendingTranscripts(episodes: ListenRecord[], nowMs: number): {
+    pending: ListenRecord[];
+    deferred: number;
+};
 export type Provenance = {
     platform: "pocketcasts";
     podcastTitle: string;

@@ -143,6 +143,12 @@ export type LocalWhisperGeneration = {
     toolVersion?: string;
 };
 /**
+ * Which of explicit/preset/backend-default/none produced a resolved model —
+ * shared with the transcription preflight (issue #55) so its `modelSource`
+ * can never disagree with the provenance a real run would record.
+ */
+export declare function deriveModelSource(flavor: WhisperFlavor, resolved: WhisperModelResolution): LocalWhisperModelSource;
+/**
  * Single source of truth for whether the local Whisper rung can actually RUN
  * at usable quality (not merely whether a binary was detected): whisper.cpp
  * needs a ggml model via CASTRECALL_WHISPER_MODEL or it can't run at all;

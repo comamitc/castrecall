@@ -226,7 +226,12 @@ export function resolveWhisperDecodeArgs(flavor, decode) {
     });
     return { args, applied, ignored, outputFormat };
 }
-function deriveModelSource(flavor, resolved) {
+/**
+ * Which of explicit/preset/backend-default/none produced a resolved model —
+ * shared with the transcription preflight (issue #55) so its `modelSource`
+ * can never disagree with the provenance a real run would record.
+ */
+export function deriveModelSource(flavor, resolved) {
     if (resolved.source !== "none")
         return resolved.source;
     return flavor === "custom" ? "none" : "backend-default";

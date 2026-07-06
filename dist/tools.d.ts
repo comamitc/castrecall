@@ -6,6 +6,7 @@ import { type ResolvedConfig } from "./config.js";
 import { type ExportResult } from "./corpus-export.js";
 import type { FetchLike } from "./pocketcasts/client.js";
 import { type ExecImpl } from "./pocketcasts/secret-store.js";
+import { type TranscriptionPreflight } from "./transcripts/preflight.js";
 import { Storage, type ListenRecord } from "./storage.js";
 export type ToolDeps = {
     fetchImpl?: FetchLike;
@@ -42,6 +43,15 @@ export declare function setupStatus(config: ResolvedConfig, deps?: ToolDeps): Pr
 export declare function setup(config: ResolvedConfig, params?: {
     verify?: boolean;
 }, deps?: ToolDeps): Promise<unknown>;
+/**
+ * Read-only corpus-scale transcription preflight (issue #55): the "look
+ * before you leap" surface for a large batch — run this before
+ * castrecall_run_pipeline. Reads synced state and detects the local Whisper
+ * CLI, but never writes to storage; the pipeline itself computes the same
+ * report and enforces the block (see runPipeline), so a corpus run can never
+ * silently generate transcripts with a low-quality model.
+ */
+export declare function transcriptionPreflight(config: ResolvedConfig, deps?: ToolDeps): Promise<TranscriptionPreflight>;
 export declare function syncHistory(config: ResolvedConfig, params: {
     limit?: number;
 }, deps?: ToolDeps): Promise<unknown>;
@@ -51,6 +61,8 @@ export declare function listRecent(config: ResolvedConfig, params: {
 export declare function fetchTranscript(config: ResolvedConfig, params: {
     episodeUuid: string;
     scheduled?: boolean;
+    /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run; never set by the castrecall_fetch_transcript tool itself, so a direct single-episode call is never gated. */
+    skipLocalWhisper?: boolean;
 }, deps?: ToolDeps): Promise<unknown>;
 export declare function generateReview(config: ResolvedConfig, params: {
     episodeUuid?: string;

@@ -13,6 +13,7 @@ import {
   TRANSCRIPT_RETRY_MAX_ATTEMPTS,
   type Provenance,
 } from "./storage.js";
+import { CORPUS_SCALE_MIN_EPISODES } from "./transcripts/preflight.js";
 import {
   digest,
   fetchTranscript,
@@ -22,6 +23,7 @@ import {
   setup,
   setupStatus,
   syncHistory,
+  transcriptionPreflight,
 } from "./tools.js";
 
 const PROVENANCE: Provenance = {
@@ -655,6 +657,128 @@ describe("tools", () => {
     expect(rungs.podchaser.outcome).toBe("hit");
     expect(rungs["local-whisper"]).toBeUndefined();
     expect(rungs.stt).toBeUndefined();
+  });
+
+  describe("fetch_transcript skipLocalWhisper (issue #55 corpus-scale preflight gating)", () => {
+    let binDir: string;
+    let markerPath: string;
+
+    beforeEach(async () => {
+      binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+      markerPath = path.join(binDir, "invoked.marker");
+      // Touches a marker only if actually invoked, so "never/does invoke the
+      // executable" is proven via the real (non-injectable) exec path.
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), `#!/bin/sh\ntouch '${markerPath}'\n`, {
+        mode: 0o755,
+      });
+    });
+
+    afterEach(async () => {
+      await fs.rm(binDir, { recursive: true, force: true });
+    });
+
+    async function seedReadyLowQualityEpisode() {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+    }
+
+    const missAll = (async () => new Response("nope", { status: 404 })) as typeof fetch;
+    // RSS/Taddy/Podchaser all miss (404), but the audio download itself must
+    // succeed, or transcribeWithLocalWhisper throws before ever invoking the
+    // executable — that would prove nothing about the gate.
+    const missAllButAudio = (async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("ep1.mp3")) return new Response("fake audio bytes", { status: 200 });
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const lowQualityConfig = () => config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" });
+
+    it("skips the local-whisper rung and never invokes the executable when skipLocalWhisper is set", async () => {
+      await seedReadyLowQualityEpisode();
+      const result = (await fetchTranscript(
+        lowQualityConfig(),
+        { episodeUuid: "ep-1", skipLocalWhisper: true },
+        { fetchImpl: missAll, env: { PATH: binDir } },
+      )) as any;
+      const rungs = Object.fromEntries(result.ladder.map((r: any) => [r.rung, r]));
+      expect(rungs["local-whisper"].outcome).toBe("skipped");
+      expect(rungs["local-whisper"].detail).toContain("Corpus-scale preflight blocked");
+      await expect(fs.access(markerPath)).rejects.toThrow();
+    });
+
+    it("a direct single-episode call (skipLocalWhisper unset, as castrecall_fetch_transcript always calls it) still attempts local generation under the same low-quality config", async () => {
+      await seedReadyLowQualityEpisode();
+      await fetchTranscript(
+        lowQualityConfig(),
+        { episodeUuid: "ep-1" },
+        { fetchImpl: missAllButAudio, env: { PATH: binDir } },
+      );
+      await expect(fs.access(markerPath)).resolves.toBeUndefined();
+    });
+  });
+
+  describe("transcriptionPreflight (issue #55)", () => {
+    it("counts only episodes with transcriptStatus none, excluding already-stored ones", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        { uuid: "ep-1", title: "One", url: "https://cdn.example.com/ep1.mp3", podcastUuid: "pod-1", podcastTitle: "Show" },
+        { uuid: "ep-2", title: "Two", url: "https://cdn.example.com/ep2.mp3", podcastUuid: "pod-1", podcastTitle: "Show" },
+      ]);
+      await storage.updateEpisode("ep-1", { transcriptStatus: "stored" });
+
+      const result = await transcriptionPreflight(config(), { env: { PATH: "" } });
+      expect(result.episodesPendingTranscript).toBe(1);
+      expect(result.corpusScale).toBe(false);
+    });
+
+    it("reports corpusScale true once pending episodes reach CORPUS_SCALE_MIN_EPISODES", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens(
+        Array.from({ length: CORPUS_SCALE_MIN_EPISODES }, (_, i) => ({
+          uuid: `ep-${i}`,
+          title: `Episode ${i}`,
+          url: `https://cdn.example.com/ep${i}.mp3`,
+          podcastUuid: "pod-1",
+          podcastTitle: "Show",
+        })),
+      );
+
+      const result = await transcriptionPreflight(config(), { env: { PATH: "" } });
+      expect(result.episodesPendingTranscript).toBe(CORPUS_SCALE_MIN_EPISODES);
+      expect(result.corpusScale).toBe(true);
+      expect(result.backend).toBeNull();
+    });
+
+    it("never mutates state — storage is byte-for-byte identical before and after", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        { uuid: "ep-1", title: "One", url: "https://cdn.example.com/ep1.mp3", podcastUuid: "pod-1", podcastTitle: "Show" },
+      ]);
+      const statePath = path.join(dir, "state.json");
+      const before = await fs.readFile(statePath, "utf8");
+      const filesBefore = await fs.readdir(dir, { recursive: true } as any);
+
+      await transcriptionPreflight(config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" }), {
+        env: { PATH: "" },
+      });
+
+      const after = await fs.readFile(statePath, "utf8");
+      const filesAfter = await fs.readdir(dir, { recursive: true } as any);
+      expect(after).toBe(before);
+      expect(filesAfter.sort()).toEqual(filesBefore.sort());
+    });
   });
 
   it("fetch_transcript bounds transient STT retries: capped backoff, then a terminal failure after the budget", async () => {

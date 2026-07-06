@@ -16,7 +16,9 @@
 
 import { CastrecallSetupError, type ResolvedConfig } from "./config.js";
 import { PocketCastsApiError } from "./pocketcasts/client.js";
-import { LOCK_TTL_MS, Storage, type ListenRecord } from "./storage.js";
+import { LOCK_TTL_MS, selectPendingTranscripts, Storage } from "./storage.js";
+import { detectLocalWhisper } from "./transcripts/local-whisper.js";
+import { buildTranscriptionPreflight } from "./transcripts/preflight.js";
 import {
   exportAndRecord,
   fetchTranscript,
@@ -151,23 +153,22 @@ export async function runPipeline(
     // Deferred episodes are reported, not silently dropped; fetch_transcript
     // run manually is never gated.
     const nowMs = now().getTime();
-    const pendingTranscripts: ListenRecord[] = [];
-    let deferred = 0;
-    for (const episode of Object.values(stateAfterSync.episodes)) {
-      if (episode.transcriptStatus !== "none") continue;
-      const retryEligibleAt = episode.transcriptRetry
-        ? Date.parse(episode.transcriptRetry.nextEligibleAt)
-        : Number.NEGATIVE_INFINITY;
-      const recheckEligibleAt = episode.transcriptRecheck
-        ? Date.parse(episode.transcriptRecheck.nextEligibleAt)
-        : Number.NEGATIVE_INFINITY;
-      const eligibleAt = Math.max(retryEligibleAt, recheckEligibleAt);
-      if (Number.isFinite(eligibleAt) && eligibleAt > nowMs) {
-        deferred += 1;
-        continue;
-      }
-      pendingTranscripts.push(episode);
-    }
+    const { pending: pendingTranscripts, deferred } = selectPendingTranscripts(
+      Object.values(stateAfterSync.episodes),
+      nowMs,
+    );
+
+    // Corpus-scale transcription preflight (issue #55): computed once per
+    // run from the same detection/resolvers a real ladder run uses, so its
+    // `blocked` decision can never disagree with what fetchTranscript is
+    // about to do. Threading `skipLocalWhisper` only skips the local-Whisper
+    // rung — the free RSS/Taddy/Podchaser rungs still run for every episode.
+    const whisperDetection = await detectLocalWhisper(config, deps.env);
+    const preflight = buildTranscriptionPreflight({
+      config,
+      whisper: whisperDetection,
+      episodesPendingTranscript: pendingTranscripts.length,
+    });
 
     let stored = 0;
     let failed = 0;
@@ -181,7 +182,7 @@ export async function runPipeline(
       try {
         const result = (await fetchTranscript(
           config,
-          { episodeUuid: episode.uuid, scheduled: true },
+          { episodeUuid: episode.uuid, scheduled: true, skipLocalWhisper: preflight.blocked },
           deps,
         )) as {
           status: "stored" | "already-stored" | "no-transcript";
@@ -254,6 +255,7 @@ export async function runPipeline(
     return {
       newListens: syncResult.newListens.length,
       transcripts: { stored, failed, ...(deferred > 0 ? { deferred } : {}) },
+      preflight,
       ...(config.exportDir ? { exports: { exported } } : {}),
       reviews: { generated, skipped },
       ...(errors.length > 0 ? { errors } : {}),

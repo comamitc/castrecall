@@ -169,6 +169,72 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
       preset: "best",
     });
   });
+
+  it("skips the local-whisper rung with skipLocalWhisper on an otherwise-ready config, and never invokes the executable (issue #55)", async () => {
+    // A marker file the stub writes only if it's actually invoked, so
+    // "never invokes the executable" is proven by the real (non-injectable)
+    // exec path, not merely by inspecting the ladder's return value.
+    const markerPath = path.join(binDir, "invoked.marker");
+    await fs.writeFile(
+      path.join(binDir, "mlx_whisper"),
+      `#!/bin/sh\ntouch '${markerPath}'\n`,
+      { mode: 0o755 },
+    );
+
+    const result = await runTranscriptLadder(
+      config({ CASTRECALL_LOCAL_WHISPER_PRESET: "best" }),
+      RECORD,
+      {
+        fetchImpl: missAll,
+        env: { PATH: binDir },
+        skipStt: true,
+        skipLocalWhisper: true,
+      },
+    );
+
+    const whisperRung = result.rungs.find((r) => r.rung === "local-whisper")!;
+    expect(whisperRung.outcome).toBe("skipped");
+    expect(whisperRung.detail).toContain("Corpus-scale preflight blocked");
+    expect(result.transcript).toBeUndefined();
+    await expect(fs.access(markerPath)).rejects.toThrow();
+  });
+
+  it("still returns an RSS hit before reaching the local-whisper rung when skipLocalWhisper is set (free rungs unaffected)", async () => {
+    const feedXml =
+      '<?xml version="1.0"?>' +
+      '<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">' +
+      "<channel><item><title>Episode One</title><guid>ep-1</guid>" +
+      '<enclosure url="https://cdn.example.com/ep1.mp3" />' +
+      '<podcast:transcript url="https://cdn.example.com/ep1.vtt" type="text/vtt" />' +
+      "</item></channel></rss>";
+    const vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nAn RSS-provided transcript body.";
+    const fetchImpl = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("export_feed_urls")) {
+        return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+          status: 200,
+        });
+      }
+      if (url === "https://example.com/feed.xml") {
+        return new Response(feedXml, { status: 200 });
+      }
+      if (url === "https://cdn.example.com/ep1.vtt") {
+        return new Response(vtt, { status: 200, headers: { "content-type": "text/vtt" } });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await runTranscriptLadder(
+      config({ CASTRECALL_LOCAL_WHISPER_PRESET: "best" }),
+      RECORD,
+      { fetchImpl, env: { PATH: binDir }, skipStt: true, skipLocalWhisper: true },
+    );
+
+    expect(result.transcript?.source).toBe("rss");
+    expect(result.transcript?.text).toContain("An RSS-provided transcript body.");
+    // The RSS hit returns before the ladder ever reaches rung 4.
+    expect(result.rungs.find((r) => r.rung === "local-whisper")).toBeUndefined();
+  });
 });
 
 describe("runTranscriptLadder local-whisper rung with structured output (issue #53)", () => {

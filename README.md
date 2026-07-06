@@ -89,7 +89,8 @@ Ask your agent to run `castrecall_setup` — it walks through everything below i
 | `castrecall_resolve_review` | Disposition a pending review candidate (`promote` or `discard`) — call only after explicit human confirmation in conversation. See "Resolving reviews" below. |
 | `castrecall_search` | Keyword/phrase search over stored transcripts. Every result carries provenance and an attributable snippet — see "Search" below. |
 | `castrecall_digest` | Cross-episode digest over a recent time window: listening pattern, recurring topics, and notable excerpts, written as an approval-gated document — see "Cross-episode digest" below. |
-| `castrecall_run_pipeline` | Chains sync → fetch transcripts (new listens only) → generate reviews (episodes newly stored this run) → corpus export. The tool a scheduler recipe should call — see "Scheduled / periodic sync" below. |
+| `castrecall_transcription_preflight` | Read-only preflight for corpus-scale local transcription (issue #55) — run this before `castrecall_run_pipeline` on a large batch. Reports episodes pending a transcript, the local Whisper backend/model and its quality tier, a rough runtime class, whether timestamps survive, and whether it would block the run. Never mutates state — see "Corpus-scale transcription preflight" below. |
+| `castrecall_run_pipeline` | Chains sync → fetch transcripts (new listens only) → generate reviews (episodes newly stored this run) → corpus export. Runs the corpus-scale transcription preflight first and blocks low-quality local generation for that run unless opted in. The tool a scheduler recipe should call — see "Scheduled / periodic sync" below. |
 
 ## Screenshots
 
@@ -201,6 +202,14 @@ Cheapest and most open first; every rung reports why it hit, missed, or was skip
 5. **Cloud speech-to-text** (optional, **costs money**, disabled by default) — enable explicitly with `CASTRECALL_ENABLE_STT=true`. Providers: **AssemblyAI** (default; transcribes straight from the audio URL), **OpenAI** (`gpt-4o-transcribe`; requires downloading and uploading the audio, 25 MB API limit), or **Deepgram** (`nova-3`; also transcribes straight from the audio URL, with diarized speaker labels).
 
 If no rung produces a transcript, the episode is marked `failed` with the per-rung reasons — no fake output, ever. Two exceptions stay `none` instead of failing outright, because the transcript may simply not exist *yet*: Taddy reporting the episode is actively transcribing, and an RSS feed item that currently declares no `<podcast:transcript>` links. Those episodes are automatically re-checked on later scheduled runs — see "Scheduled / periodic sync" below.
+
+## Corpus-scale transcription preflight
+
+Processing dozens of episodes with local Whisper can take hours, so CastRecall never starts that work silently. Before generating any transcripts, `castrecall_run_pipeline` computes a preflight from the same detection/model-resolution logic the ladder itself uses: how many synced episodes are still missing a transcript and could fall through to local generation, the selected backend and concrete model, whether that model is **quality-approved**, **low-quality**, or **unknown**, a rough runtime class (with an explicit "this is a rough estimate" caveat — no audio durations are known ahead of time), whether timestamps/segments will survive into the stored transcript, and that local audio is always temporary (downloaded to a temp dir, deleted right after transcription, never retained).
+
+Call `castrecall_transcription_preflight` yourself any time to see this report before running a large batch — it's read-only and never mutates state. `castrecall_run_pipeline` runs the same check on every invocation: once at least `5` episodes are pending a transcript (a corpus-scale run, not a quick single-episode test) **and** the local Whisper rung would otherwise run at low quality (an explicit low-quality model, or `CASTRECALL_LOCAL_WHISPER_PRESET=fast`), that rung is skipped for the whole run with an actionable message — the free RSS/Taddy/Podchaser rungs still run for every episode as normal. Opt in with `CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true`, or fix the model with `CASTRECALL_LOCAL_WHISPER_PRESET=best` (or `balanced`). A config the ladder already skips for other reasons (e.g. mlx-whisper with no model and no opt-in, or whisper.cpp missing its ggml model) is reported, not double-blocked — it was never going to run anyway.
+
+`castrecall_fetch_transcript` for a single episode is **never** gated by this — it always attempts local generation if the rung is otherwise ready, so a quick one-off test transcription stays exactly as easy as before.
 
 ## Search
 
@@ -431,6 +440,11 @@ generate review candidates (episodes newly stored this run) → corpus export (w
   Check `castrecall_setup_status`'s `sync` block for the current failure/cooldown state.
 - **Cheap no-op when nothing's new.** A run that finds no new listens does no
   transcript/review/export work.
+- **Corpus-scale transcription preflight (issue #55).** Before fetching any transcript, the run
+  computes the same report `castrecall_transcription_preflight` returns and, once at least `5`
+  episodes are pending a transcript and local Whisper would otherwise run at low quality with no
+  opt-in, skips the local-Whisper rung for every pending episode this run — the result's
+  `preflight` field reports the decision. See "Corpus-scale transcription preflight" above.
 - **Availability re-check, not a webhook.** CastRecall is an OpenClaw tool plugin with no
   reachable inbound endpoint, so it cannot subscribe to Taddy's webhooks (the ideal, purely
   event-driven design). Instead, an episode whose only misses are "Taddy is actively
@@ -489,6 +503,7 @@ alive, recover with a one-off `castrecall_run_pipeline` call passing `breakStale
 - **"whisper.cpp needs a ggml model file"** — set `CASTRECALL_WHISPER_MODEL=/path/to/ggml-base.en.bin` (download via whisper.cpp's `models/download-ggml-model.sh` or Hugging Face `ggerganov/whisper.cpp`).
 - **"whisper.cpp needs 16 kHz WAV input"** — install ffmpeg (`brew install ffmpeg`) so CastRecall can convert the episode audio, or use `mlx_whisper`/openai-whisper which decode audio themselves.
 - **STT skipped even with a key set** — cloud STT must be explicitly enabled (`CASTRECALL_ENABLE_STT=true`); it costs money per episode.
+- **Local Whisper skipped on a corpus-scale `castrecall_run_pipeline` run with "Corpus-scale preflight blocked"** — the run has 5+ episodes pending a transcript and the configured model is low-quality (e.g. `tiny`/`small`, or `CASTRECALL_LOCAL_WHISPER_PRESET=fast`). Check `castrecall_transcription_preflight` for the exact reason, then either set `CASTRECALL_LOCAL_WHISPER_PRESET=best` (or `balanced`) or explicitly opt in with `CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true`. A single-episode `castrecall_fetch_transcript` call is never affected by this.
 - **OpenAI STT fails on long episodes** — the 25 MB upload limit; use `CASTRECALL_STT_PROVIDER=assemblyai` or `CASTRECALL_STT_PROVIDER=deepgram` (both transcribe straight from the audio URL, no upload limit here).
 - **Want diarized speaker labels without polling** — `CASTRECALL_STT_PROVIDER=deepgram` transcribes straight from the audio URL and responds synchronously; very long episodes may still time out on Deepgram's side.
 - **Where did my data go?** — `castrecall_setup_status` prints the data dir.
@@ -498,7 +513,7 @@ alive, recover with a one-off `castrecall_run_pipeline` call passing `breakStale
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (374 tests: parsing, normalization, storage idempotency, corpus export, credential storage/session handling, periodic-sync pipeline, cross-episode digest, error paths)
+npm test            # vitest (538 tests: parsing, normalization, storage idempotency, corpus export, credential storage/session handling, periodic-sync pipeline, cross-episode digest, corpus-scale transcription preflight, error paths)
 npm run plugin:build     # tsc + openclaw plugins build (regenerates openclaw.plugin.json)
 npm run plugin:validate  # openclaw plugins validate
 ```

@@ -16,9 +16,9 @@ Three invariants shape everything:
 
 ```
 src/
-├── index.ts               # OpenClaw plugin entry: defineToolPlugin + 10 tools
+├── index.ts               # OpenClaw plugin entry: defineToolPlugin + 11 tools
 ├── tools.ts               # Tool implementations, pure over (config, params, deps)
-├── pipeline.ts            # castrecall_run_pipeline: sync → transcript → review, locked + cooldown-gated
+├── pipeline.ts            # castrecall_run_pipeline: sync → preflight-gated transcript → review, locked + cooldown-gated
 ├── config.ts              # Env-first config resolution; secrets never in plugin config
 ├── storage.ts             # Data dir layout, state.json, idempotent writes, pipeline lock + sync backoff
 ├── review.ts              # Review-candidate markdown (heuristic excerpts) + promoted-note builder
@@ -37,6 +37,7 @@ src/
     ├── podchaser.ts       # Rung 3: Podchaser GraphQL, two-hop transcript-URL fetch (optional)
     ├── local-whisper.ts   # Rung 4: detected local Whisper CLI (free, private)
     ├── stt.ts             # Rung 5: AssemblyAI / OpenAI / Deepgram (optional, gated, paid)
+    ├── preflight.ts       # castrecall_transcription_preflight: corpus-scale quality gate (issue #55)
     └── normalize.ts       # VTT/SRT/JSON/HTML/plain → normalized text + segments
 ```
 
@@ -108,7 +109,7 @@ sources/<uuid>/{transcript.txt, provenance.json}
 `pipeline.ts` composes the same three tools above (`syncHistory` →
 `fetchTranscript` → `generateReview`) into one chained call so a host
 scheduler (OpenClaw cron/heartbeat, or OS cron — see README "Scheduled /
-periodic sync") can drive the whole loop with no human input. Two properties
+periodic sync") can drive the whole loop with no human input. Three properties
 make that safe to run on an interval:
 
 - **Lock.** `acquirePipelineLock`/`releasePipelineLock` exclusive-create
@@ -128,6 +129,25 @@ make that safe to run on an interval:
   failure never re-dirties sync health. `force: true` bypasses the cooldown
   (never the lock) for a manual recovery run — see the README warning
   against using it in a scheduler recipe.
+- **Corpus-scale transcription preflight (issue #55).** Before the per-episode
+  transcript loop, the run calls `detectLocalWhisper` once and
+  `buildTranscriptionPreflight` (`transcripts/preflight.ts`) to compute the
+  same report `castrecall_transcription_preflight` returns, from
+  `pendingTranscripts.length` (via the shared `selectPendingTranscripts`
+  helper in `storage.ts`, so this can never disagree with the actual
+  worklist). When the run is corpus-scale (`episodesPendingTranscript >=
+  CORPUS_SCALE_MIN_EPISODES`), the local-Whisper rung is otherwise ready to
+  run, its resolved model classifies as `"low-quality"`, and
+  `CASTRECALL_WHISPER_ALLOW_LOW_QUALITY` isn't set, `preflight.blocked` is
+  `true` and `skipLocalWhisper: true` is threaded into every
+  `fetchTranscript` call this run — skipping only rung 4 (`ladder.ts`'s
+  `skipLocalWhisper` option, mirroring the existing `skipStt` pattern); the
+  free RSS/Taddy/Podchaser rungs are unaffected. A config the ladder already
+  skips for another reason (missing ggml model, mlx with no model and no
+  opt-in) is reported via `ready: false`, never double-blocked. The result's
+  `preflight` field carries the full report. `castrecall_fetch_transcript`'s
+  tool schema exposes only `episodeUuid` — it never sets
+  `skipLocalWhisper` — so a single-episode call is never gated.
 
 This cooldown is one of three independent backoff layers, deliberately at
 different scales. `retry.ts`'s `fetchWithRetry` retries a *single* request
@@ -434,6 +454,7 @@ normalized title.
 | Path traversal via hostile UUIDs | `safeName()` sanitizes all path components (tested). |
 | Scheduler hammers a down/broken Pocket Casts API | `castrecall_run_pipeline`'s cooldown gate: capped exponential backoff after login/history failures, cleared on the next success; a run inside the window makes zero Pocket Casts calls. Documented in README; never bypass via `force: true` in a recipe. |
 | Overlapping scheduled runs | `.staging/pipeline.lock` (exclusive-create, TTL-based stale reclaim, token-checked release) ensures at most one run reaches the Pocket Casts API at a time; the underlying storage writes (`recordListens`, `storeTranscript`, `writeReviewCandidate`) are independently idempotent, so even a bypassed lock cannot corrupt state. |
+| Silent corpus-scale low-quality transcription (issue #55) | `castrecall_run_pipeline` computes a preflight from the same detection/resolvers the ladder uses and blocks the local-Whisper rung for a corpus-scale run (5+ episodes pending, model resolves low-quality, no opt-in) — reported via the run's `preflight` field and `castrecall_transcription_preflight`. Single-episode `castrecall_fetch_transcript` is never gated. See "Periodic sync" above. |
 
 ## Rung 3: local Whisper design notes
 
@@ -445,6 +466,44 @@ generated-transcription path for anyone who has one installed. whisper.cpp
 needs a ggml model (`CASTRECALL_WHISPER_MODEL`) and ffmpeg for non-WAV audio;
 the Python CLIs decode audio themselves. `CASTRECALL_WHISPER_COMMAND` accepts
 any custom command with an `{input}` placeholder (stdout = transcript).
+
+### Corpus-scale transcription preflight (issue #55)
+
+`transcripts/preflight.ts` is a pure builder mirroring `setup.ts`'s
+`buildSetupPlan`: it receives a pre-detected `WhisperDetection` and does no
+I/O itself (detection is the caller's job — `transcriptionPreflight()` in
+`tools.ts` for the standalone read-only tool, `runPipeline` for the gate).
+It reuses `resolveWhisperModel`, `resolveWhisperDecodeArgs`, and
+`localWhisperReadiness` — the exact resolvers a real run uses — so its report
+can never disagree with what the ladder would actually do.
+
+- `classifyWhisperModelQuality` classifies the **resolved model string**, not
+  the preset/flavor name: a preset always resolves to one of
+  `WHISPER_PRESETS`' concrete model strings first (`best`/`balanced` →
+  `...large-v3-turbo`, `fast` → `...small-mlx`), so classifying the resolved
+  string keeps this in sync with `resolveWhisperModel` by construction rather
+  than duplicating preset-name logic. A `large-v3` family model is
+  `"approved"`; `tiny`/`base`/`small` are `"low-quality"`; an unrecognized
+  explicit model, a custom command, or another backend's un-pinned default is
+  `"unknown"` — deliberately never a false `"approved"`. mlx-whisper's
+  un-pinned default is the one backend-default case classified `"low-quality"`
+  outright, since it's documented to silently fall back to Whisper's tiny
+  model (see `MLX_WHISPER_MODEL_MISSING_MESSAGE`).
+- The block predicate is `corpusScale && ready && quality === "low-quality" &&
+  !lowQualityOptIn`. The `ready` precondition is deliberate: `
+  localWhisperReadiness` already skips a rung that can't run at usable
+  quality at all (whisper.cpp with no ggml model, mlx-whisper with no model
+  and no opt-in, an unresolvable preset) with its own actionable message —
+  gating those too would double-handle a config the ladder was never going
+  to run anyway. Those cases surface via `ready: false` /
+  `readinessReason`, not `blocked`.
+- `CORPUS_SCALE_MIN_EPISODES` (5) is the one exported threshold constant —
+  a product judgment call, not a technical constraint, kept in one place so
+  it can be revisited without touching the gating logic.
+- `estimateRuntimeClass` buckets by pending-episode count into coarse classes
+  (`unknown` with no backend detected, `none` with zero pending, then
+  widening buckets), always paired with an explicit "rough estimate, no
+  audio durations known" caveat — it never claims precision it doesn't have.
 
 ## Future rungs / ideas (not in v0)
 

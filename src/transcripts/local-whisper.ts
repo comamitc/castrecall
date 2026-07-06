@@ -345,7 +345,12 @@ export type LocalWhisperGeneration = {
   toolVersion?: string;
 };
 
-function deriveModelSource(
+/**
+ * Which of explicit/preset/backend-default/none produced a resolved model —
+ * shared with the transcription preflight (issue #55) so its `modelSource`
+ * can never disagree with the provenance a real run would record.
+ */
+export function deriveModelSource(
   flavor: WhisperFlavor,
   resolved: WhisperModelResolution,
 ): LocalWhisperModelSource {

@@ -186,6 +186,16 @@ export async function runTranscriptLadder(config, record, options = {}) {
     else if (!whisperReadiness.ready) {
         rungs.push({ rung: "local-whisper", outcome: "skipped", detail: whisperReadiness.reason });
     }
+    else if (options.skipLocalWhisper) {
+        rungs.push({
+            rung: "local-whisper",
+            outcome: "skipped",
+            detail: "Corpus-scale preflight blocked low-quality local transcription for this run " +
+                "(castrecall_transcription_preflight). Run castrecall_fetch_transcript directly for this " +
+                "episode, or opt in for the whole run with CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or " +
+                "CASTRECALL_LOCAL_WHISPER_PRESET=best.",
+        });
+    }
     else {
         try {
             const result = await transcribeWithLocalWhisper(config, record.audioUrl, { fetchImpl, env });

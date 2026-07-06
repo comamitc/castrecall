@@ -61,6 +61,7 @@
       "castrecall_resolve_review",
       "castrecall_search",
       "castrecall_digest",
+      "castrecall_transcription_preflight",
       "castrecall_run_pipeline"
     ]
   }

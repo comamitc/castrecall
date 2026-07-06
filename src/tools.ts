@@ -31,12 +31,14 @@ import {
   resolveWhisperDecodeArgs,
   resolveWhisperModel,
 } from "./transcripts/local-whisper.js";
+import { buildTranscriptionPreflight, type TranscriptionPreflight } from "./transcripts/preflight.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { podchaserConfigured } from "./transcripts/podchaser.js";
 import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
+  selectPendingTranscripts,
   Storage,
   TRANSCRIPT_RECHECK_BASE_MS,
   TRANSCRIPT_RECHECK_CAP_MS,
@@ -351,6 +353,30 @@ export async function setup(
   };
 }
 
+/**
+ * Read-only corpus-scale transcription preflight (issue #55): the "look
+ * before you leap" surface for a large batch — run this before
+ * castrecall_run_pipeline. Reads synced state and detects the local Whisper
+ * CLI, but never writes to storage; the pipeline itself computes the same
+ * report and enforces the block (see runPipeline), so a corpus run can never
+ * silently generate transcripts with a low-quality model.
+ */
+export async function transcriptionPreflight(
+  config: ResolvedConfig,
+  deps: ToolDeps = {},
+): Promise<TranscriptionPreflight> {
+  const storage = storageFor(config);
+  const state = await storage.loadState();
+  const now = deps.now ?? (() => new Date());
+  const { pending } = selectPendingTranscripts(Object.values(state.episodes), now().getTime());
+  const whisper = await detectLocalWhisper(config, deps.env);
+  return buildTranscriptionPreflight({
+    config,
+    whisper,
+    episodesPendingTranscript: pending.length,
+  });
+}
+
 export async function syncHistory(
   config: ResolvedConfig,
   params: { limit?: number },
@@ -397,7 +423,12 @@ export async function listRecent(
 
 export async function fetchTranscript(
   config: ResolvedConfig,
-  params: { episodeUuid: string; scheduled?: boolean },
+  params: {
+    episodeUuid: string;
+    scheduled?: boolean;
+    /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run; never set by the castrecall_fetch_transcript tool itself, so a direct single-episode call is never gated. */
+    skipLocalWhisper?: boolean;
+  },
   deps: ToolDeps = {},
 ): Promise<unknown> {
   const storage = storageFor(config);
@@ -458,6 +489,7 @@ export async function fetchTranscript(
     fetchImpl: deps.fetchImpl,
     env: deps.env,
     skipStt: sttRetryBudgetSpent,
+    skipLocalWhisper: params.skipLocalWhisper,
   });
   if (!result.transcript) {
     const transcriptError = result.rungs.map((r) => `${r.rung}: ${r.detail}`).join(" | ");

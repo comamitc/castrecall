@@ -41,4 +41,6 @@ export declare function runTranscriptLadder(config: ResolvedConfig, record: List
     fetchImpl?: FetchLike;
     env?: NodeJS.ProcessEnv;
     skipStt?: boolean;
+    /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run. */
+    skipLocalWhisper?: boolean;
 }): Promise<LadderResult>;
