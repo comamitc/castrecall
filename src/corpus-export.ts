@@ -267,16 +267,29 @@ export function buildCorpusPages(options: {
 }
 
 const CONTENT_HASH_LINE = /^content_hash: "([^"]*)"$/m;
-const QUALITY_SCORE_LINE = /^transcript_quality_score: /m;
+const QUALITY_SCORE_LINE = /^transcript_quality_score: (\d+)$/m;
+const QUALITY_TIER_LINE = /^transcript_quality_tier: "([^"]*)"$/m;
+const QUALITY_REASONS_LINE = /^transcript_quality_reasons: (\[[^\]]*\])$/m;
 
-type ExistingExportMeta = { contentHash?: string; hasQuality: boolean };
+type ExistingExportMeta = { contentHash?: string; quality?: TranscriptQuality };
 
 async function readExistingExportMeta(episodeDir: string): Promise<ExistingExportMeta | undefined> {
   try {
     const indexContent = await fs.readFile(path.join(episodeDir, "index.md"), "utf8");
+    const scoreMatch = indexContent.match(QUALITY_SCORE_LINE);
+    const tierMatch = indexContent.match(QUALITY_TIER_LINE);
+    const reasonsMatch = indexContent.match(QUALITY_REASONS_LINE);
+    const quality =
+      scoreMatch && tierMatch && reasonsMatch
+        ? {
+            score: Number(scoreMatch[1]),
+            tier: tierMatch[1] as TranscriptQuality["tier"],
+            reasons: JSON.parse(reasonsMatch[1]) as TranscriptQuality["reasons"],
+          }
+        : undefined;
     return {
       contentHash: indexContent.match(CONTENT_HASH_LINE)?.[1],
-      hasQuality: QUALITY_SCORE_LINE.test(indexContent),
+      quality,
     };
   } catch {
     return undefined;
@@ -289,8 +302,10 @@ export type ExportResult = { exported: number; skipped: boolean; dir: string };
  * Publishes corpus pages under `<exportDir>/podcasts/<show-slug>/<episode-slug>/`.
  * Idempotent by content hash: an unchanged episode re-exports nothing, unless
  * provenance now carries quality scoring (issue #41) that the existing export
- * predates — that forces a re-export so upgraded installs backfill the new
- * frontmatter instead of staying stale until the transcript text changes. A
+ * lacks or disagrees with — that forces a re-export so upgraded installs
+ * backfill the new frontmatter, and later rescoring (e.g. a corrected
+ * timestamp/speaker-coverage rule) doesn't leave stale score/tier/reasons
+ * behind, instead of staying stale until the transcript text changes. A
  * changed hash replaces the whole episode directory so no stale section
  * files from a previous, longer transcript survive.
  */
@@ -308,8 +323,10 @@ export class CorpusExporter {
     const targetDir = path.join(this.exportDir, "podcasts", showSlug, episodeSlug);
 
     const existing = await readExistingExportMeta(targetDir);
-    const backfillingQuality = Boolean(options.provenance.quality) && existing !== undefined && !existing.hasQuality;
-    if (existing?.contentHash === options.contentHash && !backfillingQuality) {
+    const qualityStale =
+      existing !== undefined &&
+      JSON.stringify(existing.quality) !== JSON.stringify(options.provenance.quality);
+    if (existing?.contentHash === options.contentHash && !qualityStale) {
       return { exported: 0, skipped: true, dir: targetDir };
     }
 

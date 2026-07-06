@@ -404,6 +404,32 @@ describe("CorpusExporter", () => {
     expect(third.skipped).toBe(true);
   });
 
+  it("re-exports on an unchanged content hash when quality is rescored, so frontmatter never goes stale (issue #41)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 82, tier: "reviewable", reasons: ["no-timestamps"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    const beforeIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(beforeIndex).toContain("transcript_quality_score: 82");
+
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 55, tier: "search-only", reasons: ["no-timestamps", "no-speaker-labels"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    expect(second.skipped).toBe(false);
+    expect(second.exported).toBeGreaterThan(0);
+
+    const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(afterIndex).toContain("transcript_quality_score: 55");
+    expect(afterIndex).toContain('transcript_quality_tier: "search-only"');
+    expect(afterIndex).toContain('transcript_quality_reasons: ["no-timestamps","no-speaker-labels"]');
+  });
+
   it("replaces the episode dir with no stale files when the content hash changes", async () => {
     const exporter = new CorpusExporter(dir);
     const longText = Array.from({ length: 10 }, (_, i) => paragraph(60, `long${i}-`)).join("\n\n");
