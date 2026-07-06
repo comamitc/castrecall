@@ -81,10 +81,12 @@ export type WhisperModelResolution = {
  * an explicit CASTRECALL_WHISPER_MODEL always wins; otherwise a
  * CASTRECALL_LOCAL_WHISPER_PRESET resolves to a concrete mlx-community model,
  * but only for the mlx-whisper flavor (the presence of the mlx_whisper binary
- * IS the Apple-Silicon signal here — no separate platform probe). Every
- * consumer that needs to know or show the concrete model — readiness, setup
- * output, the provider label, and exec argv — must call this, never read
- * config.localWhisper.model directly.
+ * IS the Apple-Silicon signal here — no separate platform probe). The custom
+ * flavor (CASTRECALL_WHISPER_COMMAND) is an explicit user-supplied command
+ * that never consumes model/preset, so a leftover preset value is not an
+ * error for it. Every consumer that needs to know or show the concrete
+ * model — readiness, setup output, the provider label, and exec argv — must
+ * call this, never read config.localWhisper.model directly.
  */
 export function resolveWhisperModel(
   flavor: WhisperFlavor | undefined,
@@ -95,6 +97,7 @@ export function resolveWhisperModel(
   }
   const preset = localWhisperConfig.preset;
   if (!preset) return { source: "none" };
+  if (flavor === "custom") return { source: "none", preset };
   if (flavor !== "mlx-whisper") {
     return { source: "none", preset, reason: WHISPER_PRESET_NON_MLX_MESSAGE };
   }

@@ -125,6 +125,12 @@ describe("resolveWhisperModel", () => {
   it("returns source none with no model and no reason when nothing is set", () => {
     expect(resolveWhisperModel("mlx-whisper", {})).toEqual({ source: "none" });
   });
+
+  it("does not error for the custom flavor even with a preset set (explicit user override)", () => {
+    const result = resolveWhisperModel("custom", { preset: "best" });
+    expect(result).toEqual({ source: "none", preset: "best" });
+    expect(result.reason).toBeUndefined();
+  });
 });
 
 describe("localWhisperReadiness", () => {
@@ -186,6 +192,15 @@ describe("localWhisperReadiness", () => {
     const result = localWhisperReadiness(ctranslate2Detected, { preset: "best" });
     expect(result).toMatchObject({ ready: false, needsModel: true, detected: true });
     expect(result.reason).toBe(WHISPER_PRESET_NON_MLX_MESSAGE);
+  });
+
+  it("is ready for a custom command even with a leftover preset set (explicit override wins)", () => {
+    const customDetected: WhisperDetection = {
+      detected: { flavor: "custom", command: "my-whisper {input}" },
+    };
+    const result = localWhisperReadiness(customDetected, { preset: "best" });
+    expect(result).toMatchObject({ ready: true, needsModel: false, detected: true });
+    expect(result.reason).toBeUndefined();
   });
 });
 
