@@ -293,6 +293,27 @@ describe("buildSetupPlan", () => {
     expect(on.explanation).toContain("remote-stt");
   });
 
+  it("downgrades the stt step to missing when the remote-stt health probe is not ready (issue #61 review)", () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
+    });
+    const down = plan(cfg, {
+      remoteStt: { ok: false, reason: "Remote STT health check failed with HTTP 401." },
+    }).find((s) => s.id === "providers.stt")!;
+    expect(down.status).toBe("missing");
+    expect(down.explanation).toContain("NOT ready");
+    expect(down.explanation).toContain("HTTP 401");
+
+    const healthy = plan(cfg, {
+      remoteStt: { ok: true, implementation: "whisperx", model: "large-v3" },
+    }).find((s) => s.id === "providers.stt")!;
+    expect(healthy.status).toBe("configured");
+    expect(healthy.explanation).toContain("remote service healthy");
+    expect(healthy.explanation).toContain("whisperx");
+  });
+
   it("surfaces a detected gbrain inbox suggestion when export is unset", () => {
     const steps = plan(config({}), { gbrain: WITH_GBRAIN });
     const exportStep = steps.find((s) => s.id === "export")!;

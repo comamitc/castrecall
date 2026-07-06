@@ -18,6 +18,7 @@
  */
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
+import type { RemoteSttGeneration } from "./transcripts/remote-stt.js";
 import { type TranscriptSegment } from "./transcripts/normalize.js";
 import type { TranscriptQuality } from "./transcripts/quality.js";
 /**
@@ -160,12 +161,14 @@ export type Provenance = {
     format: string;
     provider?: string;
     /**
-     * Exact local-transcription provenance (issue #54): backend, concrete
-     * model/preset, decode settings, output shape. Only set when
-     * `transcriptSource` is `"local-whisper"`; additive, so pre-#54 sidecars
-     * simply lack it.
+     * Exact generation provenance: local-transcription details (issue #54,
+     * backend/model/preset/decode settings/output shape) when `transcriptSource`
+     * is `"local-whisper"`, or remote-stt details (issue #61, implementation/
+     * model/host/mode) when `transcriptSource` is `"stt"` and the configured
+     * provider was `remote-stt`. Discriminated by `generation.kind`. Additive,
+     * so pre-#54/#61 sidecars simply lack it.
      */
-    generation?: LocalWhisperGeneration;
+    generation?: LocalWhisperGeneration | RemoteSttGeneration;
     /**
      * Deterministic transcript quality score (issue #41): score, tier
      * (`quote-safe`/`reviewable`/`search-only`), and machine-readable reasons.
@@ -218,6 +221,15 @@ export type Provenance = {
     fetchedAt: string;
     privacyClass: "private-source";
 };
+/**
+ * True when `generation` is local-whisper provenance. Recognizes both the
+ * documented `kind: "local-whisper"` discriminator (issue #61) and sidecars
+ * written before that discriminator existed — those carry local-whisper-only
+ * fields like `backend`/`decode` with no `kind` at all, and must still be
+ * treated as local-whisper rather than silently falling through as neither
+ * local nor remote.
+ */
+export declare function isLocalWhisperGeneration(gen: LocalWhisperGeneration | RemoteSttGeneration | undefined): gen is LocalWhisperGeneration;
 /**
  * The shape actually persisted to provenance.json: a Provenance plus the
  * fields storage stamps on write (schema version, content hash). Sidecars

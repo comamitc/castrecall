@@ -11,6 +11,7 @@
 import { promises as fs } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
+import { isLocalWhisperGeneration } from "./storage.js";
 const DEFAULT_TARGET_WORDS = 1500;
 const DEFAULT_MAX_WORDS = 2000;
 const PARAGRAPH_BOUNDARY = /\n{2,}|\n(?=[A-Z][\w .'-]{0,40}: )/g;
@@ -255,6 +256,8 @@ export function distinctSpeakers(segments) {
 }
 function frontmatterLines(title, meta, timing) {
     const gen = meta.generation;
+    const localGen = isLocalWhisperGeneration(gen) ? gen : undefined;
+    const remoteGen = gen?.kind === "remote-stt" ? gen : undefined;
     const lines = [
         "---",
         `title: ${yamlString(title)}`,
@@ -266,19 +269,22 @@ function frontmatterLines(title, meta, timing) {
         `transcript_source: ${yamlString(meta.transcriptSource)}`,
         `content_hash: ${yamlString(meta.contentHash)}`,
         "generated: false",
-        gen ? `transcript_backend: ${yamlString(gen.backend)}` : undefined,
-        gen?.model ? `transcript_model: ${yamlString(gen.model)}` : undefined,
-        gen ? `transcript_model_source: ${yamlString(gen.modelSource)}` : undefined,
-        gen?.preset ? `transcript_preset: ${yamlString(gen.preset)}` : undefined,
-        gen ? `transcript_output_format: ${yamlString(gen.outputFormat)}` : undefined,
-        gen ? `transcript_word_timestamps: ${gen.wordTimestamps}` : undefined,
-        gen && Object.keys(gen.decode.applied).length > 0
-            ? `transcript_decode_options: ${yamlString(JSON.stringify(gen.decode.applied))}`
+        localGen ? `transcript_backend: ${yamlString(localGen.backend)}` : undefined,
+        localGen?.model ? `transcript_model: ${yamlString(localGen.model)}` : undefined,
+        localGen ? `transcript_model_source: ${yamlString(localGen.modelSource)}` : undefined,
+        localGen?.preset ? `transcript_preset: ${yamlString(localGen.preset)}` : undefined,
+        localGen ? `transcript_output_format: ${yamlString(localGen.outputFormat)}` : undefined,
+        localGen ? `transcript_word_timestamps: ${localGen.wordTimestamps}` : undefined,
+        localGen && Object.keys(localGen.decode.applied).length > 0
+            ? `transcript_decode_options: ${yamlString(JSON.stringify(localGen.decode.applied))}`
             : undefined,
-        gen && gen.decode.ignored.length > 0
-            ? `transcript_decode_ignored: ${yamlString(JSON.stringify(gen.decode.ignored.map((entry) => entry.option)))}`
+        localGen && localGen.decode.ignored.length > 0
+            ? `transcript_decode_ignored: ${yamlString(JSON.stringify(localGen.decode.ignored.map((entry) => entry.option)))}`
             : undefined,
-        gen?.toolVersion ? `transcript_tool_version: ${yamlString(gen.toolVersion)}` : undefined,
+        localGen?.toolVersion ? `transcript_tool_version: ${yamlString(localGen.toolVersion)}` : undefined,
+        remoteGen?.implementation ? `transcript_implementation: ${yamlString(remoteGen.implementation)}` : undefined,
+        remoteGen?.model ? `transcript_model: ${yamlString(remoteGen.model)}` : undefined,
+        remoteGen ? `transcript_remote_host: ${yamlString(remoteGen.baseUrlHost)}` : undefined,
         meta.quality ? `transcript_quality_score: ${meta.quality.score}` : undefined,
         meta.quality ? `transcript_quality_tier: ${yamlString(meta.quality.tier)}` : undefined,
         meta.quality ? `transcript_quality_reasons: ${JSON.stringify(meta.quality.reasons)}` : undefined,

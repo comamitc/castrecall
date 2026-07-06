@@ -6,7 +6,7 @@
  * and heuristic excerpt candidates. A human (or a human-approved agent flow)
  * decides what — if anything — graduates into curated memory.
  */
-import type { ListenRecord, Provenance } from "./storage.js";
+import { type ListenRecord, type Provenance } from "./storage.js";
 export declare function buildReviewCandidate(options: {
     record: ListenRecord;
     provenance: Provenance;

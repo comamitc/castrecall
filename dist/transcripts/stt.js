@@ -9,9 +9,12 @@
  * - Deepgram: accepts a remote audio URL directly, like AssemblyAI, but its
  *   prerecorded endpoint responds synchronously (no polling) with diarized
  *   utterances.
+ * - remote-stt (issue #61): a generic contract for private/self-hosted STT
+ *   services (WhisperX, faster-whisper, etc.) — see transcripts/remote-stt.ts.
  */
 import { CastrecallSetupError } from "../config.js";
 import { segmentsToText } from "./normalize.js";
+import { transcribeWithRemoteStt } from "./remote-stt.js";
 const OPENAI_MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 const ASSEMBLYAI_BASE = "https://api.assemblyai.com/v2";
 const DEEPGRAM_BASE = "https://api.deepgram.com/v1/listen";
@@ -28,7 +31,7 @@ function speakerLabel(raw) {
  * emitted only when a finite numeric time exists, matching the
  * `parseJsonTranscript` convention of a bare-seconds string.
  */
-function utterancesToSegments(utterances) {
+export function utterancesToSegments(utterances) {
     return utterances.map((u) => {
         const hasTiming = u.startSeconds !== undefined && u.endSeconds !== undefined;
         return {
@@ -58,7 +61,7 @@ export class RetryableSttError extends Error {
     }
 }
 const RETRYABLE_HTTP_STATUSES = new Set([408, 429]);
-function isRetryableHttpStatus(status) {
+export function isRetryableHttpStatus(status) {
     return RETRYABLE_HTTP_STATUSES.has(status) || status >= 500;
 }
 export function sttAvailability(config) {
@@ -90,6 +93,14 @@ export function sttAvailability(config) {
                 "Get a key at https://deepgram.com or switch with CASTRECALL_STT_PROVIDER=assemblyai.",
         };
     }
+    if (config.stt.provider === "remote-stt" && !config.stt.remoteBaseUrl) {
+        return {
+            ok: false,
+            reason: "STT provider is 'remote-stt' but CASTRECALL_REMOTE_STT_BASE_URL is not set. " +
+                "Point it at your self-hosted STT service (WhisperX, faster-whisper, ...), " +
+                "or switch with CASTRECALL_STT_PROVIDER=assemblyai.",
+        };
+    }
     return { ok: true };
 }
 export async function transcribeAudio(config, audioUrl, fetchImpl = fetch, sleep = (ms) => new Promise((r) => setTimeout(r, ms))) {
@@ -103,6 +114,9 @@ export async function transcribeAudio(config, audioUrl, fetchImpl = fetch, sleep
     }
     if (config.stt.provider === "deepgram") {
         return transcribeWithDeepgram(config, audioUrl, fetchImpl);
+    }
+    if (config.stt.provider === "remote-stt") {
+        return transcribeWithRemoteStt(config, audioUrl, { fetchImpl, sleep });
     }
     return transcribeWithOpenAi(config, audioUrl, fetchImpl);
 }

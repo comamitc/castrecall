@@ -109,6 +109,15 @@ export type SetupPlanDeps = {
   gbrain: GbrainDetection;
   credentials: SetupCredentialsInfo;
   secretBackend: SetupSecretBackendInfo;
+  /**
+   * Live `GET {base}/health` probe result for a configured remote-stt
+   * provider (issue #61 contract: the health check backs BOTH
+   * castrecall_setup and castrecall_setup_status). Populated by setup()
+   * whenever STT is enabled with provider remote-stt and a base URL; a
+   * not-ready probe downgrades the stt step to "missing" so a down or
+   * unauthorized service is caught at setup time, not mid-corpus-run.
+   */
+  remoteStt?: { ok: boolean; reason?: string; implementation?: string; model?: string };
 };
 
 /** Platform-appropriate keychain store recipe shown once a backend is detected. */
@@ -249,7 +258,12 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
     {
       id: "providers.stt",
       title: "Cloud speech-to-text (optional, costs money)",
-      status: stt.ok ? "configured" : "optional-off",
+      status:
+        stt.ok && deps.remoteStt && !deps.remoteStt.ok
+          ? "missing"
+          : stt.ok
+            ? "configured"
+            : "optional-off",
       envVars: [
         "CASTRECALL_ENABLE_STT",
         "CASTRECALL_STT_PROVIDER",
@@ -262,7 +276,16 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
         "CASTRECALL_REMOTE_STT_MODEL",
         "CASTRECALL_REMOTE_STT_UPLOAD",
       ],
-      explanation: stt.ok ? `Enabled (${config.stt.provider}).` : (stt.reason ?? "Disabled."),
+      explanation: !stt.ok
+        ? (stt.reason ?? "Disabled.")
+        : deps.remoteStt
+          ? deps.remoteStt.ok
+            ? `Enabled (${config.stt.provider}) — remote service healthy` +
+              `${deps.remoteStt.implementation ? ` (${deps.remoteStt.implementation}${deps.remoteStt.model ? `, ${deps.remoteStt.model}` : ""})` : ""}.`
+            : `Enabled (${config.stt.provider}) but the remote service is NOT ready: ` +
+              `${deps.remoteStt.reason ?? "health check failed."} Fix the service or ` +
+              "CASTRECALL_REMOTE_STT_BASE_URL/_TOKEN before running corpus-scale transcription."
+          : `Enabled (${config.stt.provider}).`,
     },
     {
       id: "export",

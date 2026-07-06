@@ -1,4 +1,4 @@
-export type SttProvider = "assemblyai" | "openai" | "deepgram";
+export type SttProvider = "assemblyai" | "openai" | "deepgram" | "remote-stt";
 /** Non-secret settings accepted via the OpenClaw plugin config schema. */
 export type PluginSettings = {
     dataDir?: string;
@@ -75,6 +75,14 @@ export type ResolvedConfig = {
         openaiModel: string;
         deepgramApiKey?: string;
         deepgramModel: string;
+        /** Base URL of a self-hosted/private STT service implementing the remote-stt contract (issue #61). */
+        remoteBaseUrl?: string;
+        /** Bearer token sent as `Authorization: Bearer <token>` on every remote-stt request. */
+        remoteToken?: string;
+        /** Model name/id forwarded to the remote-stt provider; the provider decides what it means. */
+        remoteModel?: string;
+        /** Download the audio and multipart-upload it instead of submitting `audio_url`, for providers that can't fetch remote URLs. */
+        remoteForceUpload: boolean;
     };
     secrets: {
         /** CASTRECALL_DISABLE_KEYCHAIN=1 disables the durable keychain sink only. */
