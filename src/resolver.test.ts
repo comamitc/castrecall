@@ -217,7 +217,7 @@ describe("resolveFeedUrl Listen Notes fallback", () => {
     expect(feedUrl).toBe("https://feeds.example.com/match.xml");
   });
 
-  it("falls back to the first rss-bearing result when no title matches", async () => {
+  it("returns undefined when no result title matches, instead of guessing an unrelated feed", async () => {
     const { fetchImpl } = makeFetch([
       { title_original: "Totally Different", rss: "https://feeds.example.com/first.xml" },
       { title_original: "Also Different", rss: "https://feeds.example.com/second.xml" },
@@ -225,7 +225,7 @@ describe("resolveFeedUrl Listen Notes fallback", () => {
 
     const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key");
 
-    expect(feedUrl).toBe("https://feeds.example.com/first.xml");
+    expect(feedUrl).toBeUndefined();
   });
 
   it("returns undefined when no results carry an rss field (episode-shaped payload)", async () => {

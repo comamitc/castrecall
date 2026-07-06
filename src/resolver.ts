@@ -127,8 +127,7 @@ async function feedUrlFromListenNotes(
     };
     const usable = body.results?.filter((r) => typeof r.rss === "string" && r.rss.length > 0) ?? [];
     const wanted = normalizeTitle(podcastTitle);
-    const match =
-      usable.find((r) => normalizeTitle(r.title_original ?? "") === wanted) ?? usable[0];
+    const match = usable.find((r) => normalizeTitle(r.title_original ?? "") === wanted);
     return match?.rss;
   } catch {
     return undefined;
