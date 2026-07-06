@@ -46,11 +46,13 @@ export declare const INDEX_SCHEMA_VERSION = 1;
 /**
  * Structural validation for a persisted document: every term in `termFreq`
  * must map (via its term hash) to a strictly ascending array of that many
- * integer positions in `[0, length)`, with no extra postings keys. Anything
- * else — a torn write, disk corruption, an index produced by an
- * incompatible build under the same schemaVersion — is treated as absent so
- * reconcile rebuilds it, rather than letting `phraseConfirmed` throw or
- * silently miss exact matches.
+ * integer positions, with no extra postings keys, and the positions across
+ * ALL terms must cover `[0, length)` exactly once — the invariant
+ * `buildDocument` produces (uniqueness + in-range + total count = length
+ * pins that down by pigeonhole). Anything else — a torn write, disk
+ * corruption, a dropped term pair, cross-term duplicate positions — is
+ * treated as absent so reconcile rebuilds it, rather than letting keyword
+ * or phrase search throw or silently miss matches.
  */
 export declare function isValidIndexedDocument(doc: unknown): doc is IndexedDocument;
 /**

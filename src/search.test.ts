@@ -11,6 +11,7 @@ import {
   buildSnippet,
   clampLimit,
   DEFAULT_SEARCH_LIMIT,
+  hashTerm,
   isValidIndexedDocument,
   MAX_SEARCH_LIMIT,
   parseQuery,
@@ -179,6 +180,28 @@ describe("isValidIndexedDocument", () => {
     for (const doc of tampered) {
       expect(isValidIndexedDocument(doc), JSON.stringify(doc)?.slice(0, 80)).toBe(false);
     }
+  });
+
+  it("rejects a doc missing a term/postings pair even though the remaining lists are self-consistent", () => {
+    const good = buildDocument("doc", "h1", "climate policy in depth");
+    const termFreq = { ...good.termFreq };
+    const postings = { ...good.postings };
+    const dropped = Object.keys(termFreq)[0];
+    delete termFreq[dropped];
+    delete postings[hashTerm(dropped)];
+    // Key counts still agree and every remaining list is valid in
+    // isolation — only the global coverage check can catch this.
+    const doc = { ...good, termFreq, postings };
+    expect(isValidIndexedDocument(doc)).toBe(false);
+  });
+
+  it("rejects cross-term duplicate positions that keep per-list validity", () => {
+    const good = buildDocument("doc", "h1", "alpha beta");
+    const [keyA, keyB] = Object.keys(good.postings);
+    // Both terms claim position 0: each list alone is sorted and in range,
+    // but position 1 is then covered by nothing.
+    const doc = { ...good, postings: { [keyA]: [0], [keyB]: [0] } };
+    expect(isValidIndexedDocument(doc)).toBe(false);
   });
 });
 
@@ -461,7 +484,7 @@ describe("SearchIndex", () => {
 
     // Strip the postings field, simulating an index written by the
     // term-frequency-only schema.
-    const indexPath = path.join(dir, "search-index.json");
+    const indexPath = path.join(dir, "search-index.v1.json");
     const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
       docs: Array<Record<string, unknown>>;
     };
@@ -483,7 +506,7 @@ describe("SearchIndex", () => {
     ];
     await index.search('"climate policy"', {}, corpus);
 
-    const indexPath = path.join(dir, "search-index.json");
+    const indexPath = path.join(dir, "search-index.v1.json");
     const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as Record<string, unknown>;
     parsed.schemaVersion = 999;
     await fs.writeFile(indexPath, JSON.stringify(parsed), "utf8");
@@ -505,7 +528,7 @@ describe("SearchIndex", () => {
 
     // Same schemaVersion, same contentHash, but postings values are not
     // position arrays — the shape a skewed or corrupted build could leave.
-    const indexPath = path.join(dir, "search-index.json");
+    const indexPath = path.join(dir, "search-index.v1.json");
     const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
       schemaVersion: number;
       docs: Array<Record<string, unknown>>;
@@ -751,7 +774,7 @@ describe("search tool", () => {
     expect(result.results.map((hit: any) => hit.episodeUuid)).toEqual(["ep-legacy"]);
   });
 
-  it("creates .index/search-index.json after the first search", async () => {
+  it("creates the versioned .index/search-index file after the first search", async () => {
     await seedEpisode({
       uuid: "ep-1",
       title: "Episode One",
@@ -760,7 +783,12 @@ describe("search tool", () => {
     });
     await search(config(), { query: "climate" });
     const storage = new Storage(dir);
-    await expect(fs.access(path.join(storage.indexDir(), "search-index.json"))).resolves.toBeUndefined();
+    await expect(
+      fs.access(path.join(storage.indexDir(), "search-index.v1.json")),
+    ).resolves.toBeUndefined();
+    // The unversioned legacy filename is never written — builds only touch
+    // their own format, keeping upgrade/rollback across schema changes safe.
+    await expect(fs.access(path.join(storage.indexDir(), "search-index.json"))).rejects.toThrow();
   });
 
   it("self-heals and returns identical results after the index file is corrupted", async () => {
@@ -773,7 +801,7 @@ describe("search tool", () => {
     const first = (await search(config(), { query: "climate" })) as Record<string, any>;
 
     const storage = new Storage(dir);
-    await fs.writeFile(path.join(storage.indexDir(), "search-index.json"), "{ not valid json", "utf8");
+    await fs.writeFile(path.join(storage.indexDir(), "search-index.v1.json"), "{ not valid json", "utf8");
 
     const second = (await search(config(), { query: "climate" })) as Record<string, any>;
     expect(second.results).toEqual(first.results);

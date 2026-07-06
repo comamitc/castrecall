@@ -66,11 +66,13 @@ export const INDEX_SCHEMA_VERSION = 1;
 /**
  * Structural validation for a persisted document: every term in `termFreq`
  * must map (via its term hash) to a strictly ascending array of that many
- * integer positions in `[0, length)`, with no extra postings keys. Anything
- * else — a torn write, disk corruption, an index produced by an
- * incompatible build under the same schemaVersion — is treated as absent so
- * reconcile rebuilds it, rather than letting `phraseConfirmed` throw or
- * silently miss exact matches.
+ * integer positions, with no extra postings keys, and the positions across
+ * ALL terms must cover `[0, length)` exactly once — the invariant
+ * `buildDocument` produces (uniqueness + in-range + total count = length
+ * pins that down by pigeonhole). Anything else — a torn write, disk
+ * corruption, a dropped term pair, cross-term duplicate positions — is
+ * treated as absent so reconcile rebuilds it, rather than letting keyword
+ * or phrase search throw or silently miss matches.
  */
 export function isValidIndexedDocument(doc) {
     if (typeof doc !== "object" || doc === null)
@@ -88,6 +90,8 @@ export function isValidIndexedDocument(doc) {
     const terms = Object.keys(candidate.termFreq);
     if (Object.keys(candidate.postings).length !== terms.length)
         return false;
+    let totalPositions = 0;
+    const seenPositions = new Set();
     for (const term of terms) {
         const expectedCount = candidate.termFreq[term];
         if (typeof expectedCount !== "number" || !Number.isInteger(expectedCount) || expectedCount <= 0) {
@@ -102,10 +106,14 @@ export function isValidIndexedDocument(doc) {
                 return false;
             if (position <= previous || position >= candidate.length)
                 return false;
+            if (seenPositions.has(position))
+                return false;
+            seenPositions.add(position);
             previous = position;
         }
+        totalPositions += positions.length;
     }
-    return true;
+    return totalPositions === candidate.length;
 }
 /**
  * One-way 64-bit hash of a term, keying its positional postings. Truncated
@@ -328,7 +336,13 @@ export class SearchIndex {
         this.indexDir = indexDir;
     }
     get indexPath() {
-        return path.join(this.indexDir, "search-index.json");
+        // The schema version is part of the FILENAME, not just the payload:
+        // builds only ever read and write their own format, so upgrading or
+        // rolling back across a schema change can never misinterpret another
+        // build's postings (each side just rebuilds its own file from the
+        // transcripts). The payload's schemaVersion field stays as defense in
+        // depth against a hand-renamed file.
+        return path.join(this.indexDir, `search-index.v${INDEX_SCHEMA_VERSION}.json`);
     }
     async load() {
         try {
