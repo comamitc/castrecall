@@ -334,13 +334,14 @@ export declare class Storage {
      * Recover segment timing for a transcript stored before the `segments.json`
      * sidecar existed (issue #43), by re-normalizing the still-present
      * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
-     * freshly normalized text matches `expectedText` exactly, OR the stored
-     * provenance proves the cleanup pass (issue #45) ran and applying it to
-     * that normalized text matches — so a raw file that has merely drifted
-     * into cleanup-equivalence, without cleanup ever having run, can never
-     * contaminate export with mismatched timing. Returns `undefined` when
-     * there is no raw artifact, its format is unrecognized, it fails to
-     * parse, or neither form matches.
+     * freshly normalized text matches `expectedText` exactly, OR cleaning that
+     * normalized text matches `expectedText` AND the resulting `applied` step
+     * list is identical (same steps, same order, non-empty) to the stored
+     * provenance's `cleanup.applied` — so a raw file that has merely drifted
+     * into cleanup-equivalent *output* text, without the same cleanup steps
+     * having actually fired, can never contaminate export with mismatched
+     * timing. Returns `undefined` when there is no raw artifact, its format is
+     * unrecognized, it fails to parse, or neither form matches.
      */
     deriveSegmentsFromRaw(episodeUuid: string, expectedText: string): Promise<TranscriptSegment[] | undefined>;
     /**

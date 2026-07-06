@@ -479,13 +479,14 @@ export class Storage {
      * Recover segment timing for a transcript stored before the `segments.json`
      * sidecar existed (issue #43), by re-normalizing the still-present
      * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
-     * freshly normalized text matches `expectedText` exactly, OR the stored
-     * provenance proves the cleanup pass (issue #45) ran and applying it to
-     * that normalized text matches — so a raw file that has merely drifted
-     * into cleanup-equivalence, without cleanup ever having run, can never
-     * contaminate export with mismatched timing. Returns `undefined` when
-     * there is no raw artifact, its format is unrecognized, it fails to
-     * parse, or neither form matches.
+     * freshly normalized text matches `expectedText` exactly, OR cleaning that
+     * normalized text matches `expectedText` AND the resulting `applied` step
+     * list is identical (same steps, same order, non-empty) to the stored
+     * provenance's `cleanup.applied` — so a raw file that has merely drifted
+     * into cleanup-equivalent *output* text, without the same cleanup steps
+     * having actually fired, can never contaminate export with mismatched
+     * timing. Returns `undefined` when there is no raw artifact, its format is
+     * unrecognized, it fails to parse, or neither form matches.
      */
     async deriveSegmentsFromRaw(episodeUuid, expectedText) {
         const provenance = await this.readProvenance(episodeUuid);
@@ -506,9 +507,16 @@ export class Storage {
         catch {
             return undefined;
         }
-        const cleanupRan = provenance?.cleanup?.version === CLEANUP_VERSION;
-        const matches = normalized.text === expectedText ||
-            (cleanupRan && cleanTranscript(normalized.text).text === expectedText);
+        const storedApplied = provenance?.cleanup?.applied;
+        let cleanupMatches = false;
+        if (provenance?.cleanup?.version === CLEANUP_VERSION && storedApplied?.length) {
+            const cleaned = cleanTranscript(normalized.text);
+            cleanupMatches =
+                cleaned.text === expectedText &&
+                    cleaned.applied.length === storedApplied.length &&
+                    cleaned.applied.every((step, i) => step === storedApplied[i]);
+        }
+        const matches = normalized.text === expectedText || cleanupMatches;
         if (!matches)
             return undefined;
         return normalized.segments?.length ? normalized.segments : undefined;
