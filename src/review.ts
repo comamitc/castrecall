@@ -109,7 +109,7 @@ function sentenceChunks(text: string): string[] {
   return chunks;
 }
 
-function yamlString(value: string): string {
+export function yamlString(value: string): string {
   return JSON.stringify(value);
 }
 

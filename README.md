@@ -87,6 +87,7 @@ Ask your agent to run `castrecall_setup` — it walks through everything below i
 | `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |
 | `castrecall_generate_review` | Writes approval-gated review candidates for stored transcripts. |
 | `castrecall_search` | Keyword/phrase search over stored transcripts. Every result carries provenance and an attributable snippet — see "Search" below. |
+| `castrecall_digest` | Cross-episode digest over a recent time window: listening pattern, recurring topics, and notable excerpts, written as an approval-gated document — see "Cross-episode digest" below. |
 | `castrecall_run_pipeline` | Chains sync → fetch transcripts (new listens only) → generate reviews (episodes newly stored this run) → corpus export. The tool a scheduler recipe should call — see "Scheduled / periodic sync" below. |
 
 ## Screenshots
@@ -189,6 +190,29 @@ positional postings) under `.index/search-index.v1.json` in the data dir —
 private, rebuildable, and never containing the transcript word sequence.
 It's reconciled automatically as transcripts are added or change; deleting
 it just costs the next search a rebuild.
+
+## Cross-episode digest
+
+Everything else in v0 is per-episode. `castrecall_digest { days? }` answers the
+aggregate question instead: *what have I been absorbing lately, and how is it
+shaping my thinking?* It looks across every episode whose listen was first
+seen within the window (default 30 days, `days` overrides it) and writes one
+structural document to `review/pending/digest-<window>.md` — the same
+approval-gated lane as `castrecall_generate_review`.
+
+Like `castrecall_generate_review`, this is heuristic aggregation only: episode
+and show counts, a transcript-source breakdown, recurring topics by term
+frequency, and a handful of notable verbatim excerpts, each attributed to its
+podcast and episode. It never fabricates themes or conclusions — a closing
+"For the reviewing agent" section hands the actual synthesis to you (or your
+agent), the same honesty split as every other CastRecall tool. Episodes you
+listened to but never transcribed still count toward the listening pattern;
+they just don't contribute topics or excerpts, since there's no transcript
+text to draw from.
+
+Re-running `castrecall_digest` with the same window never overwrites a
+pending digest — it reports `alreadyExists: true` and points at the existing
+file, just like review candidates.
 
 ## Listened-episode filter
 
@@ -405,7 +429,7 @@ alive, recover with a one-off `castrecall_run_pipeline` call passing `breakStale
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (195 tests: parsing, normalization, storage idempotency, corpus export, credential storage/session handling, periodic-sync pipeline, error paths)
+npm test            # vitest (374 tests: parsing, normalization, storage idempotency, corpus export, credential storage/session handling, periodic-sync pipeline, cross-episode digest, error paths)
 npm run plugin:build     # tsc + openclaw plugins build (regenerates openclaw.plugin.json)
 npm run plugin:validate  # openclaw plugins validate
 ```

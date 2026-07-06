@@ -55,6 +55,7 @@
       "castrecall_fetch_transcript",
       "castrecall_generate_review",
       "castrecall_search",
+      "castrecall_digest",
       "castrecall_run_pipeline"
     ]
   }

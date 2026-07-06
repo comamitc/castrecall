@@ -13,6 +13,7 @@ import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { resolveConfig, type PluginSettings } from "./config.js";
 import { runPipeline } from "./pipeline.js";
 import {
+  digest,
   fetchTranscript,
   generateReview,
   listRecent,
@@ -176,6 +177,24 @@ export default defineToolPlugin({
         ),
       }),
       execute: async (params, settings: PluginSettings) => search(resolveConfig(settings), params),
+    }),
+    tool({
+      name: "castrecall_digest",
+      description:
+        "Cross-episode digest over a recent time window (default 30 days): listening pattern " +
+        "(episode/show counts, transcript-source breakdown), recurring topics by term frequency, " +
+        "and notable verbatim excerpts, each attributed to its podcast and episode. Structural " +
+        "aggregation only — semantic synthesis ('what have I been absorbing, and how is it shaping " +
+        "my thinking?') is left to the reviewing agent. Writes one approval-gated digest per " +
+        "window to review/pending/, same as castrecall_generate_review.",
+      parameters: Type.Object({
+        days: Type.Optional(
+          Type.Number({
+            description: "Size of the listening window in days, ending now (default 30).",
+          }),
+        ),
+      }),
+      execute: async (params, settings: PluginSettings) => digest(resolveConfig(settings), params),
     }),
     tool({
       name: "castrecall_run_pipeline",

@@ -65,3 +65,14 @@ export declare function search(config: ResolvedConfig, params: {
     query: string;
     limit?: number;
 }): Promise<unknown>;
+/**
+ * Cross-episode digest over a recent time window, filtered on `firstSeenAt`
+ * — the only honest "when I absorbed it" signal in v0 (Pocket Casts episodes
+ * carry no listened-at timestamp; provenance.listenTimestamp is itself
+ * derived from firstSeenAt in fetchTranscript above). Mirrors generateReview:
+ * loads state, reads transcripts for stored episodes, builds a pure
+ * structural document, and writes it to the same approval-gated review lane.
+ */
+export declare function digest(config: ResolvedConfig, params: {
+    days?: number;
+}, deps?: ToolDeps): Promise<unknown>;
