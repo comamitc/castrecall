@@ -72,6 +72,18 @@ detector feeds #41's scoring; #44 speaker turns ride on #43's persisted segments
 - [ ] #43 timestamped segments through storage/export → then #44 speaker metadata/diarization → release v0.12.0
 - [ ] #45 transcript cleanup pass → then #46 proper-noun glossary → release v0.13.0
 
+### v0.14.0–v0.16.0 — local-Whisper quality track (added 2026-07-06, issues #51–#56)
+
+User-added mid-goal; queued after the transcript quality track. Order
+(dependency-driven): #51 is the fail-closed bug and #52's preset is the blessed way
+to satisfy it; #54 records the exact provider/model/decode settings that #52/#53
+introduce; #55's preflight summarizes the #51–#53 config surface; #56 documents all
+of it last. Issues arrived already `pipeline:ready`; milestoned v0.14.0–v0.16.0.
+
+- [ ] #51 explicit quality-ready MLX model (fail closed) → then #52 Apple Silicon large-v3-turbo preset → release v0.14.0
+- [ ] #53 loop-safe Whisper decoding options → then #54 exact provider/model/decode provenance → release v0.15.0
+- [ ] #55 corpus-scale transcription preflight/warnings → then #56 local-model docs → release v0.16.0
+
 > HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resumed from #9 on the new machine 2026-07-06.
 
 #### #9 Taddy webhooks (event-driven transcript availability) — implementation checklist
