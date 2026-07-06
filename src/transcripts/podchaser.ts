@@ -122,21 +122,43 @@ function matchesExpectedPodcast(
   return false;
 }
 
+/** Percent-decoding rounds before a still-encoded GUID is deemed suspect. */
+const MAX_GUID_DECODE_ROUNDS = 3;
+
 /**
  * True only for GUIDs with no URL structure at all. RSS permits permalink
  * GUIDs, and on a private feed those are URLs carrying the same subscriber
  * tokens as the feed URL (in path, query, userinfo, or fragment) — none of
  * which can be proven safe. Rejects anything with URL-structural characters
- * or a parseable scheme (http:, tag:, urn:, ...); such episodes fall back to
- * title search, which transmits only the episode title.
+ * or a parseable scheme (http:, tag:, urn:, ...), and classifies AFTER
+ * bounded repeated percent-decoding so encoded structure (%2F, %3F, %40,
+ * double-encoding) can't smuggle a token past the raw-character checks;
+ * malformed or never-terminating percent-encoding is rejected outright.
+ * Rejected episodes fall back to title search, which transmits only the
+ * episode title.
  */
 function isOpaqueGuid(guid: string): boolean {
-  if (/[/?#@]/.test(guid)) return false;
+  let value = guid;
+  for (let round = 0; round <= MAX_GUID_DECODE_ROUNDS; round += 1) {
+    if (hasUrlStructure(value)) return false;
+    if (!value.includes("%")) return true;
+    if (round === MAX_GUID_DECODE_ROUNDS) return false;
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+function hasUrlStructure(value: string): boolean {
+  if (/[/?#@\\\s]/.test(value)) return true;
   try {
-    new URL(guid);
-    return false;
-  } catch {
+    new URL(value);
     return true;
+  } catch {
+    return false;
   }
 }
 

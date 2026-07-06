@@ -457,6 +457,12 @@ describe("fetchPodchaserTranscript", () => {
       "feeds.example.com/private/SECRET-SUBSCRIBER-TOKEN/ep1",
       "tag:feeds.example.com,2026:SECRET-SUBSCRIBER-TOKEN",
       "ep1?auth=SECRET-SUBSCRIBER-TOKEN",
+      // Percent-encoded URL structure must not smuggle a token past the guard.
+      "https:%2F%2Ffeeds.example.com%2Fprivate%2FSECRET-SUBSCRIBER-TOKEN%2Fep1",
+      "feeds.example.com%2Fprivate%2FSECRET-SUBSCRIBER-TOKEN%2Fep1",
+      "ep1%3Fauth%3DSECRET-SUBSCRIBER-TOKEN",
+      "feeds.example.com%252Fprivate%252FSECRET-SUBSCRIBER-TOKEN", // double-encoded
+      "ep1%2SECRET-SUBSCRIBER-TOKEN", // malformed percent-encoding
     ];
     for (const guid of urlLikeGuids) {
       const requestBodies: string[] = [];
