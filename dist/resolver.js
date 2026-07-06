@@ -9,13 +9,19 @@ import { fetchWithRetry } from "./retry.js";
  *
  * Primary: the (unofficial, unauthenticated) Pocket Casts feed-export endpoint
  * used by community export tools. Fallback: the official iTunes Search API,
- * matched by podcast title.
+ * matched by podcast title. Optional last-resort fallback: Listen Notes'
+ * podcast search, only used when a Listen Notes API key is supplied.
  */
-export async function resolveFeedUrl(podcastUuid, podcastTitle, fetchImpl = fetch, retry = {}) {
+export async function resolveFeedUrl(podcastUuid, podcastTitle, fetchImpl = fetch, retry = {}, listenNotesApiKey) {
     const fromPocketCasts = await feedUrlFromPocketCasts(podcastUuid, fetchImpl, retry);
     if (fromPocketCasts)
         return fromPocketCasts;
-    return feedUrlFromItunes(podcastTitle, fetchImpl, retry);
+    const fromItunes = await feedUrlFromItunes(podcastTitle, fetchImpl, retry);
+    if (fromItunes)
+        return fromItunes;
+    if (!listenNotesApiKey)
+        return undefined;
+    return feedUrlFromListenNotes(podcastTitle, listenNotesApiKey, fetchImpl, retry);
 }
 async function feedUrlFromPocketCasts(podcastUuid, fetchImpl, retry) {
     try {
@@ -47,6 +53,30 @@ async function feedUrlFromItunes(podcastTitle, fetchImpl, retry) {
         const match = body.results?.find((r) => normalizeTitle(r.collectionName ?? "") === wanted) ??
             body.results?.[0];
         return match?.feedUrl;
+    }
+    catch {
+        return undefined;
+    }
+}
+/**
+ * Last-resort feed-URL fallback via Listen Notes' podcast search
+ * (https://www.listennotes.com/api/docs/#get-api-v2-search). Only reached when
+ * both the Pocket Casts feed-export endpoint and iTunes Search miss, and only
+ * when a Listen Notes API key is configured.
+ */
+async function feedUrlFromListenNotes(podcastTitle, apiKey, fetchImpl, retry) {
+    if (!podcastTitle)
+        return undefined;
+    try {
+        const query = new URLSearchParams({ q: podcastTitle, type: "podcast" });
+        const response = await fetchWithRetry(fetchImpl, `https://listen-api.listennotes.com/api/v2/search?${query}`, { headers: { "X-ListenAPI-Key": apiKey } }, retry);
+        if (!response.ok)
+            return undefined;
+        const body = (await response.json());
+        const usable = body.results?.filter((r) => typeof r.rss === "string" && r.rss.length > 0) ?? [];
+        const wanted = normalizeTitle(podcastTitle);
+        const match = usable.find((r) => normalizeTitle(r.title_original ?? "") === wanted);
+        return match?.rss;
     }
     catch {
         return undefined;

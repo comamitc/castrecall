@@ -24,9 +24,10 @@ export type ResolvedFeedItem = {
  *
  * Primary: the (unofficial, unauthenticated) Pocket Casts feed-export endpoint
  * used by community export tools. Fallback: the official iTunes Search API,
- * matched by podcast title.
+ * matched by podcast title. Optional last-resort fallback: Listen Notes'
+ * podcast search, only used when a Listen Notes API key is supplied.
  */
-export declare function resolveFeedUrl(podcastUuid: string, podcastTitle: string, fetchImpl?: FetchLike, retry?: RetryOptions): Promise<string | undefined>;
+export declare function resolveFeedUrl(podcastUuid: string, podcastTitle: string, fetchImpl?: FetchLike, retry?: RetryOptions, listenNotesApiKey?: string): Promise<string | undefined>;
 /**
  * Fetch the feed and find the item matching the listened episode.
  * Matching order: enclosure URL, then GUID, then normalized title.
