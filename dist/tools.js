@@ -557,16 +557,8 @@ export async function search(config, params) {
         });
     }
     const index = new SearchIndex(storage.indexDir());
-    const { hits, droppedCandidates } = await index.search(query, { limit: params.limit }, corpus);
-    return {
-        results: hits,
-        ...(droppedCandidates > 0
-            ? {
-                note: `${droppedCandidates} additional matching transcript(s) were not read for ranking due ` +
-                    "to the per-search candidate cap; narrow your query for full coverage.",
-            }
-            : {}),
-    };
+    const { hits } = await index.search(query, { limit: params.limit }, corpus);
+    return { results: hits };
 }
 function summarizeListen(record) {
     return {

@@ -3,24 +3,20 @@
  * corpus-export.ts (pure builders) + storage.ts (IO): pure tokenize/parse/
  * score/snippet functions below, `SearchIndex` for the on-disk cache.
  *
- * Two-phase scoring: Phase 1 scores every doc from a persisted term-frequency
- * index (tf-length-normalized + idf-lite) and selects a candidate set — docs
- * matching any bare term, plus phrase-eligible docs. Phrase eligibility is
- * decided from the index alone: alongside term frequencies each doc stores
- * hashed adjacent-token-pair fingerprints (FNV-1a of each bigram), and a doc
- * is phrase-eligible only when every adjacent pair of the quoted phrase is
- * present — so docs that merely contain the tokens non-contiguously are
- * excluded without any transcript read. Phase 2 reads phrase-eligible docs
- * in score order to confirm true contiguity (bigram chains are necessary,
- * not sufficient) and score the phrase bonus, stopping only once no unread
- * candidate could beat the kept results — this scan is never cut off by a
- * blind read cap, so a false-positive bigram chain ranked ahead of a true
- * exact-phrase match can never hide that match from Phase 2. Bare-term-only
- * candidates carry no such correctness risk (their score is already final)
- * and keep a flat MAX_CANDIDATES budget. Anything left unread is reported
- * via `droppedCandidates` rather than silently ignored. The index stores
- * term frequencies and one-way bigram hashes only — never prose, never
- * positional data.
+ * Two-phase scoring, with ranking settled entirely from the index. Phase 1
+ * scores every doc (tf-length-normalized + idf-lite over term frequencies)
+ * and resolves quoted-phrase bonuses from index fingerprints alone: hashed
+ * adjacent-token-pair bigrams as a cheap necessary-condition prefilter,
+ * then hashed per-occurrence token@position fingerprints to confirm true
+ * contiguity. No transcript is ever read to rank, so an exact phrase match
+ * can never be hidden behind higher-scoring false positives (every
+ * candidate is fully scored) and a broad query can never trigger a
+ * corpus-wide transcript scan. Phase 2 reads only the final top `limit`
+ * docs to build snippets. The index stores term frequencies and one-way
+ * FNV hashes only — no plaintext prose, and positions appear solely inside
+ * one-way occurrence hashes. Nothing in it is more revealing than the
+ * transcript files it sits beside, and all of it is rebuilt from them on
+ * contentHash or schema change.
  */
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -76,7 +72,17 @@ function fnv1a(input) {
 export function hashBigram(first, second) {
     return fnv1a(`${first} ${second}`);
 }
-/** Build a document's term-frequency + bigram-fingerprint record from its transcript text. Pure. */
+/**
+ * One-way 64-bit fingerprint of a token occurrence at a token index. Two
+ * independent 32-bit FNV-1a passes are concatenated so accidental
+ * collisions (which would fake a contiguity probe) are negligible even
+ * across hour-long transcripts.
+ */
+export function hashOccurrence(term, position) {
+    const key = `${term} ${position}`;
+    return fnv1a(key) + fnv1a(`${key}#`);
+}
+/** Build a document's term-frequency + fingerprint record from its transcript text. Pure. */
 export function buildDocument(uuid, contentHash, text) {
     const tokens = tokenize(text);
     const termFreq = {};
@@ -85,7 +91,8 @@ export function buildDocument(uuid, contentHash, text) {
     const bigrams = new Set();
     for (let i = 0; i + 1 < tokens.length; i++)
         bigrams.add(hashBigram(tokens[i], tokens[i + 1]));
-    return { uuid, contentHash, length: tokens.length, termFreq, bigrams: Array.from(bigrams) };
+    const occurrences = tokens.map((token, i) => hashOccurrence(token, i));
+    return { uuid, contentHash, length: tokens.length, termFreq, bigrams: Array.from(bigrams), occurrences };
 }
 /**
  * Index-only phrase eligibility: every phrase token present AND every
@@ -108,6 +115,31 @@ export function phraseEligible(doc, phrase) {
             return false;
     }
     return true;
+}
+/**
+ * Exact, index-only contiguity check: the phrase matches iff some start
+ * index has every phrase token's occurrence fingerprint at consecutive
+ * positions. Settles what `phraseEligible`'s bigram chains can only
+ * approximate (e.g. "a b … b c" passes the chain without containing
+ * "a b c"), still without reading any transcript. Pass a prebuilt
+ * `occurrences` set when probing several phrases against one doc.
+ */
+export function phraseConfirmed(doc, phrase, occurrences) {
+    if (phrase.length === 0)
+        return false;
+    if (!phrase.every((term) => (doc.termFreq[term] ?? 0) > 0))
+        return false;
+    if (phrase.length === 1)
+        return true;
+    const probes = occurrences ?? new Set(doc.occurrences);
+    outer: for (let start = 0; start + phrase.length <= doc.length; start++) {
+        for (let j = 0; j < phrase.length; j++) {
+            if (!probes.has(hashOccurrence(phrase[j], start + j)))
+                continue outer;
+        }
+        return true;
+    }
+    return false;
 }
 /**
  * Candidate uuids: docs matching any bare keyword term, union docs
@@ -236,13 +268,6 @@ export function buildSnippet(text, query, opts = {}) {
 }
 export const DEFAULT_SEARCH_LIMIT = 10;
 export const MAX_SEARCH_LIMIT = 25;
-/**
- * Bounds how many bare-term (non-phrase) candidate transcripts Phase 2
- * reads per search. Phrase-eligible candidates are bounded by score
- * dominance instead of this flat cap, so a false-positive bigram chain can
- * never rank ahead of and hide a true exact-phrase match.
- */
-export const MAX_CANDIDATES = 50;
 /** `limit && limit > 0 ? … : default` — same guard idiom as tools.ts's listRecent — plus a hard max cap. */
 export function clampLimit(limit) {
     if (!limit || limit <= 0)
@@ -289,9 +314,13 @@ export class SearchIndex {
         let changed = corpus.length !== existing.length;
         for (const entry of corpus) {
             const current = byUuid.get(entry.uuid);
-            // Schema check alongside contentHash: docs persisted before bigram
-            // fingerprints existed rebuild themselves on the next search.
-            if (current && current.contentHash === entry.contentHash && Array.isArray(current.bigrams)) {
+            // Schema check alongside contentHash: docs persisted before the
+            // bigram/occurrence fingerprints existed rebuild themselves on the
+            // next search.
+            if (current &&
+                current.contentHash === entry.contentHash &&
+                Array.isArray(current.bigrams) &&
+                Array.isArray(current.occurrences)) {
                 reconciled.push(current);
                 continue;
             }
@@ -314,70 +343,42 @@ export class SearchIndex {
         const candidateUuids = selectCandidates(query, docs);
         const keywordScores = scoreKeywords(query, docs);
         const limit = clampLimit(opts.limit);
-        // Phrase-eligible docs are selected from the index alone: every phrase
-        // token present AND every adjacent phrase pair's bigram fingerprint
-        // present, so docs holding the tokens only non-contiguously never enter
-        // this loop (they fall through to the capped bare-term pass with their
-        // keyword-only score). Eligible docs are read in keyword-score order to
-        // confirm true contiguity and add the phrase bonus. Bigram-chain
-        // eligibility is necessary but not sufficient for an exact match, so this
-        // read loop has no blind candidate cap — only the score-dominance check
-        // below can stop it — otherwise enough false-positive bigram chains
-        // could rank ahead of a true match and consume a fixed budget before it
-        // is ever read. Anything unread past that point is counted in
-        // `droppedCandidates` and surfaced to the caller.
-        const phraseEligibleUuids = new Set(docs
-            .filter((doc) => query.phrases.some((phrase) => phraseEligible(doc, phrase)))
-            .map((doc) => doc.uuid));
-        const rankedPhraseEligible = Array.from(phraseEligibleUuids).sort((a, b) => (keywordScores.get(b) ?? 0) - (keywordScores.get(a) ?? 0));
-        const maxPhraseBonus = query.phrases.reduce((sum, phrase) => (phrase.length > 0 ? sum + phrase.length * PHRASE_BONUS_WEIGHT : sum), 0);
-        const scored = [];
-        let phraseCandidatesRead = 0;
-        for (const uuid of rankedPhraseEligible) {
-            if (scored.length >= limit) {
-                const weakestKept = scored[scored.length - 1].score;
-                const bestPossibleRemaining = (keywordScores.get(uuid) ?? 0) + maxPhraseBonus;
-                if (bestPossibleRemaining <= weakestKept)
-                    break;
+        // Every candidate's final score — keyword score plus phrase bonuses —
+        // is computed from the index alone: the bigram-chain prefilter cheaply
+        // rejects docs holding the tokens only non-contiguously, and the
+        // occurrence fingerprints confirm exact contiguity for the rest. No
+        // transcript is read to rank, so ranking is complete over ALL
+        // candidates: an exact phrase match can never be hidden behind
+        // higher-scoring false positives, and no query shape — however broad —
+        // triggers corpus-wide transcript IO.
+        const docByUuid = new Map(docs.map((doc) => [doc.uuid, doc]));
+        const ranked = candidateUuids
+            .map((uuid) => {
+            const doc = docByUuid.get(uuid);
+            let bonus = 0;
+            if (doc && query.phrases.length > 0) {
+                let probes;
+                for (const phrase of query.phrases) {
+                    if (phrase.length === 0 || !phraseEligible(doc, phrase))
+                        continue;
+                    probes ??= new Set(doc.occurrences);
+                    if (phraseConfirmed(doc, phrase, probes))
+                        bonus += phrase.length * PHRASE_BONUS_WEIGHT;
+                }
             }
-            const entry = byUuid.get(uuid);
-            if (!entry)
-                continue;
-            const text = await entry.readText();
-            phraseCandidatesRead++;
-            const bonus = phraseBonus(query.phrases, tokenize(text));
-            const score = (keywordScores.get(uuid) ?? 0) + bonus;
-            if (score > 0) {
-                scored.push({ uuid, score, text });
-                scored.sort((a, b) => b.score - a.score);
-                if (scored.length > limit)
-                    scored.length = limit;
-            }
-        }
-        // Bare-term-only candidates need no verification — their keyword score
-        // is already final — so they keep their own flat MAX_CANDIDATES read
-        // budget regardless of how many phrase-eligible docs were scanned above.
-        const bareTermUuids = candidateUuids
-            .filter((uuid) => !phraseEligibleUuids.has(uuid))
-            .sort((a, b) => (keywordScores.get(b) ?? 0) - (keywordScores.get(a) ?? 0));
-        const cappedBareTerm = bareTermUuids.slice(0, MAX_CANDIDATES);
-        const droppedCandidates = (rankedPhraseEligible.length - phraseCandidatesRead) + (bareTermUuids.length - cappedBareTerm.length);
-        for (const uuid of cappedBareTerm) {
-            const entry = byUuid.get(uuid);
-            if (!entry)
-                continue;
-            const text = await entry.readText();
-            const score = keywordScores.get(uuid) ?? 0;
-            if (score > 0)
-                scored.push({ uuid, score, text });
-        }
-        scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.uuid.localeCompare(b.uuid)));
+            return { uuid, score: (keywordScores.get(uuid) ?? 0) + bonus };
+        })
+            .filter((item) => item.score > 0)
+            .sort((a, b) => (b.score !== a.score ? b.score - a.score : a.uuid.localeCompare(b.uuid)));
+        // Phase 2: the only transcript reads in a search — snippets for the
+        // top `limit` hits.
         const hits = [];
-        for (const item of scored.slice(0, limit)) {
+        for (const item of ranked.slice(0, limit)) {
             const entry = byUuid.get(item.uuid);
             if (!entry)
                 continue;
-            const { snippet, snippetText } = buildSnippet(item.text, query);
+            const text = await entry.readText();
+            const { snippet, snippetText } = buildSnippet(text, query);
             hits.push({
                 episodeUuid: entry.provenance.episodeUuid,
                 podcast: entry.provenance.podcastTitle,
@@ -390,6 +391,6 @@ export class SearchIndex {
                 snippetText,
             });
         }
-        return { hits, droppedCandidates };
+        return { hits };
     }
 }

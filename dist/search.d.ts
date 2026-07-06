@@ -3,24 +3,20 @@
  * corpus-export.ts (pure builders) + storage.ts (IO): pure tokenize/parse/
  * score/snippet functions below, `SearchIndex` for the on-disk cache.
  *
- * Two-phase scoring: Phase 1 scores every doc from a persisted term-frequency
- * index (tf-length-normalized + idf-lite) and selects a candidate set — docs
- * matching any bare term, plus phrase-eligible docs. Phrase eligibility is
- * decided from the index alone: alongside term frequencies each doc stores
- * hashed adjacent-token-pair fingerprints (FNV-1a of each bigram), and a doc
- * is phrase-eligible only when every adjacent pair of the quoted phrase is
- * present — so docs that merely contain the tokens non-contiguously are
- * excluded without any transcript read. Phase 2 reads phrase-eligible docs
- * in score order to confirm true contiguity (bigram chains are necessary,
- * not sufficient) and score the phrase bonus, stopping only once no unread
- * candidate could beat the kept results — this scan is never cut off by a
- * blind read cap, so a false-positive bigram chain ranked ahead of a true
- * exact-phrase match can never hide that match from Phase 2. Bare-term-only
- * candidates carry no such correctness risk (their score is already final)
- * and keep a flat MAX_CANDIDATES budget. Anything left unread is reported
- * via `droppedCandidates` rather than silently ignored. The index stores
- * term frequencies and one-way bigram hashes only — never prose, never
- * positional data.
+ * Two-phase scoring, with ranking settled entirely from the index. Phase 1
+ * scores every doc (tf-length-normalized + idf-lite over term frequencies)
+ * and resolves quoted-phrase bonuses from index fingerprints alone: hashed
+ * adjacent-token-pair bigrams as a cheap necessary-condition prefilter,
+ * then hashed per-occurrence token@position fingerprints to confirm true
+ * contiguity. No transcript is ever read to rank, so an exact phrase match
+ * can never be hidden behind higher-scoring false positives (every
+ * candidate is fully scored) and a broad query can never trigger a
+ * corpus-wide transcript scan. Phase 2 reads only the final top `limit`
+ * docs to build snippets. The index stores term frequencies and one-way
+ * FNV hashes only — no plaintext prose, and positions appear solely inside
+ * one-way occurrence hashes. Nothing in it is more revealing than the
+ * transcript files it sits beside, and all of it is rebuilt from them on
+ * contentHash or schema change.
  */
 import type { Provenance } from "./storage.js";
 /** Unicode-safe tokenization: NFKD + combining-mark strip + lowercase, split on letters/numbers. */
@@ -36,12 +32,26 @@ export type IndexedDocument = {
     contentHash: string;
     length: number;
     termFreq: Record<string, number>;
-    /** Unique FNV-1a hashes of each adjacent token pair — phrase-contiguity fingerprints, not recoverable prose. */
+    /** Unique FNV-1a hashes of each adjacent token pair — cheap phrase prefilter, not recoverable prose. */
     bigrams: string[];
+    /**
+     * One 64-bit one-way hash per token occurrence (`token@position`), in
+     * token order. Lets a quoted phrase's exact contiguity be confirmed by
+     * membership probes alone — no transcript read — while keeping the index
+     * free of plaintext prose.
+     */
+    occurrences: string[];
 };
 /** One-way fingerprint of an adjacent token pair. ` ` separator keeps ("ab","c") ≠ ("a","bc"). */
 export declare function hashBigram(first: string, second: string): string;
-/** Build a document's term-frequency + bigram-fingerprint record from its transcript text. Pure. */
+/**
+ * One-way 64-bit fingerprint of a token occurrence at a token index. Two
+ * independent 32-bit FNV-1a passes are concatenated so accidental
+ * collisions (which would fake a contiguity probe) are negligible even
+ * across hour-long transcripts.
+ */
+export declare function hashOccurrence(term: string, position: number): string;
+/** Build a document's term-frequency + fingerprint record from its transcript text. Pure. */
 export declare function buildDocument(uuid: string, contentHash: string, text: string): IndexedDocument;
 /**
  * Index-only phrase eligibility: every phrase token present AND every
@@ -52,6 +62,15 @@ export declare function buildDocument(uuid: string, contentHash: string, text: s
  * without transcript IO.
  */
 export declare function phraseEligible(doc: IndexedDocument, phrase: string[]): boolean;
+/**
+ * Exact, index-only contiguity check: the phrase matches iff some start
+ * index has every phrase token's occurrence fingerprint at consecutive
+ * positions. Settles what `phraseEligible`'s bigram chains can only
+ * approximate (e.g. "a b … b c" passes the chain without containing
+ * "a b c"), still without reading any transcript. Pass a prebuilt
+ * `occurrences` set when probing several phrases against one doc.
+ */
+export declare function phraseConfirmed(doc: IndexedDocument, phrase: string[], occurrences?: Set<string>): boolean;
 /**
  * Candidate uuids: docs matching any bare keyword term, union docs
  * containing every token of any quoted phrase (phrase-eligible docs are
@@ -109,13 +128,6 @@ export type SearchOptions = {
 };
 export declare const DEFAULT_SEARCH_LIMIT = 10;
 export declare const MAX_SEARCH_LIMIT = 25;
-/**
- * Bounds how many bare-term (non-phrase) candidate transcripts Phase 2
- * reads per search. Phrase-eligible candidates are bounded by score
- * dominance instead of this flat cap, so a false-positive bigram chain can
- * never rank ahead of and hide a true exact-phrase match.
- */
-export declare const MAX_CANDIDATES = 50;
 /** `limit && limit > 0 ? … : default` — same guard idiom as tools.ts's listRecent — plus a hard max cap. */
 export declare function clampLimit(limit: number | undefined): number;
 /**
@@ -138,6 +150,5 @@ export declare class SearchIndex {
      */
     search(rawQuery: string, opts: SearchOptions, corpus: CorpusEntry[]): Promise<{
         hits: SearchHit[];
-        droppedCandidates: number;
     }>;
 }

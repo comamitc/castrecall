@@ -11,10 +11,10 @@ import {
   buildSnippet,
   clampLimit,
   DEFAULT_SEARCH_LIMIT,
-  MAX_CANDIDATES,
   MAX_SEARCH_LIMIT,
   parseQuery,
   phraseBonus,
+  phraseConfirmed,
   phraseEligible,
   scoreKeywords,
   SearchIndex,
@@ -127,13 +127,43 @@ describe("phraseEligible", () => {
     expect(phraseEligible(doc, ["climate"])).toBe(true);
   });
 
-  it("is necessary but not sufficient: a chained-bigram gap pattern stays eligible and is settled by phase-2 verification", () => {
+  it("is necessary but not sufficient: a chained-bigram gap pattern stays eligible and is settled by phraseConfirmed", () => {
     // "alpha beta … beta gamma" carries both "alpha beta" and "beta gamma"
     // fingerprints without the trigram — eligibility must include it (the
-    // verification read rejects the bonus), never the reverse.
+    // occurrence-fingerprint check rejects the bonus), never the reverse.
     const doc = buildDocument("doc", "h1", "alpha beta filler beta gamma");
     expect(phraseEligible(doc, ["alpha", "beta", "gamma"])).toBe(true);
     expect(phraseBonus([["alpha", "beta", "gamma"]], tokenize("alpha beta filler beta gamma"))).toBe(0);
+  });
+});
+
+describe("phraseConfirmed", () => {
+  it("agrees with the text-based contiguity check across match shapes", () => {
+    const cases: Array<{ text: string; phrase: string[] }> = [
+      { text: "we discuss climate policy in depth", phrase: ["climate", "policy"] },
+      { text: "climate change shapes every policy debate", phrase: ["climate", "policy"] },
+      { text: "alpha beta filler beta gamma", phrase: ["alpha", "beta", "gamma"] },
+      { text: "the host got to alpha beta gamma eventually", phrase: ["alpha", "beta", "gamma"] },
+      { text: "alpha beta", phrase: ["alpha", "beta", "gamma"] },
+      { text: "solo", phrase: ["solo"] },
+    ];
+    for (const { text, phrase } of cases) {
+      const doc = buildDocument("doc", "h1", text);
+      expect(phraseConfirmed(doc, phrase), `"${phrase.join(" ")}" in "${text}"`).toBe(
+        phraseBonus([phrase], tokenize(text)) > 0,
+      );
+    }
+  });
+
+  it("rejects the chained-bigram false positive that passes phraseEligible", () => {
+    const doc = buildDocument("doc", "h1", "alpha beta filler beta gamma");
+    expect(phraseEligible(doc, ["alpha", "beta", "gamma"])).toBe(true);
+    expect(phraseConfirmed(doc, ["alpha", "beta", "gamma"])).toBe(false);
+  });
+
+  it("confirms a phrase found only at the very end of a document", () => {
+    const doc = buildDocument("doc", "h1", "filler filler filler climate policy");
+    expect(phraseConfirmed(doc, ["climate", "policy"])).toBe(true);
   });
 });
 
@@ -255,7 +285,7 @@ describe("SearchIndex", () => {
     expect(result.hits).toHaveLength(0);
   });
 
-  it("ranks candidates by keyword score before applying the candidate cap, so a high-scoring doc past MAX_CANDIDATES in corpus order is not dropped", async () => {
+  it("ranks candidates by keyword score regardless of corpus order, so a high-scoring doc late in a large corpus is not dropped", async () => {
     const index = new SearchIndex(dir);
     const lowScoreEntries = Array.from({ length: 51 }, (_, i) =>
       entry({
@@ -275,12 +305,12 @@ describe("SearchIndex", () => {
     expect(result.hits[0]?.episodeUuid).toBe("high-score");
   });
 
-  it("does not drop a lower-scoring document holding the exact contiguous phrase behind more than MAX_CANDIDATES higher-scoring non-contiguous matches", async () => {
+  it("does not drop a lower-scoring document holding the exact contiguous phrase behind many higher-scoring non-contiguous matches", async () => {
     const index = new SearchIndex(dir);
     // Every noise doc contains both phrase tokens with a high term
     // frequency (high keyword score) but never contiguously — "climate"
     // and "policy" never sit next to each other.
-    const noiseEntries = Array.from({ length: MAX_CANDIDATES + 10 }, (_, i) =>
+    const noiseEntries = Array.from({ length: 60 }, (_, i) =>
       entry({
         uuid: `noise-${i}`,
         provenance: { ...BASE_PROVENANCE, episodeUuid: `noise-${i}` },
@@ -300,39 +330,53 @@ describe("SearchIndex", () => {
     expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
   });
 
-  it("does not drop an exact 3-token phrase match behind more than MAX_CANDIDATES chained-bigram false positives", async () => {
+  it("does not drop an exact 3-token phrase match behind many chained-bigram false positives, without reading them", async () => {
     const index = new SearchIndex(dir);
-    // Every noise doc is phrase-eligible for "alpha beta gamma": it carries
-    // both required adjacent-pair bigrams ("alpha beta" and "beta gamma"),
-    // but only via a chain ("alpha beta filler beta gamma") — the tokens
-    // "alpha beta gamma" never sit contiguously. High term repetition also
-    // gives every noise doc a much higher keyword score than the true match,
-    // so they rank ahead of it in the Phase 2 read order.
-    const noiseEntries = Array.from({ length: MAX_CANDIDATES + 10 }, (_, i) =>
+    let readCalls = 0;
+    const counted = (uuid: string, text: string) =>
       entry({
-        uuid: `noise-${i}`,
-        provenance: { ...BASE_PROVENANCE, episodeUuid: `noise-${i}` },
-        text: "alpha beta filler beta gamma ".repeat(5).trim(),
-      }),
+        uuid,
+        provenance: { ...BASE_PROVENANCE, episodeUuid: uuid },
+        text,
+        readText: async () => {
+          readCalls += 1;
+          return text;
+        },
+      });
+    // Every noise doc passes the bigram-chain prefilter for "alpha beta
+    // gamma": it carries both required adjacent-pair bigrams ("alpha beta"
+    // and "beta gamma"), but only via a chain ("alpha beta filler beta
+    // gamma") — the tokens never sit contiguously. High term repetition
+    // also gives every noise doc a much higher keyword score than the true
+    // match. The occurrence fingerprints must reject them all from the
+    // index alone.
+    const noiseEntries = Array.from({ length: 60 }, (_, i) =>
+      counted(`noise-${i}`, "alpha beta filler beta gamma ".repeat(5).trim()),
     );
     // Lower keyword score (each phrase term appears once in a long passage)
     // but "alpha beta gamma" is truly contiguous, so it deserves the full
     // phrase bonus and must rank into the results.
-    const trueMatchEntry = entry({
-      uuid: "true-match",
-      provenance: { ...BASE_PROVENANCE, episodeUuid: "true-match" },
-      text: "the show today covered many topics and after a long discussion the host finally got to alpha beta gamma before moving on to other topics entirely",
-    });
+    const trueMatchEntry = counted(
+      "true-match",
+      "the show today covered many topics and after a long discussion the host finally got to alpha beta gamma before moving on to other topics entirely",
+    );
     const corpus = [...noiseEntries, trueMatchEntry];
+
+    // Build the index first so the second search's reads are snippet reads
+    // only, not reconcile-because-new-doc reads.
+    await index.search('"alpha beta gamma"', {}, corpus);
+    readCalls = 0;
 
     const result = await index.search('"alpha beta gamma"', {}, corpus);
     expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
+    // Ranking never reads transcripts — only the returned hits' snippets do.
+    expect(readCalls).toBe(result.hits.length);
   });
 
-  it("bounds phase-2 reads to MAX_CANDIDATES even when a quoted phrase makes nearly every doc phrase-eligible", async () => {
+  it("reads only the top `limit` transcripts even when a quoted phrase truly matches every doc", async () => {
     const index = new SearchIndex(dir);
     const text = "the quick fox and the lazy dog ran near the river";
-    const docCount = MAX_CANDIDATES + 10;
+    const docCount = 60;
     let readCalls = 0;
     const corpus = Array.from({ length: docCount }, (_, i) =>
       entry({
@@ -346,14 +390,14 @@ describe("SearchIndex", () => {
       }),
     );
 
-    // Build the index first so the second search's reads are Phase 2 only,
-    // not reconcile-because-new-doc reads.
+    // Build the index first so the second search's reads are snippet reads
+    // only, not reconcile-because-new-doc reads.
     await index.search('"the lazy"', {}, corpus);
     readCalls = 0;
 
     const result = await index.search('"the lazy"', {}, corpus);
-    expect(readCalls).toBeLessThanOrEqual(MAX_CANDIDATES);
-    expect(result.droppedCandidates).toBeGreaterThan(0);
+    expect(result.hits).toHaveLength(DEFAULT_SEARCH_LIMIT);
+    expect(readCalls).toBe(DEFAULT_SEARCH_LIMIT);
   });
 
   it("never scans the full corpus when a broad quoted phrase matches many docs only non-contiguously", async () => {
@@ -369,29 +413,28 @@ describe("SearchIndex", () => {
           return text;
         },
       });
-    // Far more than the Phase 2 read budget: every noise doc contains both
-    // phrase tokens, never adjacent — the bigram fingerprints exclude them
-    // from phrase verification without a single transcript read.
-    const noise = Array.from({ length: MAX_CANDIDATES * 3 }, (_, i) =>
+    // Far more docs than any result page: every noise doc contains both
+    // phrase tokens, never adjacent — the index fingerprints exclude them
+    // from the phrase bonus without a single transcript read.
+    const noise = Array.from({ length: 150 }, (_, i) =>
       counted(`noise-${i}`, "climate climate climate filler filler filler policy policy policy"),
     );
     const trueMatch = counted("true-match", "a short transcript mentioning climate policy once");
     const corpus = [...noise, trueMatch];
 
-    // Build the index first so the second search's reads are Phase 2 only.
+    // Build the index first so the second search's reads are snippet reads only.
     await index.search('"climate policy"', { limit: 5 }, corpus);
     readCalls = 0;
 
     const result = await index.search('"climate policy"', { limit: 5 }, corpus);
     expect(result.hits.map((hit) => hit.episodeUuid)).toContain("true-match");
-    // One phrase verification read + at most MAX_CANDIDATES bare-term reads
-    // — never the full 151-doc corpus.
-    expect(readCalls).toBeLessThanOrEqual(MAX_CANDIDATES + 1);
+    // Only the top `limit` hits are read (for snippets) — never the full
+    // 151-doc corpus.
+    expect(readCalls).toBeLessThanOrEqual(5);
     expect(readCalls).toBeLessThan(corpus.length);
-    expect(result.droppedCandidates).toBeGreaterThan(0);
   });
 
-  it("self-heals an index persisted before bigram fingerprints existed", async () => {
+  it("self-heals an index persisted before the fingerprint fields existed", async () => {
     const index = new SearchIndex(dir);
     const corpus = [
       entry({
@@ -402,17 +445,30 @@ describe("SearchIndex", () => {
     ];
     await index.search('"climate policy"', {}, corpus);
 
-    // Strip the bigrams field, simulating an index written by the
+    // Strip the fingerprint fields, simulating an index written by the
     // term-frequency-only schema.
     const indexPath = path.join(dir, "search-index.json");
     const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
       docs: Array<Record<string, unknown>>;
     };
-    for (const doc of parsed.docs) delete doc.bigrams;
+    for (const doc of parsed.docs) {
+      delete doc.bigrams;
+      delete doc.occurrences;
+    }
     await fs.writeFile(indexPath, JSON.stringify(parsed), "utf8");
 
     const result = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
     expect(result.hits.map((hit) => hit.episodeUuid)).toContain("match");
+
+    // An index missing only the occurrence fingerprints (bigram-era schema)
+    // also rebuilds.
+    const reparsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
+      docs: Array<Record<string, unknown>>;
+    };
+    for (const doc of reparsed.docs) delete doc.occurrences;
+    await fs.writeFile(indexPath, JSON.stringify(reparsed), "utf8");
+    const again = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
+    expect(again.hits.map((hit) => hit.episodeUuid)).toContain("match");
   });
 
   it("does not throw ENOENT when two searches persist concurrently, since each persist writes a unique temp file", async () => {
