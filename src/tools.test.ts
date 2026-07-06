@@ -556,6 +556,68 @@ describe("tools", () => {
     expect(rungs.stt.detail).toContain("CASTRECALL_ENABLE_STT");
   });
 
+  it("fetch_transcript bounds transient STT retries: capped backoff, then a terminal failure after the budget", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    // RSS/feed lookups miss; Deepgram persistently returns a transient 502.
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.startsWith("https://api.deepgram.com/")) {
+        return new Response("bad gateway", { status: 502 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const sttConfig = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "deepgram",
+      DEEPGRAM_API_KEY: "dg-key",
+    });
+    let clock = Date.parse("2026-01-01T00:00:00Z");
+    const deps = { fetchImpl, env: { PATH: "" }, now: () => new Date(clock) };
+
+    const first = (await fetchTranscript(sttConfig, { episodeUuid: "ep-1" }, deps)) as any;
+    expect(first.status).toBe("no-transcript");
+    expect(first.retry).toEqual({
+      attempt: 1,
+      maxAttempts: 5,
+      nextEligibleAt: "2026-01-01T00:05:00.000Z",
+    });
+    const afterFirst = await new Storage(dir).loadState();
+    expect(afterFirst.episodes["ep-1"].transcriptStatus).toBe("none");
+    expect(afterFirst.episodes["ep-1"].transcriptRetry?.consecutiveFailures).toBe(1);
+
+    for (let attempt = 2; attempt <= 4; attempt += 1) {
+      clock += 60 * 60_000;
+      const result = (await fetchTranscript(sttConfig, { episodeUuid: "ep-1" }, deps)) as any;
+      expect(result.retry.attempt).toBe(attempt);
+    }
+
+    // Backoff doubles per failure: 5 → 10 → 20 → 40 minutes.
+    const afterFourth = await new Storage(dir).loadState();
+    const nextEligible = Date.parse(afterFourth.episodes["ep-1"].transcriptRetry!.nextEligibleAt);
+    expect(nextEligible - clock).toBe(40 * 60_000);
+
+    // The fifth consecutive transient failure exhausts the budget: terminal
+    // "failed", retry bookkeeping cleared, scheduled runs stop re-billing.
+    clock += 60 * 60_000;
+    const last = (await fetchTranscript(sttConfig, { episodeUuid: "ep-1" }, deps)) as any;
+    expect(last.status).toBe("no-transcript");
+    expect(last.retry).toBeUndefined();
+    const finalState = await new Storage(dir).loadState();
+    expect(finalState.episodes["ep-1"].transcriptStatus).toBe("failed");
+    expect(finalState.episodes["ep-1"].transcriptError).toContain("gave up after 5");
+    expect(finalState.episodes["ep-1"].transcriptRetry).toBeUndefined();
+  });
+
   it("fetch_transcript stores RSS transcripts without returning transcript text", async () => {
     const storage = new Storage(dir);
     await storage.init();

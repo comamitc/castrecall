@@ -24,6 +24,14 @@ export const SCHEMA_VERSION = 1;
 /** Capped exponential backoff for the periodic-sync cooldown gate. */
 export const BACKOFF_BASE_MS = 5 * 60_000;
 export const BACKOFF_CAP_MS = 60 * 60_000;
+/**
+ * Attempt budget for TRANSIENT transcript failures (retryable STT errors:
+ * rate limits, timeouts, upstream 5xx, network rejections). Each attempt can
+ * cost real money on a paid STT provider, so after this many consecutive
+ * transient failures the episode is marked terminally "failed" instead of
+ * being retried by every scheduled run forever.
+ */
+export const TRANSCRIPT_RETRY_MAX_ATTEMPTS = 5;
 /** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
 export const LOCK_TTL_MS = 10 * 60_000;
 const EMPTY_STATE = { version: 1, schemaVersion: SCHEMA_VERSION, episodes: {} };

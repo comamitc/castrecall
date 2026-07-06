@@ -187,7 +187,14 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
       id: "providers.stt",
       title: "Cloud speech-to-text (optional, costs money)",
       status: stt.ok ? "configured" : "optional-off",
-      envVars: ["CASTRECALL_ENABLE_STT", "CASTRECALL_STT_PROVIDER", "ASSEMBLYAI_API_KEY", "OPENAI_API_KEY"],
+      envVars: [
+        "CASTRECALL_ENABLE_STT",
+        "CASTRECALL_STT_PROVIDER",
+        "ASSEMBLYAI_API_KEY",
+        "OPENAI_API_KEY",
+        "DEEPGRAM_API_KEY",
+        "CASTRECALL_DEEPGRAM_STT_MODEL",
+      ],
       explanation: stt.ok ? `Enabled (${config.stt.provider}).` : (stt.reason ?? "Disabled."),
     },
     {

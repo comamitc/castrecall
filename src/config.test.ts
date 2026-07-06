@@ -30,6 +30,31 @@ describe("resolveConfig", () => {
     expect(config.historyLimit).toBe(25);
   });
 
+  it("resolves the deepgram provider, key, and model from the environment", () => {
+    const config = resolveConfig(
+      {},
+      {
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "deepgram",
+        DEEPGRAM_API_KEY: "dg-key",
+        CASTRECALL_DEEPGRAM_STT_MODEL: "nova-2",
+      },
+    );
+    expect(config.stt.provider).toBe("deepgram");
+    expect(config.stt.deepgramApiKey).toBe("dg-key");
+    expect(config.stt.deepgramModel).toBe("nova-2");
+  });
+
+  it("defaults deepgramModel to nova-3 when CASTRECALL_DEEPGRAM_STT_MODEL is unset", () => {
+    const config = resolveConfig({}, { CASTRECALL_STT_PROVIDER: "deepgram" });
+    expect(config.stt.deepgramModel).toBe("nova-3");
+  });
+
+  it("falls back to assemblyai for an unknown CASTRECALL_STT_PROVIDER value", () => {
+    const config = resolveConfig({}, { CASTRECALL_STT_PROVIDER: "bogus" });
+    expect(config.stt.provider).toBe("assemblyai");
+  });
+
   it("uses plugin settings when env is empty", () => {
     const config = resolveConfig({ dataDir: "/from/settings", historyLimit: 7 }, {});
     expect(config.dataDir).toBe("/from/settings");

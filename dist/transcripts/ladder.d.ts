@@ -16,6 +16,8 @@ export type RungOutcome = {
     rung: LadderRung;
     outcome: "hit" | "miss" | "skipped" | "failed";
     detail: string;
+    /** Set on a "failed" stt rung when the provider failure is transient (rate limit, timeout, 5xx). */
+    retryable?: boolean;
 };
 export type LadderResult = {
     transcript?: {

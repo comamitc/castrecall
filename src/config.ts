@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 
-export type SttProvider = "assemblyai" | "openai";
+export type SttProvider = "assemblyai" | "openai" | "deepgram";
 
 /** Non-secret settings accepted via the OpenClaw plugin config schema. */
 export type PluginSettings = {
@@ -38,6 +38,8 @@ export type ResolvedConfig = {
     assemblyaiApiKey?: string;
     openaiApiKey?: string;
     openaiModel: string;
+    deepgramApiKey?: string;
+    deepgramModel: string;
   };
   secrets: {
     /** CASTRECALL_DISABLE_KEYCHAIN=1 disables the durable keychain sink only. */
@@ -95,7 +97,8 @@ export function resolveConfig(
   const sttEnabled = envFlag(env.CASTRECALL_ENABLE_STT) ?? settings.sttEnabled ?? false;
   const providerRaw =
     nonEmpty(env.CASTRECALL_STT_PROVIDER)?.toLowerCase() ?? settings.sttProvider ?? "assemblyai";
-  const provider: SttProvider = providerRaw === "openai" ? "openai" : "assemblyai";
+  const provider: SttProvider =
+    providerRaw === "openai" || providerRaw === "deepgram" ? providerRaw : "assemblyai";
 
   const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
 
@@ -134,6 +137,8 @@ export function resolveConfig(
       assemblyaiApiKey: nonEmpty(env.ASSEMBLYAI_API_KEY),
       openaiApiKey: nonEmpty(env.OPENAI_API_KEY),
       openaiModel: nonEmpty(env.CASTRECALL_OPENAI_STT_MODEL) ?? "gpt-4o-transcribe",
+      deepgramApiKey: nonEmpty(env.DEEPGRAM_API_KEY),
+      deepgramModel: nonEmpty(env.CASTRECALL_DEEPGRAM_STT_MODEL) ?? "nova-3",
     },
     secrets: {
       keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,

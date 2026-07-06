@@ -22,6 +22,14 @@ export type TranscriptStatus = "none" | "stored" | "failed";
 /** Capped exponential backoff for the periodic-sync cooldown gate. */
 export declare const BACKOFF_BASE_MS: number;
 export declare const BACKOFF_CAP_MS: number;
+/**
+ * Attempt budget for TRANSIENT transcript failures (retryable STT errors:
+ * rate limits, timeouts, upstream 5xx, network rejections). Each attempt can
+ * cost real money on a paid STT provider, so after this many consecutive
+ * transient failures the episode is marked terminally "failed" instead of
+ * being retried by every scheduled run forever.
+ */
+export declare const TRANSCRIPT_RETRY_MAX_ATTEMPTS = 5;
 /** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
 export declare const LOCK_TTL_MS: number;
 export type SyncHealth = {
@@ -46,6 +54,17 @@ export type ListenRecord = {
     transcriptStatus: TranscriptStatus;
     transcriptSource?: string;
     transcriptError?: string;
+    /**
+     * Retry bookkeeping for transient transcript failures. Scheduled runs skip
+     * the episode until `nextEligibleAt` (manual fetch_transcript is never
+     * gated), and the episode turns terminally "failed" once
+     * TRANSCRIPT_RETRY_MAX_ATTEMPTS is exhausted. Cleared on success and on
+     * terminal failure.
+     */
+    transcriptRetry?: {
+        consecutiveFailures: number;
+        nextEligibleAt: string;
+    };
     /** Last scheduled-run review-stage failure for this episode, if any. */
     reviewError?: string;
     /** When corpus export last succeeded for this episode (only set when export is enabled). */

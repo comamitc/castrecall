@@ -29,7 +29,7 @@ export function resolveConfig(settings = {}, env = process.env) {
             : DEFAULT_HISTORY_LIMIT;
     const sttEnabled = envFlag(env.CASTRECALL_ENABLE_STT) ?? settings.sttEnabled ?? false;
     const providerRaw = nonEmpty(env.CASTRECALL_STT_PROVIDER)?.toLowerCase() ?? settings.sttProvider ?? "assemblyai";
-    const provider = providerRaw === "openai" ? "openai" : "assemblyai";
+    const provider = providerRaw === "openai" || providerRaw === "deepgram" ? providerRaw : "assemblyai";
     const exportDir = nonEmpty(env.CASTRECALL_EXPORT_DIR) ?? nonEmpty(settings.exportDir);
     const envMinRatio = Number.parseFloat(env.CASTRECALL_MIN_LISTEN_RATIO ?? "");
     const minRatio = Number.isFinite(envMinRatio) && envMinRatio > 0 && envMinRatio <= 1
@@ -61,6 +61,8 @@ export function resolveConfig(settings = {}, env = process.env) {
             assemblyaiApiKey: nonEmpty(env.ASSEMBLYAI_API_KEY),
             openaiApiKey: nonEmpty(env.OPENAI_API_KEY),
             openaiModel: nonEmpty(env.CASTRECALL_OPENAI_STT_MODEL) ?? "gpt-4o-transcribe",
+            deepgramApiKey: nonEmpty(env.DEEPGRAM_API_KEY),
+            deepgramModel: nonEmpty(env.CASTRECALL_DEEPGRAM_STT_MODEL) ?? "nova-3",
         },
         secrets: {
             keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,

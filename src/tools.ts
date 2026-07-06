@@ -29,7 +29,14 @@ import {
 } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
-import { Storage, type ListenRecord, type Provenance } from "./storage.js";
+import {
+  BACKOFF_BASE_MS,
+  BACKOFF_CAP_MS,
+  Storage,
+  TRANSCRIPT_RETRY_MAX_ATTEMPTS,
+  type ListenRecord,
+  type Provenance,
+} from "./storage.js";
 
 export type ToolDeps = {
   fetchImpl?: FetchLike;
@@ -118,17 +125,32 @@ async function exportIfEnabled(
 function livePipelineErrors(
   episodes: ListenRecord[],
   config: ResolvedConfig,
-): Array<{ stage: "transcript" | "export" | "review"; episodeUuid: string; title: string; error: string; at: string }> {
+): Array<{
+  stage: "transcript" | "export" | "review";
+  episodeUuid: string;
+  title: string;
+  error: string;
+  at: string;
+  nextEligibleAt?: string;
+}> {
   const errors: Array<{
     stage: "transcript" | "export" | "review";
     episodeUuid: string;
     title: string;
     error: string;
     at: string;
+    nextEligibleAt?: string;
   }> = [];
   for (const e of episodes) {
     if (e.transcriptError && e.transcriptStatus !== "stored") {
-      errors.push({ stage: "transcript", episodeUuid: e.uuid, title: e.title, error: e.transcriptError, at: e.updatedAt });
+      errors.push({
+        stage: "transcript",
+        episodeUuid: e.uuid,
+        title: e.title,
+        error: e.transcriptError,
+        at: e.updatedAt,
+        ...(e.transcriptRetry ? { nextEligibleAt: e.transcriptRetry.nextEligibleAt } : {}),
+      });
     }
     if (config.exportDir && e.exportError) {
       errors.push({ stage: "export", episodeUuid: e.uuid, title: e.title, error: e.exportError, at: e.updatedAt });
@@ -367,6 +389,7 @@ export async function fetchTranscript(
               transcriptStatus: "stored",
               transcriptSource: provenance?.transcriptSource,
               transcriptError: undefined,
+              transcriptRetry: undefined,
             },
             deps.now ?? (() => new Date()),
           );
@@ -394,18 +417,56 @@ export async function fetchTranscript(
     env: deps.env,
   });
   if (!result.transcript) {
-    await storage.updateEpisode(
-      record.uuid,
-      {
-        transcriptStatus: "failed",
-        transcriptError: result.rungs.map((r) => `${r.rung}: ${r.detail}`).join(" | "),
-      },
-      now,
-    );
+    const transcriptError = result.rungs.map((r) => `${r.rung}: ${r.detail}`).join(" | ");
+    // A retryable STT failure (rate limit, timeout, upstream 5xx, network
+    // rejection) leaves transcriptStatus "none" so the episode stays eligible
+    // — but under a bounded, backed-off budget: each attempt can bill a paid
+    // STT provider, so scheduled runs must never hammer the same episode
+    // every tick or retry it forever.
+    const retryable = result.rungs.some((r) => r.retryable);
+    let retry: ListenRecord["transcriptRetry"];
+    if (!retryable) {
+      await storage.updateEpisode(
+        record.uuid,
+        { transcriptStatus: "failed", transcriptError, transcriptRetry: undefined },
+        now,
+      );
+    } else {
+      const consecutiveFailures = (record.transcriptRetry?.consecutiveFailures ?? 0) + 1;
+      if (consecutiveFailures >= TRANSCRIPT_RETRY_MAX_ATTEMPTS) {
+        await storage.updateEpisode(
+          record.uuid,
+          {
+            transcriptStatus: "failed",
+            transcriptError:
+              `${transcriptError} (gave up after ${consecutiveFailures} consecutive transient ` +
+              "failures; run castrecall_fetch_transcript manually to try again)",
+            transcriptRetry: undefined,
+          },
+          now,
+        );
+      } else {
+        const delay = Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_CAP_MS);
+        retry = {
+          consecutiveFailures,
+          nextEligibleAt: new Date(now().getTime() + delay).toISOString(),
+        };
+        await storage.updateEpisode(record.uuid, { transcriptError, transcriptRetry: retry }, now);
+      }
+    }
     return {
       status: "no-transcript",
       episode: summarizeListen(record),
       ladder: result.rungs,
+      ...(retry
+        ? {
+            retry: {
+              attempt: retry.consecutiveFailures,
+              maxAttempts: TRANSCRIPT_RETRY_MAX_ATTEMPTS,
+              nextEligibleAt: retry.nextEligibleAt,
+            },
+          }
+        : {}),
       hint: "Each rung explains why it missed or was skipped. Configure the next rung or enable STT to go further.",
     };
   }
@@ -435,7 +496,12 @@ export async function fetchTranscript(
   });
   await storage.updateEpisode(
     record.uuid,
-    { transcriptStatus: "stored", transcriptSource: result.transcript.source, transcriptError: undefined },
+    {
+      transcriptStatus: "stored",
+      transcriptSource: result.transcript.source,
+      transcriptError: undefined,
+      transcriptRetry: undefined,
+    },
     now,
   );
   const exportResult = await exportAndRecord(config, storage, record, now);

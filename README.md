@@ -93,7 +93,7 @@ Cheapest and most open first; every rung reports why it hit, missed, or was skip
 1. **RSS `<podcast:transcript>`** (always on, free) — the open [podcast namespace](https://podcastindex.org/namespace/1.0) standard. Supports plain text, HTML, VTT, SRT, and JSON transcripts, normalized to clean text with speaker labels where available.
 2. **Taddy** (optional) — set `TADDY_API_KEY` + `TADDY_USER_ID` ([free signup](https://taddy.org/developers); podcast-provided transcripts may be available to free accounts, while generated/on-demand transcripts use Taddy plan credits).
 3. **Local Whisper** (free, fully private, auto-detected) — if a Whisper CLI is installed, CastRecall transcribes the audio on your machine at no cost. Detected binaries, in order: `whisper-cli`/`whisper-cpp` ([whisper.cpp](https://github.com/ggerganov/whisper.cpp), e.g. `brew install whisper-cpp`, needs a ggml model via `CASTRECALL_WHISPER_MODEL` and ffmpeg for non-WAV audio), `mlx_whisper` (Apple Silicon, `pip install mlx-whisper`), `whisper-ctranslate2`, `whisper` (openai-whisper). Or supply any command via `CASTRECALL_WHISPER_COMMAND="your-tool {input}"` (transcript on stdout). Nothing is bundled — when no CLI is found the rung is skipped with install hints.
-4. **Cloud speech-to-text** (optional, **costs money**, disabled by default) — enable explicitly with `CASTRECALL_ENABLE_STT=true`. Providers: **AssemblyAI** (default; transcribes straight from the audio URL) or **OpenAI** (`gpt-4o-transcribe`; requires downloading and uploading the audio, 25 MB API limit).
+4. **Cloud speech-to-text** (optional, **costs money**, disabled by default) — enable explicitly with `CASTRECALL_ENABLE_STT=true`. Providers: **AssemblyAI** (default; transcribes straight from the audio URL), **OpenAI** (`gpt-4o-transcribe`; requires downloading and uploading the audio, 25 MB API limit), or **Deepgram** (`nova-3`; also transcribes straight from the audio URL, with diarized speaker labels).
 
 If no rung produces a transcript, the episode is marked `failed` with the per-rung reasons — no fake output, ever.
 
@@ -126,10 +126,12 @@ Pocket Casts' `/user/history` endpoint returns everything you've opened, includi
 | `CASTRECALL_WHISPER_COMMAND` | no | Custom local transcription command with an `{input}` placeholder; stdout = transcript. |
 | `CASTRECALL_DISABLE_LOCAL_WHISPER` | no | `true` to skip the local Whisper rung even when a CLI is installed. |
 | `CASTRECALL_ENABLE_STT` | no | `true` to allow paid STT fallback. |
-| `CASTRECALL_STT_PROVIDER` | no | `assemblyai` (default) or `openai`. |
+| `CASTRECALL_STT_PROVIDER` | no | `assemblyai` (default), `openai`, or `deepgram`. |
 | `ASSEMBLYAI_API_KEY` | with STT | AssemblyAI transcription. |
 | `OPENAI_API_KEY` | with STT | OpenAI transcription. |
 | `CASTRECALL_OPENAI_STT_MODEL` | no | Default `gpt-4o-transcribe`. |
+| `DEEPGRAM_API_KEY` | with STT | Deepgram transcription. |
+| `CASTRECALL_DEEPGRAM_STT_MODEL` | no | Default `nova-3`. |
 
 Non-secret settings (`dataDir`, `historyLimit`, `sttEnabled`, `sttProvider`, `exportDir`) can also be set via the plugin's config schema; env vars win when both are set.
 
@@ -287,7 +289,8 @@ alive, recover with a one-off `castrecall_run_pipeline` call passing `breakStale
 - **"whisper.cpp needs a ggml model file"** — set `CASTRECALL_WHISPER_MODEL=/path/to/ggml-base.en.bin` (download via whisper.cpp's `models/download-ggml-model.sh` or Hugging Face `ggerganov/whisper.cpp`).
 - **"whisper.cpp needs 16 kHz WAV input"** — install ffmpeg (`brew install ffmpeg`) so CastRecall can convert the episode audio, or use `mlx_whisper`/openai-whisper which decode audio themselves.
 - **STT skipped even with a key set** — cloud STT must be explicitly enabled (`CASTRECALL_ENABLE_STT=true`); it costs money per episode.
-- **OpenAI STT fails on long episodes** — the 25 MB upload limit; use `CASTRECALL_STT_PROVIDER=assemblyai`.
+- **OpenAI STT fails on long episodes** — the 25 MB upload limit; use `CASTRECALL_STT_PROVIDER=assemblyai` or `CASTRECALL_STT_PROVIDER=deepgram` (both transcribe straight from the audio URL, no upload limit here).
+- **Want diarized speaker labels without polling** — `CASTRECALL_STT_PROVIDER=deepgram` transcribes straight from the audio URL and responds synchronously; very long episodes may still time out on Deepgram's side.
 - **Where did my data go?** — `castrecall_setup_status` prints the data dir.
 
 ## Development

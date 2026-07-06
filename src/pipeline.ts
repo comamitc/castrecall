@@ -16,7 +16,7 @@
 
 import { CastrecallSetupError, type ResolvedConfig } from "./config.js";
 import { PocketCastsApiError } from "./pocketcasts/client.js";
-import { LOCK_TTL_MS, Storage } from "./storage.js";
+import { LOCK_TTL_MS, Storage, type ListenRecord } from "./storage.js";
 import {
   exportAndRecord,
   fetchTranscript,
@@ -142,9 +142,25 @@ export async function runPipeline(
     // still transcriptStatus "none" and would otherwise never be retried,
     // since recordListens only reports it as "new" once.
     const stateAfterSync = await storage.loadState();
-    const pendingTranscripts = Object.values(stateAfterSync.episodes).filter(
-      (episode) => episode.transcriptStatus === "none",
-    );
+    // Honor per-episode retry backoff: an episode whose last transcript
+    // attempt failed transiently (retryable STT error) carries a
+    // nextEligibleAt, and re-attempting before then would re-bill a paid STT
+    // provider on every scheduled tick. Deferred episodes are reported, not
+    // silently dropped; fetch_transcript run manually is never gated.
+    const nowMs = now().getTime();
+    const pendingTranscripts: ListenRecord[] = [];
+    let deferred = 0;
+    for (const episode of Object.values(stateAfterSync.episodes)) {
+      if (episode.transcriptStatus !== "none") continue;
+      const eligibleAt = episode.transcriptRetry
+        ? Date.parse(episode.transcriptRetry.nextEligibleAt)
+        : Number.NEGATIVE_INFINITY;
+      if (Number.isFinite(eligibleAt) && eligibleAt > nowMs) {
+        deferred += 1;
+        continue;
+      }
+      pendingTranscripts.push(episode);
+    }
 
     let stored = 0;
     let failed = 0;
@@ -226,7 +242,7 @@ export async function runPipeline(
 
     return {
       newListens: syncResult.newListens.length,
-      transcripts: { stored, failed },
+      transcripts: { stored, failed, ...(deferred > 0 ? { deferred } : {}) },
       ...(config.exportDir ? { exports: { exported } } : {}),
       reviews: { generated, skipped },
       ...(errors.length > 0 ? { errors } : {}),

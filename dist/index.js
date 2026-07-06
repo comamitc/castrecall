@@ -22,7 +22,7 @@ const configSchema = Type.Object({
     sttEnabled: Type.Optional(Type.Boolean({
         description: "Explicitly enable the paid speech-to-text fallback (default false; it costs money per episode).",
     })),
-    sttProvider: Type.Optional(Type.Union([Type.Literal("assemblyai"), Type.Literal("openai")], {
+    sttProvider: Type.Optional(Type.Union([Type.Literal("assemblyai"), Type.Literal("openai"), Type.Literal("deepgram")], {
         description: "Speech-to-text provider when sttEnabled is true (default assemblyai).",
     })),
     exportDir: Type.Optional(Type.String({
