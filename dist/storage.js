@@ -21,7 +21,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
 import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
-import { normalizeTranscript, } from "./transcripts/normalize.js";
+import { hashNormalizedTranscript, normalizeTranscript, } from "./transcripts/normalize.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
  * shape). Bump only for breaking changes; new fields are additive within a
@@ -480,13 +480,14 @@ export class Storage {
      * sidecar existed (issue #43), by re-normalizing the still-present
      * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
      * freshly normalized text matches `expectedText` exactly, OR the freshly
-     * normalized text hashes to the stored `cleanup.rawTextHash` (proving it's
-     * the same pre-cleanup text the stored `applied` steps actually ran
-     * against, not merely drifted text that happens to clean to the same
-     * output) AND cleaning it reproduces `expectedText` with an identical
-     * `applied` step list. Sidecars without a `rawTextHash` (pre-fix) fall back
-     * to exact-match only. Returns `undefined` when there is no raw artifact,
-     * its format is unrecognized, it fails to parse, or neither form matches.
+     * normalized text-and-timing hashes (via `hashNormalizedTranscript`) to the
+     * stored `cleanup.rawTextHash` (proving it's the same pre-cleanup text
+     * *and cue timing* the stored `applied` steps actually ran against, not
+     * merely drifted text/timestamps that happen to clean to the same output)
+     * AND cleaning it reproduces `expectedText` with an identical `applied`
+     * step list. Sidecars without a `rawTextHash` (pre-fix) fall back to
+     * exact-match only. Returns `undefined` when there is no raw artifact, its
+     * format is unrecognized, it fails to parse, or neither form matches.
      */
     async deriveSegmentsFromRaw(episodeUuid, expectedText) {
         const provenance = await this.readProvenance(episodeUuid);
@@ -513,7 +514,7 @@ export class Storage {
         if (provenance?.cleanup?.version === CLEANUP_VERSION &&
             storedApplied?.length &&
             storedRawTextHash &&
-            createHash("sha256").update(normalized.text, "utf8").digest("hex") === storedRawTextHash) {
+            hashNormalizedTranscript(normalized) === storedRawTextHash) {
             const cleaned = cleanTranscript(normalized.text);
             cleanupMatches =
                 cleaned.text === expectedText &&

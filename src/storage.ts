@@ -25,6 +25,7 @@ import type { PocketCastsEpisode } from "./pocketcasts/client.js";
 import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
 import type { LocalWhisperGeneration } from "./transcripts/local-whisper.js";
 import {
+  hashNormalizedTranscript,
   normalizeTranscript,
   type NormalizedTranscript,
   type TranscriptFormat,
@@ -212,11 +213,13 @@ export type Provenance = {
   quality?: TranscriptQuality;
   /**
    * Deterministic cleanup pass provenance (issue #45): version, the named
-   * transform steps that actually changed the text, and a hash of the
-   * pre-cleanup normalized text the steps were applied to. The hash is the
-   * identity proof for `deriveSegmentsFromRaw`'s cleanup-equivalent recovery
-   * path — matching `applied` step names alone only proves the same steps
-   * *would* fire on some input, not that the raw artifact is unchanged.
+   * transform steps that actually changed the text, and a hash (see
+   * `hashNormalizedTranscript`) of the pre-cleanup normalized text *and cue
+   * timing* the steps were applied to. The hash is the identity proof for
+   * `deriveSegmentsFromRaw`'s cleanup-equivalent recovery path — matching
+   * `applied` step names alone only proves the same steps *would* fire on
+   * some input, and hashing text alone only proves the caption text is
+   * unchanged, not that the raw artifact's cue timestamps are.
    * Present whenever cleanup ran, even with `applied: []` (ran, no-op) —
    * omitted entirely when cleanup was disabled
    * (`CASTRECALL_TRANSCRIPT_CLEANUP=0`), distinguishing "ran, no-op" from
@@ -666,13 +669,14 @@ export class Storage {
    * sidecar existed (issue #43), by re-normalizing the still-present
    * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
    * freshly normalized text matches `expectedText` exactly, OR the freshly
-   * normalized text hashes to the stored `cleanup.rawTextHash` (proving it's
-   * the same pre-cleanup text the stored `applied` steps actually ran
-   * against, not merely drifted text that happens to clean to the same
-   * output) AND cleaning it reproduces `expectedText` with an identical
-   * `applied` step list. Sidecars without a `rawTextHash` (pre-fix) fall back
-   * to exact-match only. Returns `undefined` when there is no raw artifact,
-   * its format is unrecognized, it fails to parse, or neither form matches.
+   * normalized text-and-timing hashes (via `hashNormalizedTranscript`) to the
+   * stored `cleanup.rawTextHash` (proving it's the same pre-cleanup text
+   * *and cue timing* the stored `applied` steps actually ran against, not
+   * merely drifted text/timestamps that happen to clean to the same output)
+   * AND cleaning it reproduces `expectedText` with an identical `applied`
+   * step list. Sidecars without a `rawTextHash` (pre-fix) fall back to
+   * exact-match only. Returns `undefined` when there is no raw artifact, its
+   * format is unrecognized, it fails to parse, or neither form matches.
    */
   async deriveSegmentsFromRaw(
     episodeUuid: string,
@@ -703,7 +707,7 @@ export class Storage {
       provenance?.cleanup?.version === CLEANUP_VERSION &&
       storedApplied?.length &&
       storedRawTextHash &&
-      createHash("sha256").update(normalized.text, "utf8").digest("hex") === storedRawTextHash
+      hashNormalizedTranscript(normalized) === storedRawTextHash
     ) {
       const cleaned = cleanTranscript(normalized.text);
       cleanupMatches =

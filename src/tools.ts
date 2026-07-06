@@ -27,6 +27,7 @@ import {
 import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { detectRepetitionLoop } from "./transcripts/loop-detection.js";
+import { hashNormalizedTranscript } from "./transcripts/normalize.js";
 import { scoreTranscriptQuality } from "./transcripts/quality.js";
 import {
   detectLocalWhisper,
@@ -692,7 +693,7 @@ export async function fetchTranscript(
           cleanup: {
             version: CLEANUP_VERSION,
             applied: cleaned.applied,
-            rawTextHash: createHash("sha256").update(result.transcript.text, "utf8").digest("hex"),
+            rawTextHash: hashNormalizedTranscript(result.transcript),
           },
         }
       : {}),

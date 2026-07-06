@@ -14,7 +14,7 @@ import {
   type Provenance,
 } from "./storage.js";
 import { CORPUS_SCALE_MIN_EPISODES } from "./transcripts/preflight.js";
-import { normalizeTranscript } from "./transcripts/normalize.js";
+import { hashNormalizedTranscript, normalizeTranscript } from "./transcripts/normalize.js";
 import {
   digest,
   fetchTranscript,
@@ -1483,10 +1483,9 @@ describe("tools", () => {
 
       // The pre-cleanup text is always recoverable by re-normalizing raw.<ext>,
       // and rawTextHash is the identity proof that recovery ties back to it.
-      expect(normalizeTranscript(raw, "txt").text).toBe(CAPTION_ARTIFACT_TEXT);
-      expect(provenance?.cleanup?.rawTextHash).toBe(
-        createHash("sha256").update(CAPTION_ARTIFACT_TEXT, "utf8").digest("hex"),
-      );
+      const rawNormalized = normalizeTranscript(raw, "txt");
+      expect(rawNormalized.text).toBe(CAPTION_ARTIFACT_TEXT);
+      expect(provenance?.cleanup?.rawTextHash).toBe(hashNormalizedTranscript(rawNormalized));
     });
 
     it("stores uncleaned text with provenance.cleanup absent when CASTRECALL_TRANSCRIPT_CLEANUP=0", async () => {

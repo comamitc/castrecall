@@ -15,6 +15,7 @@ import { buildSetupPlan, classifyExportDir, classifyNotesDir, detectGbrain, PRIV
 import { CLEANUP_VERSION, cleanTranscript } from "./transcripts/cleanup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { detectRepetitionLoop } from "./transcripts/loop-detection.js";
+import { hashNormalizedTranscript } from "./transcripts/normalize.js";
 import { scoreTranscriptQuality } from "./transcripts/quality.js";
 import { detectLocalWhisper, localWhisperReadiness, resolveWhisperDecodeArgs, resolveWhisperModel, } from "./transcripts/local-whisper.js";
 import { buildTranscriptionPreflight } from "./transcripts/preflight.js";
@@ -543,7 +544,7 @@ export async function fetchTranscript(config, params, deps = {}) {
                 cleanup: {
                     version: CLEANUP_VERSION,
                     applied: cleaned.applied,
-                    rawTextHash: createHash("sha256").update(result.transcript.text, "utf8").digest("hex"),
+                    rawTextHash: hashNormalizedTranscript(result.transcript),
                 },
             }
             : {}),

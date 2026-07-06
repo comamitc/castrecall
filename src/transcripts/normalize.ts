@@ -3,6 +3,8 @@
  * Supported: plain text, HTML, WebVTT, SRT, and podcast-namespace JSON.
  */
 
+import { createHash } from "node:crypto";
+
 export type TranscriptFormat = "txt" | "html" | "vtt" | "srt" | "json";
 
 export type TranscriptSegment = {
@@ -21,6 +23,20 @@ export type NormalizedTranscript = {
   text: string;
   segments?: TranscriptSegment[];
 };
+
+/**
+ * Hash binding a normalized transcript's text to its cue timing. Used as the
+ * identity proof for cleanup-equivalent segment recovery (issue #45): a raw
+ * artifact re-encoded with identical caption text but drifted start/end
+ * timestamps must hash differently, or a provenance check keyed on text alone
+ * would let recovered segments carry stale timings.
+ */
+export function hashNormalizedTranscript(normalized: Pick<NormalizedTranscript, "text" | "segments">): string {
+  const timing = (normalized.segments ?? [])
+    .map((segment) => `${segment.start ?? ""}|${segment.end ?? ""}|${segment.text}`)
+    .join("\n");
+  return createHash("sha256").update(`${normalized.text}::TIMING::${timing}`, "utf8").digest("hex");
+}
 
 /** Best-effort format detection from MIME type, URL extension, then content sniffing. */
 export function detectFormat(options: {
