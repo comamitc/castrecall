@@ -22,6 +22,7 @@ import { podchaserConfigured } from "./transcripts/podchaser.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import {
   localWhisperReadiness,
+  resolveWhisperDecodeArgs,
   resolveWhisperModel,
   type WhisperDetection,
 } from "./transcripts/local-whisper.js";
@@ -212,16 +213,36 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
         "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY",
         "CASTRECALL_WHISPER_COMMAND",
         "CASTRECALL_DISABLE_LOCAL_WHISPER",
+        "CASTRECALL_WHISPER_LANGUAGE",
+        "CASTRECALL_WHISPER_CONDITION_ON_PREVIOUS_TEXT",
+        "CASTRECALL_WHISPER_WORD_TIMESTAMPS",
+        "CASTRECALL_WHISPER_OUTPUT_FORMAT",
+        "CASTRECALL_WHISPER_NO_SPEECH_THRESHOLD",
+        "CASTRECALL_WHISPER_LOGPROB_THRESHOLD",
+        "CASTRECALL_WHISPER_COMPRESSION_RATIO_THRESHOLD",
+        "CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD",
       ],
       explanation: whisperReady
         ? `Detected ${deps.whisper.detected!.flavor} on PATH — transcribes locally at no cost and ` +
           "nothing leaves your machine." +
           (() => {
             const resolved = resolveWhisperModel(deps.whisper.detected!.flavor, config.localWhisper);
-            if (!resolved.model) return "";
-            return resolved.source === "preset"
-              ? ` Using ${resolved.model} (preset: ${resolved.preset}).`
-              : ` Using ${resolved.model}.`;
+            const modelPart = !resolved.model
+              ? ""
+              : resolved.source === "preset"
+                ? ` Using ${resolved.model} (preset: ${resolved.preset}).`
+                : ` Using ${resolved.model}.`;
+            const decodeResolution = resolveWhisperDecodeArgs(
+              deps.whisper.detected!.flavor,
+              config.localWhisper.decode,
+            );
+            const ignoredPart =
+              decodeResolution.ignored.length > 0
+                ? ` Ignored decode options: ${decodeResolution.ignored
+                    .map((o) => `${o.option} (${o.reason})`)
+                    .join("; ")}.`
+                : "";
+            return modelPart + ignoredPart;
           })()
         : (whisperReason ?? deps.whisper.reason!),
     },

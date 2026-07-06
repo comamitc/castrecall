@@ -157,3 +157,58 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
     expect(result.transcript?.provider).toBe("local-whisper:mlx-whisper:whisper-large-v3-turbo");
   });
 });
+
+describe("runTranscriptLadder local-whisper rung with structured output (issue #53)", () => {
+  let binDir: string;
+
+  beforeEach(async () => {
+    binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+  });
+
+  afterEach(async () => {
+    await fs.rm(binDir, { recursive: true, force: true });
+  });
+
+  it("returns a json transcript.format/raw/text trio and surfaces an ignored decode option in the hit detail", async () => {
+    // Real subprocess mimicking whisper.cpp's -oj/-of contract: parses argv
+    // for -of's value and writes whisper.cpp-shaped JSON (a "transcription"
+    // array with nested "offsets") to <that base>.json.
+    await fs.writeFile(
+      path.join(binDir, "whisper-cli"),
+      "#!/bin/sh\n" +
+        'outbase=""\n' +
+        'while [ "$#" -gt 0 ]; do\n' +
+        '  if [ "$1" = "-of" ]; then outbase="$2"; fi\n' +
+        "  shift\n" +
+        "done\n" +
+        "cat > \"$outbase.json\" <<'JSON'\n" +
+        '{"transcription":[{"text":"Hello from whisper.cpp.","offsets":{"from":0,"to":1200}}]}\n' +
+        "JSON\n",
+      { mode: 0o755 },
+    );
+
+    const audioFetch = (async (input: unknown) => {
+      const url = String(input);
+      if (url.endsWith("ep1.wav")) return new Response("fake wav bytes", { status: 200 });
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const result = await runTranscriptLadder(
+      config({
+        CASTRECALL_WHISPER_MODEL: "/path/to/ggml.bin",
+        CASTRECALL_WHISPER_OUTPUT_FORMAT: "json",
+        CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD: "2",
+      }),
+      { ...RECORD, audioUrl: "https://cdn.example.com/ep1.wav" },
+      { fetchImpl: audioFetch, env: { PATH: binDir }, skipStt: true },
+    );
+
+    expect(result.transcript?.format).toBe("json");
+    expect(result.transcript?.raw).toContain("Hello from whisper.cpp.");
+    expect(result.transcript?.text).toContain("Hello from whisper.cpp.");
+
+    const whisperRung = result.rungs.find((r) => r.rung === "local-whisper")!;
+    expect(whisperRung.outcome).toBe("hit");
+    expect(whisperRung.detail).toContain("hallucinationSilenceThreshold");
+  });
+});

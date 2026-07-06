@@ -2,17 +2,23 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { resolveConfig } from "../config.js";
+import { resolveConfig, type WhisperDecodeConfig } from "../config.js";
 import {
   WHISPER_PRESET_NON_MLX_MESSAGE,
   WHISPER_PRESET_UNKNOWN_MESSAGE,
   detectLocalWhisper,
   findOnPath,
   localWhisperReadiness,
+  resolveWhisperDecodeArgs,
   resolveWhisperModel,
   transcribeWithLocalWhisper,
   type WhisperDetection,
 } from "./local-whisper.js";
+
+const DEFAULT_DECODE: WhisperDecodeConfig = {
+  conditionOnPreviousText: false,
+  outputFormat: "txt",
+};
 
 describe("detectLocalWhisper", () => {
   let binDir: string;
@@ -130,6 +136,189 @@ describe("resolveWhisperModel", () => {
     const result = resolveWhisperModel("custom", { preset: "best" });
     expect(result).toEqual({ source: "none", preset: "best" });
     expect(result.reason).toBeUndefined();
+  });
+});
+
+describe("resolveWhisperDecodeArgs", () => {
+  it("defaults to disabling condition-on-previous-text (loop prevention) with no other flags", () => {
+    const mlx = resolveWhisperDecodeArgs("mlx-whisper", DEFAULT_DECODE);
+    expect(mlx.args).toEqual(["--condition-on-previous-text", "False"]);
+    expect(mlx.applied).toEqual(["conditionOnPreviousText"]);
+    expect(mlx.ignored).toEqual([]);
+    expect(mlx.outputFormat).toBe("txt");
+
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", DEFAULT_DECODE);
+    expect(cpp.args).toEqual(["-l", "auto", "-mc", "0"]);
+
+    const openai = resolveWhisperDecodeArgs("openai-whisper", DEFAULT_DECODE);
+    expect(openai.args).toEqual(["--condition_on_previous_text", "False"]);
+  });
+
+  it("maps language and thresholds to the right per-flavor flag spelling", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      language: "en",
+      noSpeechThreshold: 0.6,
+    };
+    const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
+    expect(mlx.args).toEqual(
+      expect.arrayContaining(["--language", "en", "--no-speech-threshold", "0.6"]),
+    );
+    expect(mlx.applied).toEqual(
+      expect.arrayContaining(["language", "conditionOnPreviousText", "noSpeechThreshold"]),
+    );
+
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", decode);
+    expect(cpp.args).toEqual(expect.arrayContaining(["-l", "en", "-nth", "0.6"]));
+
+    const openai = resolveWhisperDecodeArgs("openai-whisper", decode);
+    expect(openai.args).toEqual(
+      expect.arrayContaining(["--language", "en", "--no_speech_threshold", "0.6"]),
+    );
+  });
+
+  it("passes -l auto to whisper.cpp when no language hint is configured (regression)", () => {
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", DEFAULT_DECODE);
+    expect(cpp.args).toEqual(expect.arrayContaining(["-l", "auto"]));
+    expect(cpp.applied).not.toContain("language");
+
+    const other = resolveWhisperDecodeArgs("openai-whisper", DEFAULT_DECODE);
+    expect(other.args).not.toEqual(expect.arrayContaining(["--language"]));
+  });
+
+  it("applies hallucinationSilenceThreshold on Python-backed flavors once word timestamps are APPLIED (json output)", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      wordTimestamps: true,
+      outputFormat: "json",
+      hallucinationSilenceThreshold: 2,
+    };
+    const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
+    expect(mlx.args).toEqual(expect.arrayContaining(["--hallucination-silence-threshold", "2"]));
+    expect(mlx.applied).toEqual(
+      expect.arrayContaining(["wordTimestamps", "hallucinationSilenceThreshold"]),
+    );
+    expect(mlx.ignored).toEqual([]);
+  });
+
+  it("never reports word timestamps as applied when the stored output format cannot carry them", () => {
+    // txt output stores no word-level timing — reporting the option as
+    // honored would be false provenance.
+    const decode: WhisperDecodeConfig = { ...DEFAULT_DECODE, wordTimestamps: true };
+    for (const flavor of ["mlx-whisper", "openai-whisper", "whisper-ctranslate2"] as const) {
+      const resolution = resolveWhisperDecodeArgs(flavor, decode);
+      expect(resolution.applied).not.toContain("wordTimestamps");
+      const entry = resolution.ignored.find((item) => item.option === "wordTimestamps");
+      expect(entry?.reason).toContain("json");
+    }
+  });
+
+  it("applies hallucinationSilenceThreshold with txt output — it is a decode guardrail, not an artifact feature", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      hallucinationSilenceThreshold: 2,
+    };
+    const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
+    // The threshold needs the word-timestamp decode path, which is enabled
+    // implicitly; the threshold itself is applied regardless of output format.
+    expect(mlx.args).toEqual(
+      expect.arrayContaining(["--word-timestamps", "True", "--hallucination-silence-threshold", "2"]),
+    );
+    expect(mlx.applied).toContain("hallucinationSilenceThreshold");
+    expect(mlx.ignored).toEqual([]);
+  });
+
+  it("keeps storage provenance honest while honoring the decode guardrail: txt + requested word timestamps", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      wordTimestamps: true, // requested, but txt output stores no word timing
+      hallucinationSilenceThreshold: 2,
+    };
+    const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
+    expect(mlx.applied).toContain("hallucinationSilenceThreshold");
+    expect(mlx.applied).not.toContain("wordTimestamps");
+    expect(mlx.ignored.map((item) => item.option)).toEqual(["wordTimestamps"]);
+  });
+
+  it("custom flavor surfaces the unapplied loop-prevention default even with an otherwise default config", () => {
+    const custom = resolveWhisperDecodeArgs("custom", DEFAULT_DECODE);
+    expect(custom.args).toEqual([]);
+    expect(custom.applied).toEqual([]);
+    expect(custom.ignored.map((item) => item.option)).toEqual(["conditionOnPreviousText"]);
+    expect(custom.ignored[0].reason).toContain("loop-prevention");
+  });
+
+  it("custom flavor surfaces conditionOnPreviousText=true as ignored too — the provenance contract covers both values", () => {
+    const custom = resolveWhisperDecodeArgs("custom", {
+      ...DEFAULT_DECODE,
+      conditionOnPreviousText: true,
+    });
+    expect(custom.args).toEqual([]);
+    const entry = custom.ignored.find((item) => item.option === "conditionOnPreviousText");
+    expect(entry).toBeDefined();
+    expect(entry?.reason).toContain("CASTRECALL_WHISPER_COMMAND");
+  });
+
+  it("ignores whisper.cpp-unsupported options with a reason instead of dropping them silently", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      wordTimestamps: true,
+      compressionRatioThreshold: 2.4,
+      hallucinationSilenceThreshold: 2,
+    };
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", decode);
+    expect(cpp.args).not.toEqual(expect.arrayContaining(["--word_timestamps"]));
+    const ignoredOptions = cpp.ignored.map((i) => i.option);
+    expect(ignoredOptions).toEqual(
+      expect.arrayContaining([
+        "wordTimestamps",
+        "compressionRatioThreshold",
+        "hallucinationSilenceThreshold",
+      ]),
+    );
+    for (const ignored of cpp.ignored) {
+      expect(ignored.reason).toMatch(/whisper\.cpp/);
+    }
+  });
+
+  it("maps wordTimestamps to whisper.cpp's full-JSON -ojf flag when output format is json", () => {
+    const decode: WhisperDecodeConfig = { ...DEFAULT_DECODE, wordTimestamps: true, outputFormat: "json" };
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", decode);
+    expect(cpp.args).toEqual(expect.arrayContaining(["-ojf"]));
+    expect(cpp.applied).toEqual(expect.arrayContaining(["wordTimestamps"]));
+    expect(cpp.ignored).toEqual([]);
+  });
+
+  it("maps logprobThreshold to whisper.cpp's -lpt flag", () => {
+    const decode: WhisperDecodeConfig = { ...DEFAULT_DECODE, logprobThreshold: -1 };
+    const cpp = resolveWhisperDecodeArgs("whisper.cpp", decode);
+    expect(cpp.args).toEqual(expect.arrayContaining(["-lpt", "-1"]));
+    expect(cpp.applied).toEqual(expect.arrayContaining(["logprobThreshold"]));
+    expect(cpp.ignored).toEqual([]);
+  });
+
+  it("falls back to txt and reports the ignored option for an unrecognized output format", () => {
+    const resolved = resolveWhisperDecodeArgs("mlx-whisper", { ...DEFAULT_DECODE, outputFormat: "josn" });
+    expect(resolved.outputFormat).toBe("txt");
+    expect(resolved.ignored).toEqual([
+      {
+        option: "outputFormat",
+        reason: expect.stringContaining("josn"),
+      },
+    ]);
+  });
+
+  it("returns empty args/applied for the custom flavor regardless of configured decode options", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      language: "en",
+      wordTimestamps: true,
+      outputFormat: "json",
+    };
+    const result = resolveWhisperDecodeArgs("custom", decode);
+    expect(result.args).toEqual([]);
+    expect(result.applied).toEqual([]);
+    expect(result.outputFormat).toBe("txt");
   });
 });
 
@@ -348,5 +537,210 @@ describe("transcribeWithLocalWhisper", () => {
         env: { PATH: "" },
       }),
     ).rejects.toThrowError(/No local Whisper CLI detected/);
+  });
+});
+
+describe("transcribeWithLocalWhisper decode options (issue #53)", () => {
+  const audioFetch = (async () =>
+    new Response("fake audio bytes standing in for a transcript", { status: 200 })) as typeof fetch;
+  const wavFetch = (async () => new Response("fake wav bytes", { status: 200 })) as typeof fetch;
+
+  it("passes the language and condition-on-previous-text-off flags to mlx-whisper argv by default (regression)", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        {
+          CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo",
+          CASTRECALL_WHISPER_LANGUAGE: "en",
+        },
+      );
+      let seenArgv: string[] = [];
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          seenArgv = argv;
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "transcribed with language hint");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(seenArgv).toEqual(
+        expect.arrayContaining(["--language", "en", "--condition-on-previous-text", "False"]),
+      );
+      expect(seenArgv).toContain("--output-format");
+      expect(seenArgv[seenArgv.indexOf("--output-format") + 1]).toBe("txt");
+      expect(result.text).toBe("transcribed with language hint");
+      expect(result.format).toBe("txt");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("requests JSON output from mlx-whisper and normalizes the produced segments to text", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        {
+          CASTRECALL_WHISPER_MODEL: "mlx-community/whisper-large-v3-turbo",
+          CASTRECALL_WHISPER_OUTPUT_FORMAT: "json",
+        },
+      );
+      const jsonBody = JSON.stringify({
+        text: "Hello world.",
+        segments: [{ start: 0, end: 1.2, text: "Hello world." }],
+      });
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.json"), jsonBody);
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.format).toBe("json");
+      expect(result.raw).toBe(jsonBody);
+      expect(result.text).toContain("Hello world.");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("requests structured JSON output from whisper.cpp via -oj/-of and parses the transcription array", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "whisper-cli"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        { CASTRECALL_WHISPER_MODEL: "/path/to/ggml.bin", CASTRECALL_WHISPER_OUTPUT_FORMAT: "json" },
+      );
+      let seenArgv: string[] = [];
+      const jsonBody = JSON.stringify({
+        transcription: [{ text: "Hello from whisper.cpp.", offsets: { from: 0, to: 1200 } }],
+      });
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.wav", {
+        fetchImpl: wavFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          seenArgv = argv;
+          const outBase = argv[argv.indexOf("-of") + 1];
+          await fs.writeFile(`${outBase}.json`, jsonBody);
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(seenArgv).toContain("-oj");
+      expect(seenArgv[seenArgv.indexOf("-of") + 1]).toMatch(/episode$/);
+      expect(result.format).toBe("json");
+      expect(result.raw).toBe(jsonBody);
+      expect(result.text).toContain("Hello from whisper.cpp.");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("throws a clear 'produced no json output' error when whisper.cpp exits 0 but writes no file (no stale fallback)", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "whisper-cli"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        { CASTRECALL_WHISPER_MODEL: "/path/to/ggml.bin", CASTRECALL_WHISPER_OUTPUT_FORMAT: "json" },
+      );
+      await expect(
+        transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.wav", {
+          fetchImpl: wavFetch,
+          env: { PATH: binDir },
+          execImpl: async () => ({ code: 0, stdout: "", stderr: "" }),
+        }),
+      ).rejects.toThrowError(/produced no json output/);
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to txt and surfaces the ignored option when CASTRECALL_WHISPER_OUTPUT_FORMAT is unrecognized", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "whisper-cli"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        { CASTRECALL_WHISPER_MODEL: "/path/to/ggml.bin", CASTRECALL_WHISPER_OUTPUT_FORMAT: "josn" },
+      );
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.wav", {
+        fetchImpl: wavFetch,
+        env: { PATH: binDir },
+        execImpl: async () => ({ code: 0, stdout: "plain text transcript", stderr: "" }),
+      });
+      expect(result.format).toBe("txt");
+      expect(result.text).toBe("plain text transcript");
+      expect(result.ignoredOptions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ option: "outputFormat" })]),
+      );
+      expect(result.ignoredOptions.find((o) => o.option === "outputFormat")?.reason).toContain("josn");
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores hallucinationSilenceThreshold on whisper.cpp (unsupported), omitting it from argv but naming it in ignoredOptions", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "whisper-cli"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig(
+        {},
+        {
+          CASTRECALL_WHISPER_MODEL: "/path/to/ggml.bin",
+          CASTRECALL_WHISPER_HALLUCINATION_SILENCE_THRESHOLD: "2",
+        },
+      );
+      let seenArgv: string[] = [];
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.wav", {
+        fetchImpl: wavFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          seenArgv = argv;
+          return { code: 0, stdout: "plain transcript", stderr: "" };
+        },
+      });
+      expect(seenArgv).not.toEqual(expect.arrayContaining(["--hallucination_silence_threshold"]));
+      expect(result.ignoredOptions).toEqual(
+        expect.arrayContaining([expect.objectContaining({ option: "hallucinationSilenceThreshold" })]),
+      );
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("custom command surfaces every bypassed decode control as ignored, including the loop-prevention default", async () => {
+    const config = resolveConfig(
+      {},
+      {
+        CASTRECALL_WHISPER_COMMAND: "cat {input}",
+        CASTRECALL_WHISPER_LANGUAGE: "en",
+        CASTRECALL_WHISPER_OUTPUT_FORMAT: "json",
+      },
+    );
+    const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+      fetchImpl: audioFetch,
+      env: { PATH: "" },
+    });
+    expect(result.text).toBe("fake audio bytes standing in for a transcript");
+    expect(result.format).toBe("txt");
+    // The custom template owns the command line, so nothing is applied —
+    // but nothing is silently dropped either: the requested language and
+    // output format AND CastRecall's own condition-on-previous-text
+    // loop-prevention default all show up as ignored with reasons.
+    expect(result.ignoredOptions.map((entry) => entry.option)).toEqual(
+      expect.arrayContaining(["conditionOnPreviousText", "language", "outputFormat"]),
+    );
+    const loopGuard = result.ignoredOptions.find(
+      (entry) => entry.option === "conditionOnPreviousText",
+    );
+    expect(loopGuard?.reason).toContain("loop-prevention");
   });
 });

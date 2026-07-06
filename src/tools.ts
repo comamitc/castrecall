@@ -28,6 +28,7 @@ import { runTranscriptLadder } from "./transcripts/ladder.js";
 import {
   detectLocalWhisper,
   localWhisperReadiness,
+  resolveWhisperDecodeArgs,
   resolveWhisperModel,
 } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
@@ -241,9 +242,18 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
               return `detected (${whisper.detected!.flavor}) but NOT ready — ${readiness.reason}`;
             }
             const resolved = resolveWhisperModel(whisper.detected!.flavor, config.localWhisper);
+            const decodeResolution = resolveWhisperDecodeArgs(
+              whisper.detected!.flavor,
+              config.localWhisper.decode,
+            );
+            const ignoredPart =
+              decodeResolution.ignored.length > 0
+                ? ` (ignored decode options: ${decodeResolution.ignored.map((o) => o.option).join(", ")})`
+                : "";
             return (
               `detected (${whisper.detected!.flavor}) — free, private transcription` +
-              (resolved.model ? ` using ${resolved.model}` : "")
+              (resolved.model ? ` using ${resolved.model}` : "") +
+              ignoredPart
             );
           })()
         : `unavailable — ${whisper.reason}`,

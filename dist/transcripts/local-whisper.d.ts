@@ -7,8 +7,9 @@
  * A custom command can be supplied via CASTRECALL_WHISPER_COMMAND with an
  * {input} placeholder; its stdout is treated as the transcript.
  */
-import { type ResolvedConfig } from "../config.js";
+import { type ResolvedConfig, type WhisperDecodeConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
+import { type TranscriptFormat } from "./normalize.js";
 declare const KNOWN_BINARIES: readonly [{
     readonly name: "whisper-cli";
     readonly flavor: "whisper.cpp";
@@ -77,6 +78,33 @@ export declare function resolveWhisperModel(flavor: WhisperFlavor | undefined, l
     model?: string;
     preset?: string;
 }): WhisperModelResolution;
+/** Structured/timestamped output formats a local Whisper CLI can be asked to produce (issue #53). */
+export type WhisperOutputFormat = Exclude<TranscriptFormat, "html">;
+export type WhisperDecodeIgnored = {
+    option: string;
+    reason: string;
+};
+export type WhisperDecodeResolution = {
+    /** Argv elements for the decode intents this flavor honors (excludes output-format/dir flags — callers build those from `outputFormat`). */
+    args: string[];
+    applied: string[];
+    ignored: WhisperDecodeIgnored[];
+    outputFormat: WhisperOutputFormat;
+};
+/**
+ * Single source of truth mapping abstract decode intents (issue #53:
+ * language, condition-on-previous-text loop prevention, word timestamps,
+ * structured output, hallucination/silence thresholds) to concrete per-
+ * flavor CLI flags. Every option lands in `applied` with the flag it
+ * produced, or in `ignored` with a reason — nothing is silently dropped
+ * (the "fail clearly or ignored with explicit provenance" criterion). The
+ * `custom` flavor applies nothing (the user owns the whole command
+ * template) but every decode control it bypasses — INCLUDING CastRecall's
+ * own loop-prevention default — is reported in `ignored`, so
+ * setup/status/rung provenance shows exactly which guardrails a custom
+ * command is running without.
+ */
+export declare function resolveWhisperDecodeArgs(flavor: WhisperFlavor, decode: WhisperDecodeConfig): WhisperDecodeResolution;
 /**
  * Single source of truth for whether the local Whisper rung can actually RUN
  * at usable quality (not merely whether a binary was detected): whisper.cpp
@@ -113,6 +141,9 @@ export declare function transcribeWithLocalWhisper(config: ResolvedConfig, audio
     env?: NodeJS.ProcessEnv;
 }): Promise<{
     text: string;
+    raw: string;
+    format: WhisperOutputFormat;
     provider: string;
+    ignoredOptions: WhisperDecodeIgnored[];
 }>;
 export {};

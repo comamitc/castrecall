@@ -124,7 +124,10 @@ function parseJsonTranscript(body) {
                 ? parsedRecord.transcript
                 : Array.isArray(parsedRecord.items)
                     ? parsedRecord.items
-                    : undefined;
+                    // whisper.cpp's -oj/-ojf JSON output nests entries under "transcription".
+                    : Array.isArray(parsedRecord.transcription)
+                        ? parsedRecord.transcription
+                        : undefined;
     if (!rawSegments) {
         const text = firstString(parsedRecord, ["body", "text", "transcript"]);
         if (text)
@@ -146,8 +149,11 @@ function parseJsonTranscript(body) {
         if (!text)
             continue;
         segments.push({
-            start: firstDefined(record, ["startTime", "start", "startTimecode"]),
-            end: firstDefined(record, ["endTime", "end", "endTimecode"]),
+            // whisper.cpp nests timing under "offsets"/"timestamps" instead of flat keys.
+            start: firstDefined(record, ["startTime", "start", "startTimecode"]) ??
+                nestedTimestamp(record, ["offsets", "timestamps"], "from"),
+            end: firstDefined(record, ["endTime", "end", "endTimecode"]) ??
+                nestedTimestamp(record, ["offsets", "timestamps"], "to"),
             speaker: firstString(record, ["speaker", "speakerName", "speakerLabel"]),
             text: text.trim(),
         });
@@ -233,6 +239,17 @@ function firstDefined(record, keys) {
         const value = record[key];
         if (value !== undefined && value !== null && value !== "")
             return String(value);
+    }
+    return undefined;
+}
+function nestedTimestamp(record, containerKeys, subKey) {
+    for (const key of containerKeys) {
+        const container = record[key];
+        if (container && typeof container === "object") {
+            const value = container[subKey];
+            if (value !== undefined && value !== null && value !== "")
+                return String(value);
+        }
     }
     return undefined;
 }
