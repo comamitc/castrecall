@@ -159,6 +159,17 @@ describe("glossary", () => {
       expect(result.text).toBe("we visited Café Müller yesterday");
     });
 
+    it("applies a case-insensitive match even when regex /iu case folding diverges from String.prototype.toLowerCase() (issue #46 review: Unicode case-folding pair)", () => {
+      // /iu matches "ς" (Greek final sigma) against variant "σ" (regular
+      // sigma), but "ς".toLowerCase() === "ς" — it does NOT normalize to
+      // "σ". A lookup keyed by matched.toLowerCase() would miss this and
+      // silently drop the correction.
+      const compiled = compileGlossary([{ canonical: "Sigma", variants: ["σ"] }]);
+      const result = applyGlossary("test ς here", compiled);
+      expect(result.text).toBe("test Sigma here");
+      expect(result.corrections).toEqual([{ canonical: "Sigma", variant: "σ", count: 1 }]);
+    });
+
     it("matchCase: true only fires on exact case", () => {
       const compiled = compileGlossary([{ canonical: "NASA", variants: ["NASA"], matchCase: true }]);
       const result = applyGlossary("nasa launched a rocket, then NASA confirmed it", compiled);
