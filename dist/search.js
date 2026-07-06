@@ -6,12 +6,15 @@
  * Two-phase scoring: Phase 1 scores every doc from a persisted term-frequency
  * index (tf-length-normalized + idf-lite) and selects a candidate set — docs
  * matching any bare term, plus docs containing every token of a quoted
- * phrase — then ranks phrase-eligible and bare-term candidates by score and
- * caps both to MAX_CANDIDATES total, so a broad phrase can't force an
- * unbounded Phase 2 scan. Phase 2 re-reads only the capped candidate set's
- * transcript text, applies an exact contiguous-phrase bonus, and builds
- * snippets. The index therefore stores term frequencies only — never prose,
- * never positional data.
+ * phrase. Bare-term candidates need no verification, so they're capped at
+ * MAX_CANDIDATES by score. Phrase-eligible candidates can only be confirmed
+ * as an exact contiguous match by reading their text, so instead of a blind
+ * pre-verification cap, Phase 2 scans them in score order and keeps reading
+ * past MAX_CANDIDATES whenever an unread candidate could still outscore the
+ * current top results even with the maximum possible phrase bonus — so a
+ * genuine exact-phrase match is never dropped just because higher-scoring
+ * non-contiguous matches outnumber it. The index therefore stores term
+ * frequencies only — never prose, never positional data.
  */
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
@@ -260,35 +263,62 @@ export class SearchIndex {
         const docs = await this.reconcile(corpus);
         const candidateUuids = selectCandidates(query, docs);
         const keywordScores = scoreKeywords(query, docs);
-        // Phrase-eligible docs (containing every token of a quoted phrase) are
-        // prioritized over bare-term matches, since only Phase 2 can confirm the
-        // exact contiguous match — but they are still ranked by keyword score and
-        // subject to the same MAX_CANDIDATES read budget as bare terms, so a broad
-        // phrase (e.g. common words) cannot force an unbounded Phase 2 scan.
+        const limit = clampLimit(opts.limit);
+        // Phrase-eligible docs (containing every token of a quoted phrase) can
+        // only be confirmed as an exact contiguous match by reading their text,
+        // so keyword score alone cannot decide which ones to read: a doc ranked
+        // below the top MAX_CANDIDATES by keyword score may still hold the exact
+        // phrase while higher-scoring docs above it don't. They are scanned in
+        // keyword-score order, reading further whenever an unread candidate's
+        // best case (its keyword score plus the maximum possible phrase bonus)
+        // could still beat the current top `limit` results, so a genuine exact
+        // match is never dropped by a pre-verification cap.
         const phraseEligibleUuids = new Set(docs
             .filter((doc) => query.phrases.some((phrase) => phrase.length > 0 && phrase.every((term) => (doc.termFreq[term] ?? 0) > 0)))
             .map((doc) => doc.uuid));
         const rankedPhraseEligible = Array.from(phraseEligibleUuids).sort((a, b) => (keywordScores.get(b) ?? 0) - (keywordScores.get(a) ?? 0));
-        const cappedPhraseEligible = rankedPhraseEligible.slice(0, MAX_CANDIDATES);
-        const bareTermUuids = candidateUuids
-            .filter((uuid) => !phraseEligibleUuids.has(uuid))
-            .sort((a, b) => (keywordScores.get(b) ?? 0) - (keywordScores.get(a) ?? 0));
-        const remainingBudget = Math.max(0, MAX_CANDIDATES - cappedPhraseEligible.length);
-        const cappedCandidates = [...cappedPhraseEligible, ...bareTermUuids.slice(0, remainingBudget)];
-        const droppedCandidates = candidateUuids.length - cappedCandidates.length;
+        const maxPhraseBonus = query.phrases.reduce((sum, phrase) => (phrase.length > 0 ? sum + phrase.length * PHRASE_BONUS_WEIGHT : sum), 0);
         const scored = [];
-        for (const uuid of cappedCandidates) {
+        let phraseCandidatesRead = 0;
+        for (const uuid of rankedPhraseEligible) {
+            if (scored.length >= limit) {
+                const weakestKept = scored[scored.length - 1].score;
+                const bestPossibleRemaining = (keywordScores.get(uuid) ?? 0) + maxPhraseBonus;
+                if (bestPossibleRemaining <= weakestKept)
+                    break;
+            }
             const entry = byUuid.get(uuid);
             if (!entry)
                 continue;
             const text = await entry.readText();
+            phraseCandidatesRead++;
             const bonus = phraseBonus(query.phrases, tokenize(text));
             const score = (keywordScores.get(uuid) ?? 0) + bonus;
+            if (score > 0) {
+                scored.push({ uuid, score, text });
+                scored.sort((a, b) => b.score - a.score);
+                if (scored.length > limit)
+                    scored.length = limit;
+            }
+        }
+        // Bare-term-only candidates need no verification — their keyword score
+        // is already final — so they keep their own flat MAX_CANDIDATES read
+        // budget regardless of how many phrase-eligible docs were scanned above.
+        const bareTermUuids = candidateUuids
+            .filter((uuid) => !phraseEligibleUuids.has(uuid))
+            .sort((a, b) => (keywordScores.get(b) ?? 0) - (keywordScores.get(a) ?? 0));
+        const cappedBareTerm = bareTermUuids.slice(0, MAX_CANDIDATES);
+        const droppedCandidates = (rankedPhraseEligible.length - phraseCandidatesRead) + (bareTermUuids.length - cappedBareTerm.length);
+        for (const uuid of cappedBareTerm) {
+            const entry = byUuid.get(uuid);
+            if (!entry)
+                continue;
+            const text = await entry.readText();
+            const score = keywordScores.get(uuid) ?? 0;
             if (score > 0)
                 scored.push({ uuid, score, text });
         }
         scored.sort((a, b) => (b.score !== a.score ? b.score - a.score : a.uuid.localeCompare(b.uuid)));
-        const limit = clampLimit(opts.limit);
         const hits = [];
         for (const item of scored.slice(0, limit)) {
             const entry = byUuid.get(item.uuid);

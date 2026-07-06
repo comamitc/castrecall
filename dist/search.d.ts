@@ -6,12 +6,15 @@
  * Two-phase scoring: Phase 1 scores every doc from a persisted term-frequency
  * index (tf-length-normalized + idf-lite) and selects a candidate set — docs
  * matching any bare term, plus docs containing every token of a quoted
- * phrase — then ranks phrase-eligible and bare-term candidates by score and
- * caps both to MAX_CANDIDATES total, so a broad phrase can't force an
- * unbounded Phase 2 scan. Phase 2 re-reads only the capped candidate set's
- * transcript text, applies an exact contiguous-phrase bonus, and builds
- * snippets. The index therefore stores term frequencies only — never prose,
- * never positional data.
+ * phrase. Bare-term candidates need no verification, so they're capped at
+ * MAX_CANDIDATES by score. Phrase-eligible candidates can only be confirmed
+ * as an exact contiguous match by reading their text, so instead of a blind
+ * pre-verification cap, Phase 2 scans them in score order and keeps reading
+ * past MAX_CANDIDATES whenever an unread candidate could still outscore the
+ * current top results even with the maximum possible phrase bonus — so a
+ * genuine exact-phrase match is never dropped just because higher-scoring
+ * non-contiguous matches outnumber it. The index therefore stores term
+ * frequencies only — never prose, never positional data.
  */
 import type { Provenance } from "./storage.js";
 /** Unicode-safe tokenization: NFKD + combining-mark strip + lowercase, split on letters/numbers. */
