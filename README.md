@@ -147,6 +147,8 @@ words, and delete the rest — nothing here is ever auto-promoted.
 
 ## The transcript ladder
 
+Before any rung runs, CastRecall resolves the podcast's RSS feed URL: first via the (unofficial) Pocket Casts feed-export endpoint, then by matching the podcast title against the iTunes Search API. If both miss and `LISTENNOTES_API_KEY` is set, it also tries Listen Notes' podcast search as a last resort — this is a feed-URL discovery fallback, not a transcript-ladder rung, since [Listen Notes' own docs](https://www.listennotes.com/api/docs/#get-api-v2-search) say under 1% of episodes have transcripts.
+
 Cheapest and most open first; every rung reports why it hit, missed, or was skipped:
 
 1. **RSS `<podcast:transcript>`** (always on, free) — the open [podcast namespace](https://podcastindex.org/namespace/1.0) standard. Supports plain text, HTML, VTT, SRT, and JSON transcripts, normalized to clean text with speaker labels where available.
@@ -240,6 +242,7 @@ Pocket Casts' `/user/history` endpoint returns everything you've opened, includi
 | `CASTRECALL_EXPORT_DIR` | no | Enables corpus export (markdown pages) to this directory. Off by default — see "Corpus export" below. |
 | `TADDY_API_KEY` / `TADDY_USER_ID` | no | Enables the Taddy ladder rung. |
 | `PODCHASER_API_KEY` | no | Enables the Podchaser ladder rung. A bearer access token minted via Podchaser's `requestAccessToken` mutation — not a raw client secret. |
+| `LISTENNOTES_API_KEY` | no | Enables the Listen Notes feed-URL discovery fallback (not a ladder rung), used only when Pocket Casts feed export and iTunes Search both miss. |
 | `CASTRECALL_WHISPER_MODEL` | for whisper.cpp | ggml model path (whisper.cpp) or model name (other Whisper CLIs). |
 | `CASTRECALL_WHISPER_COMMAND` | no | Custom local transcription command with an `{input}` placeholder; stdout = transcript. |
 | `CASTRECALL_DISABLE_LOCAL_WHISPER` | no | `true` to skip the local Whisper rung even when a CLI is installed. |

@@ -122,6 +122,190 @@ describe("resolveFeedUrl retry behavior", () => {
   });
 });
 
+describe("resolveFeedUrl Listen Notes fallback", () => {
+  const VERIFY_EPISODE = { title: "Episode One", url: "https://cdn.example.com/ep1.mp3", uuid: "ep-uuid-1" };
+
+  /** Candidate feed XML whose single item matches VERIFY_EPISODE by the given evidence. */
+  function candidateFeedXml(evidence: "enclosure" | "guid" | "title" | "none"): string {
+    const enclosure =
+      evidence === "enclosure" ? '<enclosure url="https://cdn.example.com/ep1.mp3" type="audio/mpeg"/>' : '<enclosure url="https://cdn.other.com/other.mp3" type="audio/mpeg"/>';
+    const guid = evidence === "guid" ? "<guid>ep-uuid-1</guid>" : "<guid>other-guid</guid>";
+    const title = evidence === "none" ? "<title>Unrelated Episode</title>" : "<title>Episode One</title>";
+    return `<?xml version="1.0"?><rss><channel><title>Example Show</title><item>${title}${guid}${enclosure}</item></channel></rss>`;
+  }
+
+  function makeFetch(listenNotesResults: Array<{ title_original?: string; rss?: string }>, opts: {
+    listenNotesStatus?: number;
+    /** RSS XML served per candidate feed URL during verification. */
+    feeds?: Record<string, string>;
+  } = {}) {
+    const calls = { pocketcasts: 0, itunes: 0, listenNotes: 0, feedFetches: [] as string[] };
+    let capturedUrl: string | undefined;
+    let capturedHeaders: Record<string, string> | undefined;
+    const fetchImpl: FetchLike = (async (input: unknown, init?: any) => {
+      const url = String(input);
+      if (url.includes("refresh.pocketcasts.com")) {
+        calls.pocketcasts++;
+        return new Response(JSON.stringify({ result: {} }), { status: 200 });
+      }
+      if (url.includes("itunes.apple.com")) {
+        calls.itunes++;
+        return new Response(JSON.stringify({ results: [] }), { status: 200 });
+      }
+      if (url.includes("listen-api.listennotes.com")) {
+        calls.listenNotes++;
+        capturedUrl = url;
+        capturedHeaders = init?.headers;
+        return new Response(JSON.stringify({ results: listenNotesResults }), {
+          status: opts.listenNotesStatus ?? 200,
+        });
+      }
+      calls.feedFetches.push(url);
+      const xml = opts.feeds?.[url];
+      if (!xml) return new Response("not found", { status: 404 });
+      return new Response(xml, { status: 200 });
+    }) as FetchLike;
+    return { fetchImpl, calls, getCapturedUrl: () => capturedUrl, getCapturedHeaders: () => capturedHeaders };
+  }
+
+  it("falls back to Listen Notes when Pocket Casts and iTunes both miss, verifying the candidate by enclosure", async () => {
+    const { fetchImpl, calls, getCapturedUrl, getCapturedHeaders } = makeFetch(
+      [{ title_original: "Example Show", rss: "https://feeds.example.com/from-listennotes.xml" }],
+      { feeds: { "https://feeds.example.com/from-listennotes.xml": candidateFeedXml("enclosure") } },
+    );
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key", VERIFY_EPISODE);
+
+    expect(feedUrl).toBe("https://feeds.example.com/from-listennotes.xml");
+    expect(calls.listenNotes).toBe(1);
+    const requestUrl = new URL(getCapturedUrl()!);
+    expect(requestUrl.searchParams.get("type")).toBe("podcast");
+    expect(requestUrl.searchParams.get("q")).toBe("Example Show");
+    expect(getCapturedHeaders()).toEqual({ "X-ListenAPI-Key": "ln_key" });
+  });
+
+  it("never calls Listen Notes when no API key is supplied", async () => {
+    const { fetchImpl, calls } = makeFetch([
+      { title_original: "Example Show", rss: "https://feeds.example.com/from-listennotes.xml" },
+    ]);
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl);
+
+    expect(feedUrl).toBeUndefined();
+    expect(calls.listenNotes).toBe(0);
+  });
+
+  it("does not call iTunes or Listen Notes when Pocket Casts feed export hits", async () => {
+    let itunesCalls = 0;
+    let listenNotesCalls = 0;
+    const fetchImpl: FetchLike = (async (input: unknown) => {
+      const url = String(input);
+      if (url.includes("refresh.pocketcasts.com")) {
+        return new Response(
+          JSON.stringify({ result: { "uuid-1": "https://feeds.example.com/show.xml" } }),
+          { status: 200 },
+        );
+      }
+      if (url.includes("itunes.apple.com")) itunesCalls++;
+      else listenNotesCalls++;
+      return new Response(JSON.stringify({ results: [] }), { status: 200 });
+    }) as FetchLike;
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key");
+
+    expect(feedUrl).toBe("https://feeds.example.com/show.xml");
+    expect(itunesCalls).toBe(0);
+    expect(listenNotesCalls).toBe(0);
+  });
+
+  it("fails closed when the same-title candidate only matches the episode by title", async () => {
+    // Duplicate show names with generic episode titles are exactly how a
+    // wrong-feed transcript would get attached — episode-title fallback is
+    // never enough to accept a Listen Notes candidate.
+    const { fetchImpl, calls } = makeFetch(
+      [{ title_original: "Example Show", rss: "https://feeds.example.com/imposter.xml" }],
+      { feeds: { "https://feeds.example.com/imposter.xml": candidateFeedXml("title") } },
+    );
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key", VERIFY_EPISODE);
+
+    expect(feedUrl).toBeUndefined();
+    expect(calls.feedFetches).toContain("https://feeds.example.com/imposter.xml");
+  });
+
+  it("skips a same-title imposter feed and accepts the candidate with strong episode evidence", async () => {
+    const { fetchImpl } = makeFetch(
+      [
+        { title_original: "Example Show", rss: "https://feeds.example.com/imposter.xml" },
+        { title_original: "Example Show", rss: "https://feeds.example.com/real.xml" },
+      ],
+      {
+        feeds: {
+          "https://feeds.example.com/imposter.xml": candidateFeedXml("none"),
+          "https://feeds.example.com/real.xml": candidateFeedXml("enclosure"),
+        },
+      },
+    );
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key", VERIFY_EPISODE);
+
+    expect(feedUrl).toBe("https://feeds.example.com/real.xml");
+  });
+
+  it("fails closed when no episode identity is available to verify a Listen Notes candidate", async () => {
+    const { fetchImpl, calls } = makeFetch(
+      [{ title_original: "Example Show", rss: "https://feeds.example.com/from-listennotes.xml" }],
+      { feeds: { "https://feeds.example.com/from-listennotes.xml": candidateFeedXml("enclosure") } },
+    );
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key");
+
+    expect(feedUrl).toBeUndefined();
+    expect(calls.listenNotes).toBe(0);
+  });
+
+  it("returns undefined without throwing on a non-ok Listen Notes response", async () => {
+    const { fetchImpl } = makeFetch([], { listenNotesStatus: 401 });
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key");
+
+    expect(feedUrl).toBeUndefined();
+  });
+
+  it("matches by normalized title, case/whitespace-insensitively", async () => {
+    const { fetchImpl } = makeFetch(
+      [
+        { title_original: "Another Show", rss: "https://feeds.example.com/another.xml" },
+        { title_original: "  EXAMPLE   show ", rss: "https://feeds.example.com/match.xml" },
+      ],
+      { feeds: { "https://feeds.example.com/match.xml": candidateFeedXml("guid") } },
+    );
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key", VERIFY_EPISODE);
+
+    expect(feedUrl).toBe("https://feeds.example.com/match.xml");
+  });
+
+  it("returns undefined when no result title matches, instead of guessing an unrelated feed", async () => {
+    const { fetchImpl } = makeFetch([
+      { title_original: "Totally Different", rss: "https://feeds.example.com/first.xml" },
+      { title_original: "Also Different", rss: "https://feeds.example.com/second.xml" },
+    ]);
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key");
+
+    expect(feedUrl).toBeUndefined();
+  });
+
+  it("returns undefined when no results carry an rss field (episode-shaped payload)", async () => {
+    const { fetchImpl } = makeFetch([{ title_original: "Example Show" }]);
+
+    const feedUrl = await resolveFeedUrl("uuid-1", "Example Show", fetchImpl, {}, "ln_key");
+
+    expect(feedUrl).toBeUndefined();
+  });
+});
+
 describe("rankTranscriptLinks", () => {
   it("prefers structured formats over html", () => {
     const ranked = rankTranscriptLinks([

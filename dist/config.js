@@ -53,6 +53,9 @@ export function resolveConfig(settings = {}, env = process.env) {
         podchaser: {
             apiKey: nonEmpty(env.PODCHASER_API_KEY),
         },
+        listenNotes: {
+            apiKey: nonEmpty(env.LISTENNOTES_API_KEY),
+        },
         localWhisper: {
             disabled: envFlag(env.CASTRECALL_DISABLE_LOCAL_WHISPER) ?? false,
             command: nonEmpty(env.CASTRECALL_WHISPER_COMMAND),

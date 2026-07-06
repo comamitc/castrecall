@@ -132,6 +132,7 @@ describe("tools", () => {
         "privacy",
         "providers.taddy",
         "providers.podchaser",
+        "providers.listenNotes",
         "providers.localWhisper",
         "providers.stt",
         "export",

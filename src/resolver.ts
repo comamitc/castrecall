@@ -22,6 +22,8 @@ export type ResolvedFeedItem = {
   itemLink?: string;
   enclosureUrl?: string;
   transcripts: TranscriptLink[];
+  /** Which signal matched the listened episode — "title" is the weakest and never sufficient to *select* a feed. */
+  matchEvidence: "enclosure" | "guid" | "title";
 };
 
 /**
@@ -29,17 +31,23 @@ export type ResolvedFeedItem = {
  *
  * Primary: the (unofficial, unauthenticated) Pocket Casts feed-export endpoint
  * used by community export tools. Fallback: the official iTunes Search API,
- * matched by podcast title.
+ * matched by podcast title. Optional last-resort fallback: Listen Notes'
+ * podcast search, only used when a Listen Notes API key is supplied.
  */
 export async function resolveFeedUrl(
   podcastUuid: string,
   podcastTitle: string,
   fetchImpl: FetchLike = fetch,
   retry: RetryOptions = {},
+  listenNotesApiKey?: string,
+  episode?: Pick<PocketCastsEpisode, "title" | "url" | "uuid">,
 ): Promise<string | undefined> {
   const fromPocketCasts = await feedUrlFromPocketCasts(podcastUuid, fetchImpl, retry);
   if (fromPocketCasts) return fromPocketCasts;
-  return feedUrlFromItunes(podcastTitle, fetchImpl, retry);
+  const fromItunes = await feedUrlFromItunes(podcastTitle, fetchImpl, retry);
+  if (fromItunes) return fromItunes;
+  if (!listenNotesApiKey) return undefined;
+  return feedUrlFromListenNotes(podcastTitle, listenNotesApiKey, fetchImpl, retry, episode);
 }
 
 async function feedUrlFromPocketCasts(
@@ -90,6 +98,57 @@ async function feedUrlFromItunes(
       body.results?.find((r) => normalizeTitle(r.collectionName ?? "") === wanted) ??
       body.results?.[0];
     return match?.feedUrl;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Last-resort feed-URL fallback via Listen Notes' podcast search
+ * (https://www.listennotes.com/api/docs/#get-api-v2-search). Only reached when
+ * both the Pocket Casts feed-export endpoint and iTunes Search miss, and only
+ * when a Listen Notes API key is configured.
+ */
+const LISTEN_NOTES_MAX_CANDIDATE_FEEDS = 5;
+
+async function feedUrlFromListenNotes(
+  podcastTitle: string,
+  apiKey: string,
+  fetchImpl: FetchLike,
+  retry: RetryOptions,
+  episode?: Pick<PocketCastsEpisode, "title" | "url" | "uuid">,
+): Promise<string | undefined> {
+  // Podcast titles are not unique, so a title match alone can select a
+  // different show entirely and let the ladder attach the wrong podcast's
+  // transcript. Every title-matching candidate must therefore be verified
+  // against the listened episode with strong evidence — matching enclosure
+  // audio URL or GUID, never the episode-title fallback — before its feed
+  // URL is accepted. No episode identity to verify against → fail closed.
+  if (!podcastTitle || !episode) return undefined;
+  try {
+    const query = new URLSearchParams({ q: podcastTitle, type: "podcast" });
+    const response = await fetchWithRetry(
+      fetchImpl,
+      `https://listen-api.listennotes.com/api/v2/search?${query}`,
+      { headers: { "X-ListenAPI-Key": apiKey } },
+      retry,
+    );
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as {
+      results?: Array<{ title_original?: string; rss?: string }>;
+    };
+    const usable = body.results?.filter((r) => typeof r.rss === "string" && r.rss.length > 0) ?? [];
+    const wanted = normalizeTitle(podcastTitle);
+    const candidates = usable
+      .filter((r) => normalizeTitle(r.title_original ?? "") === wanted)
+      .slice(0, LISTEN_NOTES_MAX_CANDIDATE_FEEDS);
+    for (const candidate of candidates) {
+      const item = await resolveFeedItem(candidate.rss!, episode, fetchImpl, retry).catch(
+        () => undefined,
+      );
+      if (item && item.matchEvidence !== "title") return candidate.rss;
+    }
+    return undefined;
   } catch {
     return undefined;
   }
@@ -158,6 +217,7 @@ export function findFeedItem(
 
   return {
     feedUrl,
+    matchEvidence: best.score === 3 ? "enclosure" : best.score === 2 ? "guid" : "title",
     itemTitle: best.title ?? episode.title,
     itemGuid: best.guid ? String(best.guid) : undefined,
     itemLink: textOf(best.item?.link),

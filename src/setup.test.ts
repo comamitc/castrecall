@@ -122,6 +122,7 @@ describe("buildSetupPlan", () => {
       "privacy",
       "providers.taddy",
       "providers.podchaser",
+      "providers.listenNotes",
       "providers.localWhisper",
       "providers.stt",
       "export",
@@ -154,6 +155,14 @@ describe("buildSetupPlan", () => {
 
     const on = plan(config({ PODCHASER_API_KEY: "pk_x" }));
     expect(on.find((s) => s.id === "providers.podchaser")!.status).toBe("configured");
+  });
+
+  it("flips the listenNotes step to configured only when LISTENNOTES_API_KEY is set", () => {
+    const off = plan(config({}));
+    expect(off.find((s) => s.id === "providers.listenNotes")!.status).toBe("optional-off");
+
+    const on = plan(config({ LISTENNOTES_API_KEY: "ln_x" }));
+    expect(on.find((s) => s.id === "providers.listenNotes")!.status).toBe("configured");
   });
 
   it("reflects an injected WhisperDetection for the localWhisper step", () => {
