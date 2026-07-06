@@ -50,7 +50,8 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
       `icon` field; a review-flow screenshot; `docs/RELEASING.md` runbook. Still blocking:
       `clawhub package publish` + post-publish README flip (see docs/RELEASING.md and the
       release line below) — close #8 only once those have happened and the listing is verified
-      installable.
+      installable. (PR #37 squash-merged 2026-07-06 and auto-closed this issue; reopened with a
+      comment pointing at the remaining maintainer steps.)
 - [ ] release v0.6.1 (maintainer: tag, gh release, then `clawhub package publish` + README flip)
 - [ ] #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
 
