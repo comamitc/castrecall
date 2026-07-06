@@ -37,7 +37,7 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] #12 Deepgram STT — PR #31 squash-merged, issue closed. One pre-merge block (two findings): bounded/backed-off transient STT retries (per-episode `transcriptRetry`, 5-attempt budget → terminal failed; pipeline defers until eligible) and network-level Deepgram rejections converted to RetryableSttError. 257 tests green.
 - [x] release v0.4.0 — PR #32 merged, version 0.3.0→0.4.0, tag pushed, GitHub release published, milestone closed.
 - [x] #10 Podchaser transcript rung — PR #33 squash-merged, issue closed. FIVE pre-merge review rounds, all privacy/trust-boundary: stale dist; feed URL sent to Podchaser (tokenized private feeds) → guard; path-embedded tokens → feed URL never transmitted (local-only scoping); URL-like RSS GUIDs → opaque-GUID gate; percent-encoded structure → bounded-decode classification. 283 tests green.
-- [ ] release v0.5.0
+- [x] release v0.5.0 — PR #34 merged, version 0.4.0→0.5.0, tag pushed, GitHub release published, milestone closed.
 - [ ] #9 → v0.6.0 · [ ] #8, #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
 
 #### #10 Podchaser transcript rung — implementation checklist
