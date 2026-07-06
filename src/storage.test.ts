@@ -186,6 +186,56 @@ describe("Storage", () => {
     ]);
   });
 
+  it("refuses exact-text segment recovery when raw cue timestamps drifted under a stored timing hash (issue #45 review)", async () => {
+    // Cleanup ran as a no-op: stored text equals the raw normalization, and
+    // provenance carries the timing-aware hash of the ORIGINAL raw. The raw
+    // artifact is then rewritten with identical caption text but shifted cue
+    // times — exact-text matching alone would accept it; the hash must not.
+    const raw = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript body.";
+    const normalized = normalizeTranscript(raw, "vtt");
+    const cleaned = cleanTranscript(normalized.text);
+    expect(cleaned.text).toBe(normalized.text); // no-op cleanup
+    await storage.storeTranscript("ep-1", {
+      raw,
+      ext: "vtt",
+      text: normalized.text,
+      provenance: {
+        ...PROVENANCE,
+        format: "vtt",
+        cleanup: {
+          version: CLEANUP_VERSION,
+          applied: cleaned.applied,
+          rawTextHash: hashNormalizedTranscript(normalized),
+        },
+      },
+    });
+    // Overwrite raw with the same caption text but drifted timings.
+    const drifted = "WEBVTT\n\n00:00:10.000 --> 00:00:12.000\nA short transcript body.";
+    await fs.writeFile(path.join(storage.sourceDir("ep-1"), "raw.vtt"), drifted, "utf8");
+
+    expect(await storage.deriveSegmentsFromRaw("ep-1", normalized.text)).toBeUndefined();
+  });
+
+  it("still allows exact-text recovery for legacy sidecars without a timing hash", async () => {
+    const raw = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript body.";
+    const normalized = normalizeTranscript(raw, "vtt");
+    await storage.storeTranscript("ep-1", {
+      raw,
+      ext: "vtt",
+      text: normalized.text,
+      provenance: {
+        ...PROVENANCE,
+        format: "vtt",
+        // Pre-hash cleanup sidecar shape: version + applied, no rawTextHash.
+        cleanup: { version: CLEANUP_VERSION, applied: [] },
+      },
+    });
+    const derived = await storage.deriveSegmentsFromRaw("ep-1", normalized.text);
+    expect(derived).toEqual([
+      expect.objectContaining({ startSeconds: 0, endSeconds: 2 }),
+    ]);
+  });
+
   it("refuses cleanup-equivalent segment recovery when the raw artifact drifted to different pre-cleanup text (issue #45 review 2)", async () => {
     const raw = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\n- Hello world.";
     const normalized = normalizeTranscript(raw, "vtt");

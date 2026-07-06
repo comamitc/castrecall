@@ -510,11 +510,19 @@ export class Storage {
         }
         const storedApplied = provenance?.cleanup?.applied;
         const storedRawTextHash = provenance?.cleanup?.rawTextHash;
+        // When a timing-aware identity hash exists in provenance, it gates EVERY
+        // recovery path — including exact-text matches. A raw artifact rewritten
+        // with identical caption text but shifted cue timestamps normalizes to
+        // the same text, so text equality alone cannot prove the timings are the
+        // ones the transcript was stored with. Only hash-less legacy sidecars
+        // fall back to exact-text-only recovery.
+        if (storedRawTextHash && hashNormalizedTranscript(normalized) !== storedRawTextHash) {
+            return undefined;
+        }
         let cleanupMatches = false;
-        if (provenance?.cleanup?.version === CLEANUP_VERSION &&
-            storedApplied?.length &&
-            storedRawTextHash &&
-            hashNormalizedTranscript(normalized) === storedRawTextHash) {
+        if (provenance?.cleanup?.version === CLEANUP_VERSION && storedApplied?.length && storedRawTextHash) {
+            // Timing hash already verified above; confirm the stored steps
+            // reproduce the exact stored text.
             const cleaned = cleanTranscript(normalized.text);
             cleanupMatches =
                 cleaned.text === expectedText &&
