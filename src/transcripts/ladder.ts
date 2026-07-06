@@ -27,6 +27,8 @@ export type RungOutcome = {
   detail: string;
   /** Set on a "failed" stt rung when the provider failure is transient (rate limit, timeout, 5xx). */
   retryable?: boolean;
+  /** Set on a "miss" rung when the transcript may simply not be available yet (worth polling again later). */
+  recheckable?: boolean;
 };
 
 export type LadderResult = {
@@ -78,6 +80,7 @@ export async function runTranscriptLadder(
             rung: "rss",
             outcome: "miss",
             detail: `Feed item found in ${feedUrl} but it declares no <podcast:transcript> links.`,
+            recheckable: true,
           });
         } else {
           const fetched = await fetchRssTranscript(feedItem.transcripts, fetchImpl);
@@ -133,25 +136,34 @@ export async function runTranscriptLadder(
         { guid: feedItem?.itemGuid, title: record.title },
         fetchImpl,
       );
-      if (taddy) {
+      if (taddy.status === "hit") {
         rungs.push({ rung: "taddy", outcome: "hit", detail: "Transcript returned by Taddy." });
         return {
           transcript: {
             source: "taddy",
             format: "txt",
-            raw: taddy.text,
-            text: taddy.text,
+            raw: taddy.transcript.text,
+            text: taddy.transcript.text,
             provider: "taddy",
           },
           feedItem,
           rungs,
         };
       }
-      rungs.push({
-        rung: "taddy",
-        outcome: "miss",
-        detail: "Taddy has no transcript for this episode (or the plan does not include transcripts).",
-      });
+      if (taddy.status === "pending") {
+        rungs.push({
+          rung: "taddy",
+          outcome: "miss",
+          detail: "Taddy is transcribing this episode but the transcript isn't ready yet.",
+          recheckable: true,
+        });
+      } else {
+        rungs.push({
+          rung: "taddy",
+          outcome: "miss",
+          detail: "Taddy has no transcript for this episode (or the plan does not include transcripts).",
+        });
+      }
     } catch (error) {
       rungs.push({ rung: "taddy", outcome: "failed", detail: describeError(error) });
     }

@@ -38,6 +38,18 @@ export const BACKOFF_CAP_MS = 60 * 60_000;
  * being retried by every scheduled run forever.
  */
 export const TRANSCRIPT_RETRY_MAX_ATTEMPTS = 5;
+/**
+ * Capped exponential backoff for polling a transcript that may simply not be
+ * published/transcribed YET (Taddy `taddyTranscribeStatus` in progress, or an
+ * RSS item with no `<podcast:transcript>` links declared). This is a
+ * futile-poll bound, not a billing bound — unlike `TRANSCRIPT_RETRY_MAX_ATTEMPTS`,
+ * no paid API call is made on these rungs, so the backoff is measured in hours
+ * and the horizon in days rather than attempt count.
+ */
+export const TRANSCRIPT_RECHECK_BASE_MS = 60 * 60_000;
+export const TRANSCRIPT_RECHECK_CAP_MS = 24 * 60 * 60_000;
+/** After this long with no transcript appearing, stop polling and mark the episode terminally failed. */
+export const TRANSCRIPT_RECHECK_MAX_AGE_MS = 14 * 24 * 60 * 60_000;
 /** A lock older than this is presumed abandoned by a crashed run and is reclaimable. */
 export const LOCK_TTL_MS = 10 * 60_000;
 
@@ -74,6 +86,19 @@ export type ListenRecord = {
   transcriptRetry?: {
     consecutiveFailures: number;
     nextEligibleAt: string;
+  };
+  /**
+   * Availability-poll bookkeeping for a transcript that may simply not exist
+   * YET (Taddy still transcribing, or an RSS item with no transcript links
+   * declared) — a sibling to `transcriptRetry`, kept separate so its horizon
+   * (a futile-poll bound) never blurs with `transcriptRetry`'s paid-STT
+   * billing bound. Cleared on success and once `firstDeferredAt` exceeds
+   * `TRANSCRIPT_RECHECK_MAX_AGE_MS` (terminal failure).
+   */
+  transcriptRecheck?: {
+    attempts: number;
+    nextEligibleAt: string;
+    firstDeferredAt: string;
   };
   /** Last scheduled-run review-stage failure for this episode, if any. */
   reviewError?: string;

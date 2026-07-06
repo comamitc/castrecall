@@ -19,6 +19,8 @@ export type RungOutcome = {
     detail: string;
     /** Set on a "failed" stt rung when the provider failure is transient (rate limit, timeout, 5xx). */
     retryable?: boolean;
+    /** Set on a "miss" rung when the transcript may simply not be available yet (worth polling again later). */
+    recheckable?: boolean;
 };
 export type LadderResult = {
     transcript?: {

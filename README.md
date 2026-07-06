@@ -96,7 +96,7 @@ Cheapest and most open first; every rung reports why it hit, missed, or was skip
 4. **Local Whisper** (free, fully private, auto-detected) — if a Whisper CLI is installed, CastRecall transcribes the audio on your machine at no cost. Detected binaries, in order: `whisper-cli`/`whisper-cpp` ([whisper.cpp](https://github.com/ggerganov/whisper.cpp), e.g. `brew install whisper-cpp`, needs a ggml model via `CASTRECALL_WHISPER_MODEL` and ffmpeg for non-WAV audio), `mlx_whisper` (Apple Silicon, `pip install mlx-whisper`), `whisper-ctranslate2`, `whisper` (openai-whisper). Or supply any command via `CASTRECALL_WHISPER_COMMAND="your-tool {input}"` (transcript on stdout). Nothing is bundled — when no CLI is found the rung is skipped with install hints.
 5. **Cloud speech-to-text** (optional, **costs money**, disabled by default) — enable explicitly with `CASTRECALL_ENABLE_STT=true`. Providers: **AssemblyAI** (default; transcribes straight from the audio URL), **OpenAI** (`gpt-4o-transcribe`; requires downloading and uploading the audio, 25 MB API limit), or **Deepgram** (`nova-3`; also transcribes straight from the audio URL, with diarized speaker labels).
 
-If no rung produces a transcript, the episode is marked `failed` with the per-rung reasons — no fake output, ever.
+If no rung produces a transcript, the episode is marked `failed` with the per-rung reasons — no fake output, ever. Two exceptions stay `none` instead of failing outright, because the transcript may simply not exist *yet*: Taddy reporting the episode is actively transcribing, and an RSS feed item that currently declares no `<podcast:transcript>` links. Those episodes are automatically re-checked on later scheduled runs — see "Scheduled / periodic sync" below.
 
 ## Listened-episode filter
 
@@ -245,6 +245,18 @@ generate review candidates (episodes newly stored this run) → corpus export (w
   Check `castrecall_setup_status`'s `sync` block for the current failure/cooldown state.
 - **Cheap no-op when nothing's new.** A run that finds no new listens does no
   transcript/review/export work.
+- **Availability re-check, not a webhook.** CastRecall is an OpenClaw tool plugin with no
+  reachable inbound endpoint, so it cannot subscribe to Taddy's webhooks (the ideal, purely
+  event-driven design). Instead, an episode whose only misses are "Taddy is actively
+  transcribing this episode" or "the RSS feed currently declares no `<podcast:transcript>`
+  links" stays `transcriptStatus: "none"` (not `failed`) and is automatically retried on a
+  capped exponential backoff (hours, doubling up to a day) by every scheduled
+  `castrecall_run_pipeline` run — no re-sync or manual `castrecall_fetch_transcript` call
+  needed. After ~14 days with nothing appearing, the episode is marked terminally `failed`
+  so a scheduler doesn't poll forever. **Trade-off:** an old RSS item that will never declare
+  a transcript link stays `none` (not `failed`) for that entire 14-day horizon before
+  converging — a deliberate choice to avoid missing episodes whose transcript link is added
+  a few days after publish, at the cost of a stale `none` for those that truly never will.
 
 ### OpenClaw cron recipe
 

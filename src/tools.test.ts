@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveConfig } from "./config.js";
 import type { ExecImpl } from "./pocketcasts/secret-store.js";
 import { clearPocketCastsSessionCache } from "./pocketcasts/session.js";
-import { Storage, type Provenance } from "./storage.js";
+import {
+  Storage,
+  TRANSCRIPT_RECHECK_BASE_MS,
+  TRANSCRIPT_RECHECK_MAX_AGE_MS,
+  type Provenance,
+} from "./storage.js";
 import {
   fetchTranscript,
   generateReview,
@@ -677,6 +682,195 @@ describe("tools", () => {
     expect(finalState.episodes["ep-1"].transcriptStatus).toBe("failed");
     expect(finalState.episodes["ep-1"].transcriptError).toContain("gave up after 5");
     expect(finalState.episodes["ep-1"].transcriptRetry).toBeUndefined();
+  });
+
+  it("fetch_transcript polls a Taddy-pending transcript on a backoff, then stores it once available", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const taddyConfig = config({ TADDY_API_KEY: "key", TADDY_USER_ID: "user" });
+    let clock = Date.parse("2026-01-01T00:00:00Z");
+    const deps = { env: { PATH: "" }, now: () => new Date(clock) };
+
+    const pendingFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "TRANSCRIBING" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const first = (await fetchTranscript(taddyConfig, { episodeUuid: "ep-1" }, { ...deps, fetchImpl: pendingFetchImpl })) as any;
+    expect(first.status).toBe("no-transcript");
+    expect(first.retry).toBeUndefined();
+    expect(first.recheck).toEqual({
+      attempt: 1,
+      nextEligibleAt: new Date(clock + TRANSCRIPT_RECHECK_BASE_MS).toISOString(),
+    });
+    const afterFirst = await new Storage(dir).loadState();
+    expect(afterFirst.episodes["ep-1"].transcriptStatus).toBe("none");
+    expect(afterFirst.episodes["ep-1"].transcriptRecheck?.attempts).toBe(1);
+
+    // Advance past the backoff; Taddy now has the transcript.
+    clock += TRANSCRIPT_RECHECK_BASE_MS + 60_000;
+    const hitFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({ data: { getPodcastEpisode: { uuid: "ep-1", transcript: "now available" } } }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const second = (await fetchTranscript(taddyConfig, { episodeUuid: "ep-1" }, { ...deps, fetchImpl: hitFetchImpl })) as any;
+    expect(second.status).toBe("stored");
+    const afterSecond = await new Storage(dir).loadState();
+    expect(afterSecond.episodes["ep-1"].transcriptStatus).toBe("stored");
+    expect(afterSecond.episodes["ep-1"].transcriptRecheck).toBeUndefined();
+  });
+
+  it("fetch_transcript gives up on a persistently Taddy-pending transcript once past the recheck horizon", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const taddyConfig = config({ TADDY_API_KEY: "key", TADDY_USER_ID: "user" });
+    let clock = Date.parse("2026-01-01T00:00:00Z");
+    const deps = { env: { PATH: "" }, now: () => new Date(clock) };
+    const pendingFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "PROCESSING" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    await fetchTranscript(taddyConfig, { episodeUuid: "ep-1" }, { ...deps, fetchImpl: pendingFetchImpl });
+    const afterFirst = await new Storage(dir).loadState();
+    const firstDeferredAt = afterFirst.episodes["ep-1"].transcriptRecheck!.firstDeferredAt;
+
+    clock = Date.parse(firstDeferredAt) + TRANSCRIPT_RECHECK_MAX_AGE_MS + 60_000;
+    const last = (await fetchTranscript(taddyConfig, { episodeUuid: "ep-1" }, { ...deps, fetchImpl: pendingFetchImpl })) as any;
+    expect(last.status).toBe("no-transcript");
+    expect(last.recheck).toBeUndefined();
+    const finalState = await new Storage(dir).loadState();
+    expect(finalState.episodes["ep-1"].transcriptStatus).toBe("failed");
+    expect(finalState.episodes["ep-1"].transcriptError).toContain("no transcript appeared after 14 days");
+    expect(finalState.episodes["ep-1"].transcriptRecheck).toBeUndefined();
+  });
+
+  it("fetch_transcript still fails terminally on a first non-recheckable miss (no rung is recheckable)", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    // RSS resolves a feed but no item matches (non-recheckable per the ladder); no optional
+    // providers configured; STT off.
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url.includes("export_feed_urls")) {
+        return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+          status: 200,
+        });
+      }
+      if (url === "https://example.com/feed.xml") {
+        return new Response(
+          `<?xml version="1.0"?><rss version="2.0"><channel></channel></rss>`,
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const result = (await fetchTranscript(config(), { episodeUuid: "ep-1" }, { fetchImpl, env: { PATH: "" } })) as any;
+    expect(result.status).toBe("no-transcript");
+    expect(result.recheck).toBeUndefined();
+    const state = await new Storage(dir).loadState();
+    expect(state.episodes["ep-1"].transcriptStatus).toBe("failed");
+    expect(state.episodes["ep-1"].transcriptRecheck).toBeUndefined();
+  });
+
+  it("fetch_transcript prefers the retryable STT path over recheck when both apply (billing precedence)", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    // Taddy is pending (recheckable) AND Deepgram fails transiently (retryable).
+    const bothConfig = config({
+      TADDY_API_KEY: "key",
+      TADDY_USER_ID: "user",
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "deepgram",
+      DEEPGRAM_API_KEY: "dg-key",
+    });
+    const fetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "PROCESSING" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      if (url.startsWith("https://api.deepgram.com/")) {
+        return new Response("bad gateway", { status: 502 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    const result = (await fetchTranscript(bothConfig, { episodeUuid: "ep-1" }, { fetchImpl, env: { PATH: "" } })) as any;
+    expect(result.status).toBe("no-transcript");
+    expect(result.retry).toBeDefined();
+    expect(result.recheck).toBeUndefined();
+    const state = await new Storage(dir).loadState();
+    expect(state.episodes["ep-1"].transcriptRetry).toBeDefined();
+    expect(state.episodes["ep-1"].transcriptRecheck).toBeUndefined();
   });
 
   it("fetch_transcript stores RSS transcripts without returning transcript text", async () => {

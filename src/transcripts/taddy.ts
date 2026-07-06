@@ -15,20 +15,47 @@ export type TaddyTranscript = {
   episodeUuid?: string;
 };
 
+/**
+ * `hit` — a transcript was returned. `pending` — Taddy knows the episode and
+ * `taddyTranscribeStatus` says it's actively transcribing, so a later look
+ * may find a transcript. `miss` — Taddy has nothing and isn't transcribing.
+ */
+export type TaddyLookup =
+  | { status: "hit"; transcript: TaddyTranscript }
+  | { status: "pending" }
+  | { status: "miss" };
+
+/** taddyTranscribeStatus values that mean "transcript is on the way, check again later". */
+const TRANSCRIBING_STATUSES = new Set(["PROCESSING", "TRANSCRIBING"]);
+
+/**
+ * Whether a raw `taddyTranscribeStatus` value means Taddy is actively
+ * transcribing the episode. Case-insensitive. `NOT_TRANSCRIBING` contains the
+ * substring "TRANSCRIBING" but is the terminal not-transcribing state, so the
+ * fallback substring match explicitly excludes it.
+ */
+export function isTranscribingStatus(raw: unknown): boolean {
+  if (typeof raw !== "string" || !raw.trim()) return false;
+  const normalized = raw.trim().toUpperCase();
+  if (TRANSCRIBING_STATUSES.has(normalized)) return true;
+  return normalized.includes("TRANSCRIBING") && !normalized.includes("NOT_TRANSCRIBING");
+}
+
 export function taddyConfigured(config: ResolvedConfig): boolean {
   return Boolean(config.taddy.apiKey && config.taddy.userId);
 }
 
 /**
- * Look an episode up by RSS GUID first (exact), then by name, and return its transcript.
- * Returns undefined when Taddy knows the episode but has no transcript.
+ * Look an episode up by RSS GUID first (exact), then by name, and return its
+ * transcript lookup outcome — a transcript, a pending-transcription signal,
+ * or a definitive miss.
  */
 export async function fetchTaddyTranscript(
   config: ResolvedConfig,
   episode: { guid?: string; title: string },
   fetchImpl: FetchLike = fetch,
   retry: RetryOptions = {},
-): Promise<TaddyTranscript | undefined> {
+): Promise<TaddyLookup> {
   if (!taddyConfigured(config)) {
     throw new CastrecallSetupError(
       "Taddy is not configured. Set TADDY_API_KEY and TADDY_USER_ID (free signup at https://taddy.org/developers) " +
@@ -40,6 +67,7 @@ export async function fetchTaddyTranscript(
   if (episode.guid) attempts.push({ guid: episode.guid });
   attempts.push({ name: episode.title });
 
+  let pending = false;
   for (const variables of attempts) {
     const argName = Object.keys(variables)[0];
     const query = `query GetEpisode($value: String!) {
@@ -52,7 +80,7 @@ export async function fetchTaddyTranscript(
     }`;
     const result = await taddyRequest(config, query, { value: variables[argName] }, fetchImpl, retry);
     const episodeData = result?.getPodcastEpisode as
-      | { uuid?: string; transcript?: string[] | string | null }
+      | { uuid?: string; transcript?: string[] | string | null; taddyTranscribeStatus?: string }
       | null
       | undefined;
     if (!episodeData) continue;
@@ -63,10 +91,13 @@ export async function fetchTaddyTranscript(
         ? transcript
         : "";
     if (text.trim()) {
-      return { text: text.trim(), episodeUuid: episodeData.uuid };
+      return { status: "hit", transcript: { text: text.trim(), episodeUuid: episodeData.uuid } };
+    }
+    if (isTranscribingStatus(episodeData.taddyTranscribeStatus)) {
+      pending = true;
     }
   }
-  return undefined;
+  return pending ? { status: "pending" } : { status: "miss" };
 }
 
 async function taddyRequest(

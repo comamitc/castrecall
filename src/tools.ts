@@ -34,6 +34,9 @@ import {
   BACKOFF_BASE_MS,
   BACKOFF_CAP_MS,
   Storage,
+  TRANSCRIPT_RECHECK_BASE_MS,
+  TRANSCRIPT_RECHECK_CAP_MS,
+  TRANSCRIPT_RECHECK_MAX_AGE_MS,
   TRANSCRIPT_RETRY_MAX_ATTEMPTS,
   type ListenRecord,
   type Provenance,
@@ -144,13 +147,14 @@ function livePipelineErrors(
   }> = [];
   for (const e of episodes) {
     if (e.transcriptError && e.transcriptStatus !== "stored") {
+      const nextEligibleAt = e.transcriptRetry?.nextEligibleAt ?? e.transcriptRecheck?.nextEligibleAt;
       errors.push({
         stage: "transcript",
         episodeUuid: e.uuid,
         title: e.title,
         error: e.transcriptError,
         at: e.updatedAt,
-        ...(e.transcriptRetry ? { nextEligibleAt: e.transcriptRetry.nextEligibleAt } : {}),
+        ...(nextEligibleAt ? { nextEligibleAt } : {}),
       });
     }
     if (config.exportDir && e.exportError) {
@@ -237,6 +241,7 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
       syncedListens: episodes.length,
       transcriptsStored: episodes.filter((e) => e.transcriptStatus === "stored").length,
       transcriptsFailed: episodes.filter((e) => e.transcriptStatus === "failed").length,
+      transcriptsPendingRecheck: episodes.filter((e) => e.transcriptRecheck).length,
       pendingReviews: pendingReviews.length,
       pipelineStageErrors: livePipelineErrors(episodes, config).length,
     },
@@ -392,6 +397,7 @@ export async function fetchTranscript(
               transcriptSource: provenance?.transcriptSource,
               transcriptError: undefined,
               transcriptRetry: undefined,
+              transcriptRecheck: undefined,
             },
             deps.now ?? (() => new Date()),
           );
@@ -424,16 +430,14 @@ export async function fetchTranscript(
     // rejection) leaves transcriptStatus "none" so the episode stays eligible
     // — but under a bounded, backed-off budget: each attempt can bill a paid
     // STT provider, so scheduled runs must never hammer the same episode
-    // every tick or retry it forever.
+    // every tick or retry it forever. Checked before recheckable so a
+    // transient STT failure is never downgraded into the (cheaper, longer)
+    // availability-poll path — the billing invariant always wins.
     const retryable = result.rungs.some((r) => r.retryable);
+    const recheckable = result.rungs.some((r) => r.recheckable);
     let retry: ListenRecord["transcriptRetry"];
-    if (!retryable) {
-      await storage.updateEpisode(
-        record.uuid,
-        { transcriptStatus: "failed", transcriptError, transcriptRetry: undefined },
-        now,
-      );
-    } else {
+    let recheck: ListenRecord["transcriptRecheck"];
+    if (retryable) {
       const consecutiveFailures = (record.transcriptRetry?.consecutiveFailures ?? 0) + 1;
       if (consecutiveFailures >= TRANSCRIPT_RETRY_MAX_ATTEMPTS) {
         await storage.updateEpisode(
@@ -455,6 +459,43 @@ export async function fetchTranscript(
         };
         await storage.updateEpisode(record.uuid, { transcriptError, transcriptRetry: retry }, now);
       }
+    } else if (recheckable) {
+      // The transcript may simply not be published/transcribed YET (Taddy
+      // still transcribing, or an RSS item with no transcript links
+      // declared). Poll again on a longer, uncapped-by-attempt-count horizon
+      // rather than treating the first miss as terminal.
+      const firstDeferredAt = record.transcriptRecheck?.firstDeferredAt ?? now().toISOString();
+      const ageMs = now().getTime() - Date.parse(firstDeferredAt);
+      if (ageMs > TRANSCRIPT_RECHECK_MAX_AGE_MS) {
+        const days = Math.round(TRANSCRIPT_RECHECK_MAX_AGE_MS / (24 * 60 * 60_000));
+        await storage.updateEpisode(
+          record.uuid,
+          {
+            transcriptStatus: "failed",
+            transcriptError: `${transcriptError} (no transcript appeared after ${days} days)`,
+            transcriptRecheck: undefined,
+          },
+          now,
+        );
+      } else {
+        const attempts = (record.transcriptRecheck?.attempts ?? 0) + 1;
+        const delay = Math.min(
+          TRANSCRIPT_RECHECK_BASE_MS * 2 ** (attempts - 1),
+          TRANSCRIPT_RECHECK_CAP_MS,
+        );
+        recheck = {
+          attempts,
+          nextEligibleAt: new Date(now().getTime() + delay).toISOString(),
+          firstDeferredAt,
+        };
+        await storage.updateEpisode(record.uuid, { transcriptError, transcriptRecheck: recheck }, now);
+      }
+    } else {
+      await storage.updateEpisode(
+        record.uuid,
+        { transcriptStatus: "failed", transcriptError, transcriptRetry: undefined },
+        now,
+      );
     }
     return {
       status: "no-transcript",
@@ -466,6 +507,14 @@ export async function fetchTranscript(
               attempt: retry.consecutiveFailures,
               maxAttempts: TRANSCRIPT_RETRY_MAX_ATTEMPTS,
               nextEligibleAt: retry.nextEligibleAt,
+            },
+          }
+        : {}),
+      ...(recheck
+        ? {
+            recheck: {
+              attempt: recheck.attempts,
+              nextEligibleAt: recheck.nextEligibleAt,
             },
           }
         : {}),
@@ -503,6 +552,7 @@ export async function fetchTranscript(
       transcriptSource: result.transcript.source,
       transcriptError: undefined,
       transcriptRetry: undefined,
+      transcriptRecheck: undefined,
     },
     now,
   );

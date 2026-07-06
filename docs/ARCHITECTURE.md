@@ -97,7 +97,7 @@ make that safe to run on an interval:
   (never the lock) for a manual recovery run — see the README warning
   against using it in a scheduler recipe.
 
-This cooldown is one of two independent backoff layers, deliberately at
+This cooldown is one of three independent backoff layers, deliberately at
 different scales. `retry.ts`'s `fetchWithRetry` retries a *single* request
 (login, history, feed-export, RSS/Taddy transcript fetch) in-process on a
 network error or a 429/5xx, at request scale (`RETRY_BASE_MS`/`RETRY_CAP_MS`,
@@ -108,7 +108,50 @@ exhaust, the cooldown above backs off the *next scheduled run* at the much
 larger `BACKOFF_BASE_MS`/`BACKOFF_CAP_MS` (minutes–hours) scale. The two are
 intentionally not shared: reusing the cooldown's minute-scale constants
 per-request would stall an in-progress sync for minutes on a single
-transient blip.
+transient blip. The third layer, per-episode transcript backoff
+(`transcriptRetry`/`transcriptRecheck`, see below), is scoped to one episode
+rather than the whole sync and is likewise kept separate — see "Event-driven
+transcript availability" below for why.
+
+### Event-driven transcript availability (webhook substitute)
+
+Issue #9 asked for Taddy webhook subscriptions so a transcript published
+after an episode's first ladder run triggers ingestion automatically.
+CastRecall is an OpenClaw tool plugin with no HTTP server and no reachable
+inbound endpoint, so a literal webhook can't ship in this architecture — the
+shipped substitute is scheduled polling, reusing the same "stay `none`, carry
+a `nextEligibleAt`, let the pipeline re-check and defer" pattern
+`transcriptRetry` already established for transient STT failures.
+
+`ladder.ts` marks a rung `recheckable: true` when the miss means "not
+available *yet*", not "will never be available": Taddy reporting
+`taddyTranscribeStatus` as `PROCESSING`/`TRANSCRIBING` (`taddy.ts`'s
+`isTranscribingStatus`, an explicit allowlist — `NOT_TRANSCRIBING` contains
+the substring `TRANSCRIBING` but is the terminal state, so a substring
+fallback must negate it), and an RSS feed item that currently declares no
+`<podcast:transcript>` links. `tools.ts`'s `fetchTranscript` then keeps the
+episode `transcriptStatus: "none"` and advances a `transcriptRecheck` capped
+backoff (`TRANSCRIPT_RECHECK_BASE_MS`/`_CAP_MS`, hours-to-a-day scale) instead
+of marking it terminally `failed`; `pipeline.ts`'s eligibility gate defers
+until the *later* of `transcriptRetry.nextEligibleAt` and
+`transcriptRecheck.nextEligibleAt`. Once `firstDeferredAt` exceeds
+`TRANSCRIPT_RECHECK_MAX_AGE_MS` (14 days), the episode converges to
+terminally `failed` so a scheduler never polls forever.
+
+`transcriptRecheck` is a **sibling** to `transcriptRetry`, not a reuse of it:
+`transcriptRetry`'s attempt cap exists specifically to bound paid-STT
+re-billing (see the comment on `TRANSCRIPT_RETRY_MAX_ATTEMPTS` in
+`storage.ts`), while `transcriptRecheck`'s horizon is a futile-poll bound —
+overloading one field for both would blur that billing invariant. Where both
+apply to the same episode (e.g. a transient Deepgram failure on an episode
+Taddy is also still transcribing), `fetchTranscript` checks `retryable`
+*before* `recheckable`, so the STT-billing path always wins and
+`transcriptRecheck` is never set in that case.
+
+If OpenClaw later exposes inbound HTTP for plugins, a real Taddy webhook
+handler would land at exactly this point: it would flip an episode's
+`transcriptRecheck`-gated eligibility immediately rather than waiting for the
+next scheduled poll, with no other change to the ladder or pipeline.
 
 Only episodes newly recorded this run get `fetchTranscript`, and only
 episodes newly stored this run get `generateReview` — a pre-existing
