@@ -1643,6 +1643,76 @@ describe("tools", () => {
         ),
       ).rejects.toThrow(glossaryFile);
     });
+
+    it("rejects a malformed glossary before the transcript ladder makes any network calls", async () => {
+      await seedEpisode();
+      const glossaryFile = path.join(dir, "bad-glossary.json");
+      await fs.writeFile(glossaryFile, "not json", "utf8");
+      let fetchCalled = false;
+      const fetchImpl = (async () => {
+        fetchCalled = true;
+        throw new Error("the transcript ladder should never run for an invalid glossary");
+      }) as typeof fetch;
+      await expect(
+        fetchTranscript(
+          config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+          { episodeUuid: "ep-1" },
+          { fetchImpl },
+        ),
+      ).rejects.toThrow(glossaryFile);
+      expect(fetchCalled).toBe(false);
+    });
+
+    it("applies the same corrections to stored segment text as the stored transcript text", async () => {
+      const storage = await seedEpisode();
+      const glossaryFile = await writeGlossary([{ canonical: "ChatGPT", variants: ["chat gpt"] }]);
+      const fetchImpl = (async (input: any) => {
+        const url = String(input);
+        if (url.includes("export_feed_urls")) {
+          return new Response(JSON.stringify({ result: { "pod-1": "https://example.com/feed.xml" } }), {
+            status: 200,
+          });
+        }
+        if (url === "https://example.com/feed.xml") {
+          return new Response(
+            `<?xml version="1.0"?>
+            <rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+              <channel>
+                <item>
+                  <title>Episode One</title>
+                  <guid>ep-1</guid>
+                  <enclosure url="https://cdn.example.com/ep1.mp3" />
+                  <podcast:transcript url="https://cdn.example.com/ep1.vtt" type="text/vtt" />
+                </item>
+              </channel>
+            </rss>`,
+            { status: 200 },
+          );
+        }
+        if (url === "https://cdn.example.com/ep1.vtt") {
+          return new Response(
+            "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nI really love chat gpt these days.",
+            { status: 200, headers: { "content-type": "text/vtt" } },
+          );
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch;
+
+      const result = (await fetchTranscript(
+        config({ CASTRECALL_GLOSSARY_FILE: glossaryFile }),
+        { episodeUuid: "ep-1" },
+        { fetchImpl },
+      )) as Record<string, any>;
+      expect(result.status).toBe("stored");
+
+      const storedText = await fs.readFile(path.join(storage.sourceDir("ep-1"), "transcript.txt"), "utf8");
+      expect(storedText).toBe("I really love ChatGPT these days.");
+
+      const segments = await storage.readSegments("ep-1");
+      expect(segments).toEqual([
+        expect.objectContaining({ text: "I really love ChatGPT these days." }),
+      ]);
+    });
   });
 
   describe("fetch_transcript repetition-loop quarantine (issue #42)", () => {

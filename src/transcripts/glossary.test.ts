@@ -46,6 +46,16 @@ describe("glossary", () => {
       const result = applyGlossary("visit open ai labs today", compiled);
       expect(result.text).toBe("visit OpenAI Labs today");
     });
+
+    it("longest variant wins on a shifted (non-nested) overlap across entries", () => {
+      const compiled = compileGlossary([
+        { canonical: "New York", variants: ["new york"] },
+        { canonical: "York City", variants: ["york city"] },
+      ]);
+      const result = applyGlossary("visit new york city today", compiled);
+      expect(result.text).toBe("visit new York City today");
+      expect(result.corrections).toEqual([{ canonical: "York City", variant: "york city", count: 1 }]);
+    });
   });
 
   describe("near-misses that must NOT change", () => {
