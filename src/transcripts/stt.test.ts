@@ -155,6 +155,18 @@ describe("transcribeAudio with deepgram", () => {
     expect(result.text).toBe(segmentsToText(result.segments!));
   });
 
+  it("leaves speaker undefined (not 'Speaker 0') when a Deepgram utterance omits the speaker field", async () => {
+    const fetchImpl: FetchLike = (async () =>
+      new Response(
+        JSON.stringify({ results: { utterances: [{ transcript: "hi there", start: 1, end: 2 }] } }),
+        { status: 200 },
+      )) as FetchLike;
+    const result = await transcribeAudio(deepgramConfig(), AUDIO_URL, fetchImpl);
+    expect(result.segments).toEqual([
+      { speaker: undefined, text: "hi there", startSeconds: 1, endSeconds: 2, start: "1", end: "2" },
+    ]);
+  });
+
   it("omits timing fields on a segment whose utterance carries a speaker but no start/end", async () => {
     const fetchImpl: FetchLike = (async () =>
       new Response(

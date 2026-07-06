@@ -249,7 +249,7 @@ async function transcribeWithDeepgram(
   const segments = body.results?.utterances?.length
     ? utterancesToSegments(
         body.results.utterances.map((u) => ({
-          speaker: u.speaker ?? 0,
+          speaker: u.speaker,
           text: u.transcript ?? "",
           startSeconds: u.start,
           endSeconds: u.end,
