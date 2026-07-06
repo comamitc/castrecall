@@ -24,6 +24,13 @@
 import { CastrecallSetupError, type ResolvedConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
 import { segmentsToText, type TranscriptSegment } from "./normalize.js";
+import { createWriteStream, openAsBlob } from "node:fs";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { isRetryableHttpStatus, RetryableSttError, utterancesToSegments, type SttResult } from "./stt.js";
 
 const POLL_INTERVAL_MS = 5_000;
@@ -150,7 +157,7 @@ async function buildUploadRequest(
   config: ResolvedConfig,
   fetchImpl: FetchLike,
   headers: Record<string, string>,
-): Promise<RequestInit> {
+): Promise<{ init: RequestInit; cleanup: () => Promise<void> }> {
   let audioResponse: Response;
   try {
     audioResponse = await fetchImpl(audioUrl);
@@ -166,12 +173,37 @@ async function buildUploadRequest(
     if (isRetryableHttpStatus(audioResponse.status)) throw new RetryableSttError(message);
     throw new Error(message);
   }
-  const audio = await audioResponse.arrayBuffer();
+  // Spool the download to a temp file instead of buffering the whole
+  // episode with arrayBuffer(): hour-long audio can run to hundreds of MB,
+  // which would sit fully in memory (and can OOM the process) before the
+  // provider is even called. The disk-backed Blob from openAsBlob streams
+  // during the multipart upload; the caller runs `cleanup` once the submit
+  // request has completed.
+  const tmpPath = path.join(
+    os.tmpdir(),
+    `castrecall-remote-stt-${randomUUID()}${path.extname(audioUrl.split("?")[0]) || ".mp3"}`,
+  );
+  try {
+    if (!audioResponse.body) throw new Error("audio response had no body stream");
+    await pipeline(Readable.fromWeb(audioResponse.body as import("node:stream/web").ReadableStream), createWriteStream(tmpPath));
+  } catch (error) {
+    await fs.rm(tmpPath, { force: true }).catch(() => {});
+    const message = error instanceof Error ? error.message : String(error);
+    throw new RetryableSttError(
+      `Remote STT audio download failed mid-stream (${message}); the episode stays eligible ` +
+        "for a later run.",
+    );
+  }
   const fileName = audioUrl.split("?")[0].split("/").pop() || "episode.mp3";
   const form = new FormData();
   if (config.stt.remoteModel) form.set("model", config.stt.remoteModel);
-  form.set("file", new Blob([audio]), fileName);
-  return { method: "POST", headers, body: form };
+  form.set("file", await openAsBlob(tmpPath), fileName);
+  return {
+    init: { method: "POST", headers, body: form },
+    cleanup: async () => {
+      await fs.rm(tmpPath, { force: true }).catch(() => {});
+    },
+  };
 }
 
 async function pollJob(
@@ -197,9 +229,12 @@ async function pollJob(
       throw new Error(`Remote STT transcription failed: ${body.error ?? "unknown error"}.`);
     }
   }
-  throw new Error(
+  // A local poll deadline is not evidence the JOB failed — the remote side
+  // may still finish. Retryable keeps the episode eligible under the
+  // bounded transcriptRetry backoff instead of marking it terminally failed.
+  throw new RetryableSttError(
     `Remote STT transcription did not complete within ${Math.round(timeoutMs / 60_000)} minutes; ` +
-      "try again later — the job may still finish on the remote side.",
+      "the job may still finish on the remote side — the episode stays eligible for a later run.",
   );
 }
 
@@ -243,19 +278,26 @@ export async function transcribeWithRemoteStt(
   const headers = authHeaders(config);
   const submittedBy: "audio_url" | "upload" = config.stt.remoteForceUpload ? "upload" : "audio_url";
 
-  const requestInit: RequestInit =
-    submittedBy === "upload"
-      ? await buildUploadRequest(audioUrl, config, fetchImpl, headers)
-      : {
-          method: "POST",
-          headers: { ...headers, "content-type": "application/json" },
-          body: JSON.stringify({
-            audio_url: audioUrl,
-            ...(config.stt.remoteModel ? { model: config.stt.remoteModel } : {}),
-          }),
-        };
+  const upload =
+    submittedBy === "upload" ? await buildUploadRequest(audioUrl, config, fetchImpl, headers) : undefined;
+  const requestInit: RequestInit = upload
+    ? upload.init
+    : {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({
+          audio_url: audioUrl,
+          ...(config.stt.remoteModel ? { model: config.stt.remoteModel } : {}),
+        }),
+      };
 
-  const submitResponse = await fetchClassified(fetchImpl, `${base}/transcribe`, requestInit, "submit");
+  let submitResponse: Response;
+  try {
+    submitResponse = await fetchClassified(fetchImpl, `${base}/transcribe`, requestInit, "submit");
+  } finally {
+    // The spooled temp file only needs to outlive the submit request.
+    await upload?.cleanup();
+  }
   const submitted = (await submitResponse.json()) as { job_id?: string } & RawRemoteResult;
 
   const mode: "sync" | "async" = submitted.job_id ? "async" : "sync";

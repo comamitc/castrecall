@@ -228,7 +228,7 @@ describe("transcribeWithRemoteStt — async job flow", () => {
     await expect(failure.catch((e) => e)).resolves.not.toBeInstanceOf(RetryableSttError);
   });
 
-  it("throws a terminal Error when the poll deadline elapses while the job stays processing, without hanging", async () => {
+  it("throws RetryableSttError when the poll deadline elapses while the job stays processing — a slow job is not a failed job (issue #61 review)", async () => {
     const fetchImpl: FetchLike = (async (url: string) => {
       if (String(url).endsWith("/transcribe")) {
         return new Response(JSON.stringify({ job_id: "job-1", status: "queued" }), { status: 200 });
@@ -236,6 +236,14 @@ describe("transcribeWithRemoteStt — async job flow", () => {
       return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
     }) as FetchLike;
     const { now, sleep } = fakeClock();
+    const attempt = transcribeWithRemoteStt(config(), AUDIO_URL, {
+      fetchImpl,
+      sleep,
+      now,
+      pollIntervalMs: 1_000,
+      timeoutMs: 3_000,
+    });
+    await expect(attempt).rejects.toThrow(RetryableSttError);
     await expect(
       transcribeWithRemoteStt(config(), AUDIO_URL, {
         fetchImpl,
@@ -244,7 +252,7 @@ describe("transcribeWithRemoteStt — async job flow", () => {
         pollIntervalMs: 1_000,
         timeoutMs: 3_000,
       }),
-    ).rejects.toThrow(/did not complete/);
+    ).rejects.toThrow(/may still finish/);
   });
 });
 
@@ -337,6 +345,27 @@ describe("transcribeWithRemoteStt — upload mode", () => {
     expect(form.get("file")).toBeTruthy();
     expect(form.get("audio_url")).toBeNull();
     expect(result.generation?.submittedBy).toBe("upload");
+  });
+
+  it("spools the upload to a temp file (no full-episode buffering) and cleans it up after submit", async () => {
+    const os = await import("node:os");
+    const fsp = await import("node:fs/promises");
+    const before = new Set(await fsp.readdir(os.tmpdir()));
+    const fetchImpl: FetchLike = (async (url: string) => {
+      if (String(url) === AUDIO_URL) return new Response("fake audio bytes", { status: 200 });
+      return new Response(JSON.stringify({ text: "uploaded transcript" }), { status: 200 });
+    }) as FetchLike;
+
+    const result = await transcribeWithRemoteStt(uploadConfig(), AUDIO_URL, { fetchImpl });
+    expect(result.text).toBe("uploaded transcript");
+
+    // Every castrecall-remote-stt-* spool file created during the call was
+    // removed once the submit request completed.
+    const after = await fsp.readdir(os.tmpdir());
+    const leftover = after.filter(
+      (name) => name.startsWith("castrecall-remote-stt-") && !before.has(name),
+    );
+    expect(leftover).toEqual([]);
   });
 
   it("sends the configured model alongside the uploaded file", async () => {
