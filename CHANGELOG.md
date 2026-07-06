@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.7.0 — 2026-07-06
+
+The corpus becomes searchable: keyword and exact-phrase search over every
+stored transcript, with attribution built into each hit.
+
+- **`castrecall_search`** (#5, PR #38): `{ query, limit? }` runs
+  keyword/quoted-phrase search over all stored transcripts. Every hit
+  carries provenance (podcast, episode, listen date, transcript source,
+  path) plus both a display `snippet` (`**term**`-highlighted, elided) and
+  the verbatim `snippetText` slice it came from, so quoted material stays
+  attributable to the transcript — never to a mutated string. Zero-score
+  documents are excluded, not ranked low.
+- **Index design hardened across seven review rounds** (same PR): ranking
+  is settled entirely from a private, rebuildable on-disk index
+  (`.index/search-index.v1.json`) — tf/idf-lite term scoring plus exact
+  phrase confirmation from positional postings keyed by one-way term
+  hashes, walked from the rarest phrase term. Exact phrase matches can
+  never be hidden behind higher-scoring near-misses, no query shape can
+  trigger a corpus-wide transcript scan (only the returned hits are read,
+  for snippets), and the index never stores the transcript word sequence.
+  The schema version lives in the filename, and wrong-version, corrupt, or
+  structurally invalid entries self-heal on the next search.
+
 ## v0.6.1 — 2026-07-06
 
 Marketplace-publish readiness (#8): no runtime changes, closes the gap

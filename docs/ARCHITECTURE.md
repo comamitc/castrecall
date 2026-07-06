@@ -230,20 +230,24 @@ set atomically so no stale section files survive a shorter re-transcription.
 ### Search over the corpus
 
 `castrecall_search` (`search.ts`) is a read-only keyword/phrase search over
-stored transcripts, backed by a private, rebuildable term-frequency index
-under `.index/search-index.json`. Scoring is two-phase: Phase 1 scores every
-document from the persisted index (tf-length-normalized + idf-lite) and
-selects a bounded candidate set — docs matching any bare keyword term, plus
-docs containing every token of a quoted phrase (always retained, since a doc
-with the exact phrase necessarily contains every phrase token, so it can
-never be missed by the index alone). Phase 2 re-reads only that capped
-candidate set's live `transcript.txt`, applies an exact contiguous-phrase
-bonus, and builds snippets. The index therefore stores **term frequencies
-only** — never prose, never positional data — and is reconciled by
-`contentHash` on every search: an unchanged corpus re-tokenizes nothing, a
-changed transcript re-tokenizes just that document, and a corrupt or missing
-index self-heals via full rescan (same tolerant idiom as `Storage.loadState`,
-same tmp+rename write idiom as `Storage.saveState`).
+stored transcripts, backed by a private, rebuildable index under
+`.index/search-index.v1.json` (the schema version is part of the filename,
+so a build only ever reads its own format and upgrade/rollback across
+schema changes just rebuilds). Ranking is settled entirely from the index:
+Phase 1 scores every document (tf-length-normalized + idf-lite over term
+frequencies) and resolves quoted-phrase bonuses from positional postings —
+sorted token positions keyed by a one-way hash of each term — by walking
+the rarest phrase term's positions with binary searches. Exact matches can
+therefore never be hidden behind higher-scoring near-misses, and no query
+shape triggers a corpus-wide transcript scan; Phase 2 reads only the final
+top-`limit` documents to build snippets. The index stores plaintext
+vocabulary (term frequencies, inherent to keyword scoring) but **never the
+word sequence** — positions are keyed by one-way term hashes. It is
+reconciled by `contentHash` on every search: an unchanged corpus
+re-tokenizes nothing, a changed transcript re-tokenizes just that document,
+and a corrupt, missing, wrong-version, or structurally invalid index
+self-heals via rescan (same tolerant idiom as `Storage.loadState`, same
+tmp+rename write idiom as `Storage.saveState`).
 
 Every hit carries both a `snippet` (display-formatted, `**term**`-highlighted,
 `…`-elided) and a `snippetText` (the raw, verbatim transcript slice it was
@@ -275,10 +279,11 @@ review/pending/<episodeUuid>.md
 assembled there and published into `sources/` with a single atomic rename, so
 directories CastRecall publishes appear all-at-once, never half-written. The
 periodic-sync run lock (`pipeline.lock`) also lives here, exclusive-created
-for the same reason. `.index/search-index.json` is `castrecall_search`'s
-private, derived cache (term frequencies only, never prose) — safe to delete
-at any time; the next search rebuilds it from `sources/`. Downstream scans
-must skip both dot-prefixed namespaces (and any future one).
+for the same reason. `.index/search-index.v1.json` is `castrecall_search`'s
+private, derived cache (term frequencies + hash-keyed positional postings,
+never the plaintext word sequence) — safe to delete at any time; the next
+search rebuilds it from `sources/`. Downstream scans must skip both
+dot-prefixed namespaces (and any future one).
 
 **Completeness marker:** consumers must treat `transcript.txt` as the marker
 that a `sources/<episodeUuid>/` entry is complete. An entry lacking it (for
