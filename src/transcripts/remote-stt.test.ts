@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { promises as fsp } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { beforeEach, describe, expect, it } from "vitest";
 import { CastrecallSetupError, resolveConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
 import { segmentsToText } from "./normalize.js";
@@ -9,6 +12,10 @@ const AUDIO_URL = "https://example.com/episode.mp3";
 const BASE_URL = "https://stt.example.com/api/";
 const TOKEN = "super-secret-token";
 
+// Isolated data dir per test file: async-job resume state lives under
+// <dataDir>/.staging/remote-stt-jobs and must never touch a real data dir.
+const DATA_DIR = await fsp.mkdtemp(path.join(os.tmpdir(), "castrecall-remote-stt-data-"));
+
 function config(extraEnv: NodeJS.ProcessEnv = {}) {
   return resolveConfig(
     {},
@@ -17,9 +24,24 @@ function config(extraEnv: NodeJS.ProcessEnv = {}) {
       CASTRECALL_STT_PROVIDER: "remote-stt",
       CASTRECALL_REMOTE_STT_BASE_URL: BASE_URL,
       CASTRECALL_REMOTE_STT_TOKEN: TOKEN,
+      CASTRECALL_DATA_DIR: DATA_DIR,
       ...extraEnv,
     },
   );
+}
+
+beforeEach(async () => {
+  // Job-resume state is keyed by (base, audioUrl), which most tests share —
+  // clear it so persisted job ids never leak across tests.
+  await fsp.rm(path.join(DATA_DIR, ".staging", "remote-stt-jobs"), { recursive: true, force: true });
+});
+
+async function jobStateFiles(): Promise<string[]> {
+  try {
+    return await fsp.readdir(path.join(DATA_DIR, ".staging", "remote-stt-jobs"));
+  } catch {
+    return [];
+  }
 }
 
 function fakeClock() {
@@ -253,6 +275,117 @@ describe("transcribeWithRemoteStt — async job flow", () => {
         timeoutMs: 3_000,
       }),
     ).rejects.toThrow(/may still finish/);
+  });
+});
+
+describe("transcribeWithRemoteStt — async job resume (issue #61 review)", () => {
+  it("resumes a timed-out job on the next attempt instead of enqueuing a duplicate", async () => {
+    let submits = 0;
+    const slowFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ job_id: "job-slow", status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    }) as FetchLike;
+    const clock1 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: slowFetch,
+        sleep: clock1.sleep,
+        now: clock1.now,
+        pollIntervalMs: 1_000,
+        timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(RetryableSttError);
+    expect(submits).toBe(1);
+    expect(await jobStateFiles()).toHaveLength(1);
+
+    // Next attempt: the job finished server-side. It must be observed via
+    // GET /jobs/job-slow with NO new /transcribe submit.
+    const doneFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ job_id: "job-dup", status: "queued" }), { status: 200 });
+      }
+      expect(String(url)).toContain("/jobs/job-slow");
+      return new Response(
+        JSON.stringify({ status: "completed", result: { text: "resumed transcript" } }),
+        { status: 200 },
+      );
+    }) as FetchLike;
+    const clock2 = fakeClock();
+    const result = await transcribeWithRemoteStt(config(), AUDIO_URL, {
+      fetchImpl: doneFetch,
+      sleep: clock2.sleep,
+      now: clock2.now,
+      pollIntervalMs: 1_000,
+      timeoutMs: 3_000,
+    });
+    expect(result.text).toBe("resumed transcript");
+    expect(submits).toBe(1); // never resubmitted
+    expect(await jobStateFiles()).toHaveLength(0);
+  });
+
+  it("forgets a job the remote no longer recognizes and submits fresh", async () => {
+    let submits = 0;
+    const slowFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ job_id: "job-gone", status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "processing" }), { status: 200 });
+    }) as FetchLike;
+    const clock1 = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: slowFetch,
+        sleep: clock1.sleep,
+        now: clock1.now,
+        pollIntervalMs: 1_000,
+        timeoutMs: 3_000,
+      }),
+    ).rejects.toThrow(RetryableSttError);
+
+    const goneFetch: FetchLike = (async (url: string) => {
+      if (String(url).includes("/jobs/job-gone")) return new Response("unknown job", { status: 404 });
+      if (String(url).endsWith("/transcribe")) {
+        submits += 1;
+        return new Response(JSON.stringify({ text: "fresh transcript" }), { status: 200 });
+      }
+      return new Response("nope", { status: 404 });
+    }) as FetchLike;
+    const clock2 = fakeClock();
+    const result = await transcribeWithRemoteStt(config(), AUDIO_URL, {
+      fetchImpl: goneFetch,
+      sleep: clock2.sleep,
+      now: clock2.now,
+      pollIntervalMs: 1_000,
+      timeoutMs: 3_000,
+    });
+    expect(result.text).toBe("fresh transcript");
+    expect(submits).toBe(2);
+    expect(await jobStateFiles()).toHaveLength(0);
+  });
+
+  it("clears job state when the job fails terminally", async () => {
+    const failFetch: FetchLike = (async (url: string) => {
+      if (String(url).endsWith("/transcribe")) {
+        return new Response(JSON.stringify({ job_id: "job-fail", status: "queued" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ status: "failed", error: "GPU OOM" }), { status: 200 });
+    }) as FetchLike;
+    const clock = fakeClock();
+    await expect(
+      transcribeWithRemoteStt(config(), AUDIO_URL, {
+        fetchImpl: failFetch,
+        sleep: clock.sleep,
+        now: clock.now,
+        pollIntervalMs: 1_000,
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/GPU OOM/);
+    expect(await jobStateFiles()).toHaveLength(0);
   });
 });
 

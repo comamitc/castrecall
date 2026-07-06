@@ -28,7 +28,7 @@ import { createWriteStream, openAsBlob } from "node:fs";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { isRetryableHttpStatus, RetryableSttError, utterancesToSegments, type SttResult } from "./stt.js";
@@ -263,6 +263,38 @@ function parseRemoteResult(body: RawRemoteResult): NormalizedRemoteResult {
   };
 }
 
+/**
+ * Durable async-job state (issue #61 review): when a remote job outlives the
+ * local poll deadline, its job_id is kept under
+ * `<dataDir>/.staging/remote-stt-jobs/` (the reserved private scratch
+ * namespace) so the NEXT attempt resumes polling the SAME job instead of
+ * enqueuing a duplicate long GPU transcription. Keyed by a hash of
+ * base URL + audio URL; the file is removed on completion, on terminal job
+ * failure, and whenever the remote no longer recognizes the job.
+ */
+function jobStatePath(config: ResolvedConfig, base: string, audioUrl: string): string {
+  const key = createHash("sha256").update(`${base}\n${audioUrl}`, "utf8").digest("hex").slice(0, 32);
+  return path.join(config.dataDir, ".staging", "remote-stt-jobs", `${key}.json`);
+}
+
+async function readJobState(statePath: string): Promise<string | undefined> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(statePath, "utf8")) as { jobId?: string };
+    return typeof parsed.jobId === "string" && parsed.jobId ? parsed.jobId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeJobState(statePath: string, jobId: string): Promise<void> {
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, JSON.stringify({ jobId, savedAt: new Date().toISOString() }), "utf8");
+}
+
+async function clearJobState(statePath: string): Promise<void> {
+  await fs.rm(statePath, { force: true }).catch(() => {});
+}
+
 export async function transcribeWithRemoteStt(
   config: ResolvedConfig,
   audioUrl: string,
@@ -277,6 +309,50 @@ export async function transcribeWithRemoteStt(
   const base = trimmedBaseUrl(config.stt.remoteBaseUrl ?? "");
   const headers = authHeaders(config);
   const submittedBy: "audio_url" | "upload" = config.stt.remoteForceUpload ? "upload" : "audio_url";
+  const statePath = jobStatePath(config, base, audioUrl);
+
+  // Resume before ever resubmitting: a prior attempt's async job may still
+  // be running (or already finished) server-side. Retryable/auth errors
+  // keep the state file so a later run can resume again; any terminal poll
+  // error (job unknown, job failed) forgets the job and falls through to a
+  // fresh submit below.
+  const priorJobId = await readJobState(statePath);
+  if (priorJobId) {
+    try {
+      const resumedBody = await pollJob(
+        base,
+        headers,
+        priorJobId,
+        fetchImpl,
+        sleep,
+        pollIntervalMs,
+        timeoutMs,
+        now,
+      );
+      await clearJobState(statePath);
+      const resumedNormalized = parseRemoteResult(resumedBody);
+      const resumedModel = resumedNormalized.model ?? config.stt.remoteModel;
+      return {
+        text: resumedNormalized.text,
+        provider: "remote-stt",
+        model: resumedModel,
+        segments: resumedNormalized.segments,
+        generation: {
+          kind: "remote-stt",
+          implementation: resumedNormalized.implementation,
+          model: resumedModel,
+          baseUrlHost: new URL(base).host,
+          mode: "async",
+          submittedBy,
+          warnings: resumedNormalized.warnings,
+          durationSeconds: resumedNormalized.durationSeconds,
+        },
+      };
+    } catch (error) {
+      if (error instanceof RetryableSttError || error instanceof CastrecallSetupError) throw error;
+      await clearJobState(statePath);
+    }
+  }
 
   const upload =
     submittedBy === "upload" ? await buildUploadRequest(audioUrl, config, fetchImpl, headers) : undefined;
@@ -301,9 +377,27 @@ export async function transcribeWithRemoteStt(
   const submitted = (await submitResponse.json()) as { job_id?: string } & RawRemoteResult;
 
   const mode: "sync" | "async" = submitted.job_id ? "async" : "sync";
-  const resultBody = submitted.job_id
-    ? await pollJob(base, headers, submitted.job_id, fetchImpl, sleep, pollIntervalMs, timeoutMs, now)
-    : submitted;
+  let resultBody: RawRemoteResult;
+  if (submitted.job_id) {
+    // Persist the job id BEFORE polling: a poll-deadline expiry throws
+    // RetryableSttError, and the next attempt must resume this exact job
+    // rather than enqueue duplicate remote GPU work.
+    await writeJobState(statePath, submitted.job_id);
+    try {
+      resultBody = await pollJob(base, headers, submitted.job_id, fetchImpl, sleep, pollIntervalMs, timeoutMs, now);
+      await clearJobState(statePath);
+    } catch (error) {
+      // Keep the state only for outcomes where the job may still complete
+      // (deadline expiry, transient poll failures) or where only our auth
+      // is broken; a terminally failed job must not be resumed.
+      if (!(error instanceof RetryableSttError) && !(error instanceof CastrecallSetupError)) {
+        await clearJobState(statePath);
+      }
+      throw error;
+    }
+  } else {
+    resultBody = submitted;
+  }
 
   const normalized = parseRemoteResult(resultBody);
   const model = normalized.model ?? config.stt.remoteModel;
