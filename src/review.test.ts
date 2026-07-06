@@ -117,12 +117,14 @@ describe("buildReviewCandidate", () => {
           model: undefined,
           modelSource: "backend-default",
           usesBackendDefault: true,
+          preset: "quality",
           outputFormat: "txt",
           wordTimestamps: false,
           decode: {
             applied: { conditionOnPreviousText: false },
             ignored: [{ option: "wordTimestamps", reason: "txt output cannot carry word timing" }],
           },
+          toolVersion: "mlx-whisper 0.4.0",
         },
       },
       transcriptText: TRANSCRIPT_TEXT,
@@ -132,8 +134,14 @@ describe("buildReviewCandidate", () => {
     expect(markdown).toContain("transcript_backend: mlx-whisper");
     expect(markdown).toContain("transcript_model_source: backend-default");
     expect(markdown).not.toContain("transcript_model:");
+    expect(markdown).toContain('transcript_preset: "quality"');
+    expect(markdown).toContain("transcript_output_format: txt");
+    expect(markdown).toContain("transcript_word_timestamps: false");
+    expect(markdown).toContain("transcript_decode_options:");
+    expect(markdown).toContain("conditionOnPreviousText");
     expect(markdown).toContain("transcript_decode_ignored:");
     expect(markdown).toContain("wordTimestamps");
+    expect(markdown).toContain('transcript_tool_version: "mlx-whisper 0.4.0"');
     expect(markdown).toContain("- Generation: mlx-whisper (backend-default, backend default — check corpus quality)");
     expect(markdown).toContain("dropped decode options: wordTimestamps");
   });
@@ -149,7 +157,12 @@ describe("buildReviewCandidate", () => {
     expect(markdown).not.toContain("transcript_backend:");
     expect(markdown).not.toContain("transcript_model:");
     expect(markdown).not.toContain("transcript_model_source:");
+    expect(markdown).not.toContain("transcript_preset:");
+    expect(markdown).not.toContain("transcript_output_format:");
+    expect(markdown).not.toContain("transcript_word_timestamps:");
+    expect(markdown).not.toContain("transcript_decode_options:");
     expect(markdown).not.toContain("transcript_decode_ignored:");
+    expect(markdown).not.toContain("transcript_tool_version:");
     expect(markdown).not.toContain("- Generation:");
   });
 });
