@@ -20,7 +20,7 @@
  * is rebuilt from them on contentHash or schema change.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Provenance } from "./storage.js";
@@ -84,23 +84,16 @@ export type IndexedDocument = {
   postings: Record<string, number[]>;
 };
 
-function fnv1a(input: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    hash ^= input.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
-}
-
 /**
- * One-way 64-bit hash of a term, keying its positional postings. Two
- * independent 32-bit FNV-1a passes are concatenated so accidental
- * collisions (which would merge two terms' postings and could fake a
- * contiguity check) are negligible.
+ * One-way 64-bit hash of a term, keying its positional postings. Truncated
+ * SHA-256 digest: unlike two concatenated FNV-1a passes (whose halves are
+ * not independent — an FNV collision on `term` also collides on any shared
+ * suffix), a cryptographic digest gives a genuine 64 bits of collision
+ * resistance, so accidental collisions that would merge two terms'
+ * postings and fake a contiguity check are negligible.
  */
 export function hashTerm(term: string): string {
-  return fnv1a(term) + fnv1a(`${term}#`);
+  return createHash("sha256").update(term, "utf8").digest("hex").slice(0, 16);
 }
 
 /** Build a document's term-frequency + positional-postings record from its transcript text. Pure. */
