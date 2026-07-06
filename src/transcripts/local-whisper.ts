@@ -152,14 +152,16 @@ export function resolveWhisperDecodeArgs(
     const customReason =
       "CASTRECALL_WHISPER_COMMAND owns its full command line; CastRecall adds no decode flags. " +
       "Include the equivalent flag in the command template itself.";
-    if (!decode.conditionOnPreviousText) {
-      ignored.push({
-        option: "conditionOnPreviousText",
-        reason:
-          "CastRecall's loop-prevention default (condition-on-previous-text off) is NOT applied " +
+    // Surfaced for BOTH values: false is CastRecall's loop-prevention
+    // default that the custom command runs without, and an explicit true
+    // is a user-configured control that is equally not applied.
+    ignored.push({
+      option: "conditionOnPreviousText",
+      reason: decode.conditionOnPreviousText
+        ? customReason
+        : "CastRecall's loop-prevention default (condition-on-previous-text off) is NOT applied " +
           `to a custom command. ${customReason}`,
-      });
-    }
+    });
     if (decode.language) ignored.push({ option: "language", reason: customReason });
     if (decode.wordTimestamps) ignored.push({ option: "wordTimestamps", reason: customReason });
     if (decode.noSpeechThreshold !== undefined) {
@@ -221,30 +223,39 @@ export function resolveWhisperDecodeArgs(
     applied.push("conditionOnPreviousText");
   }
 
-  // Word-level timing only survives into the STORED artifact when the
-  // output format can carry it (json). Passing the flag with a txt/vtt/srt
-  // output would decode differently but store no word timing — reporting
-  // that as "applied" is false provenance, so it's ignored with the fix.
-  let wordTimestampsApplied = false;
+  // Two distinct concerns share the word-timestamp flag on Python-backed
+  // flavors: (a) STORING word-level timing, which only survives into a
+  // json artifact — requesting it with txt/vtt/srt output is reported as
+  // ignored, not applied (that would be false provenance); and (b) the
+  // word-timestamp DECODE path, which hallucinationSilenceThreshold needs
+  // regardless of what artifact is stored — so the decode flag is also
+  // enabled whenever that threshold is set.
+  const needsWordTimestampDecode =
+    flavor !== "whisper.cpp" &&
+    (decode.wordTimestamps || decode.hallucinationSilenceThreshold !== undefined);
+  if (needsWordTimestampDecode) {
+    args.push(flavor === "mlx-whisper" ? "--word-timestamps" : "--word_timestamps", "True");
+  }
   if (decode.wordTimestamps) {
-    if (outputFormat !== "json") {
+    if (flavor === "whisper.cpp") {
+      if (outputFormat === "json") {
+        args.push("-ojf");
+        applied.push("wordTimestamps");
+      } else {
+        ignore(
+          "wordTimestamps",
+          "whisper.cpp only carries word-level timing in its full-JSON -ojf output; set " +
+            "CASTRECALL_WHISPER_OUTPUT_FORMAT=json to use this.",
+        );
+      }
+    } else if (outputFormat === "json") {
+      applied.push("wordTimestamps");
+    } else {
       ignore(
         "wordTimestamps",
-        `${flavor} word-level timing survives only in json output; the stored ${outputFormat} ` +
-          "output cannot carry it. Set CASTRECALL_WHISPER_OUTPUT_FORMAT=json to use this.",
+        `${flavor} decodes with word timing, but the stored ${outputFormat} output cannot ` +
+          "carry it. Set CASTRECALL_WHISPER_OUTPUT_FORMAT=json to store word-level timestamps.",
       );
-    } else if (flavor === "whisper.cpp") {
-      args.push("-ojf");
-      applied.push("wordTimestamps");
-      wordTimestampsApplied = true;
-    } else if (flavor === "mlx-whisper") {
-      args.push("--word-timestamps", "True");
-      applied.push("wordTimestamps");
-      wordTimestampsApplied = true;
-    } else {
-      args.push("--word_timestamps", "True");
-      applied.push("wordTimestamps");
-      wordTimestampsApplied = true;
     }
   }
 
@@ -274,34 +285,23 @@ export function resolveWhisperDecodeArgs(
     },
   );
   // mlx-whisper, openai-whisper, and whisper-ctranslate2 only act on
-  // hallucination_silence_threshold inside their word-timestamp decode path;
-  // set without wordTimestamps it would otherwise be a silent no-op, so it's
-  // ignored with an explicit reason instead of being reported as applied.
-  if (
-    decode.hallucinationSilenceThreshold !== undefined &&
-    flavor !== "whisper.cpp" &&
-    !wordTimestampsApplied
-  ) {
-    ignore(
-      "hallucinationSilenceThreshold",
-      `${flavor} only honors hallucinationSilenceThreshold alongside APPLIED word timestamps ` +
-        "(CASTRECALL_WHISPER_WORD_TIMESTAMPS=true with CASTRECALL_WHISPER_OUTPUT_FORMAT=json).",
-    );
-  } else {
-    applyThreshold(
-      flavor,
-      decode.hallucinationSilenceThreshold,
-      "hallucinationSilenceThreshold",
-      args,
-      applied,
-      ignore,
-      {
-        "mlx-whisper": "--hallucination-silence-threshold",
-        "openai-whisper": "--hallucination_silence_threshold",
-        "whisper-ctranslate2": "--hallucination_silence_threshold",
-      },
-    );
-  }
+  // hallucination_silence_threshold inside their word-timestamp decode
+  // path — which `needsWordTimestampDecode` above enables whenever this
+  // threshold is set, independent of the stored output format. It is a
+  // decode-time anti-hallucination guardrail, not an artifact feature.
+  applyThreshold(
+    flavor,
+    decode.hallucinationSilenceThreshold,
+    "hallucinationSilenceThreshold",
+    args,
+    applied,
+    ignore,
+    {
+      "mlx-whisper": "--hallucination-silence-threshold",
+      "openai-whisper": "--hallucination_silence_threshold",
+      "whisper-ctranslate2": "--hallucination_silence_threshold",
+    },
+  );
 
   return { args, applied, ignored, outputFormat };
 }

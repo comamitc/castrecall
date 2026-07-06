@@ -186,23 +186,6 @@ describe("resolveWhisperDecodeArgs", () => {
     expect(other.args).not.toEqual(expect.arrayContaining(["--language"]));
   });
 
-  it("ignores hallucinationSilenceThreshold on Python-backed flavors without word timestamps (regression)", () => {
-    const decode: WhisperDecodeConfig = { ...DEFAULT_DECODE, hallucinationSilenceThreshold: 2 };
-    for (const flavor of ["mlx-whisper", "openai-whisper", "whisper-ctranslate2"] as const) {
-      const result = resolveWhisperDecodeArgs(flavor, decode);
-      expect(result.args).not.toEqual(expect.arrayContaining(["--hallucination-silence-threshold"]));
-      expect(result.args).not.toEqual(expect.arrayContaining(["--hallucination_silence_threshold"]));
-      expect(result.ignored).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            option: "hallucinationSilenceThreshold",
-            reason: expect.stringContaining("CASTRECALL_WHISPER_WORD_TIMESTAMPS"),
-          }),
-        ]),
-      );
-    }
-  });
-
   it("applies hallucinationSilenceThreshold on Python-backed flavors once word timestamps are APPLIED (json output)", () => {
     const decode: WhisperDecodeConfig = {
       ...DEFAULT_DECODE,
@@ -225,23 +208,36 @@ describe("resolveWhisperDecodeArgs", () => {
     for (const flavor of ["mlx-whisper", "openai-whisper", "whisper-ctranslate2"] as const) {
       const resolution = resolveWhisperDecodeArgs(flavor, decode);
       expect(resolution.applied).not.toContain("wordTimestamps");
-      expect(resolution.args.join(" ")).not.toContain("word");
       const entry = resolution.ignored.find((item) => item.option === "wordTimestamps");
       expect(entry?.reason).toContain("json");
     }
   });
 
-  it("ignores hallucinationSilenceThreshold when word timestamps were requested but not applied", () => {
+  it("applies hallucinationSilenceThreshold with txt output — it is a decode guardrail, not an artifact feature", () => {
     const decode: WhisperDecodeConfig = {
       ...DEFAULT_DECODE,
-      wordTimestamps: true, // requested, but txt output means not applied
       hallucinationSilenceThreshold: 2,
     };
     const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
-    expect(mlx.applied).not.toContain("hallucinationSilenceThreshold");
-    expect(mlx.ignored.map((item) => item.option)).toEqual(
-      expect.arrayContaining(["wordTimestamps", "hallucinationSilenceThreshold"]),
+    // The threshold needs the word-timestamp decode path, which is enabled
+    // implicitly; the threshold itself is applied regardless of output format.
+    expect(mlx.args).toEqual(
+      expect.arrayContaining(["--word-timestamps", "True", "--hallucination-silence-threshold", "2"]),
     );
+    expect(mlx.applied).toContain("hallucinationSilenceThreshold");
+    expect(mlx.ignored).toEqual([]);
+  });
+
+  it("keeps storage provenance honest while honoring the decode guardrail: txt + requested word timestamps", () => {
+    const decode: WhisperDecodeConfig = {
+      ...DEFAULT_DECODE,
+      wordTimestamps: true, // requested, but txt output stores no word timing
+      hallucinationSilenceThreshold: 2,
+    };
+    const mlx = resolveWhisperDecodeArgs("mlx-whisper", decode);
+    expect(mlx.applied).toContain("hallucinationSilenceThreshold");
+    expect(mlx.applied).not.toContain("wordTimestamps");
+    expect(mlx.ignored.map((item) => item.option)).toEqual(["wordTimestamps"]);
   });
 
   it("custom flavor surfaces the unapplied loop-prevention default even with an otherwise default config", () => {
@@ -250,6 +246,17 @@ describe("resolveWhisperDecodeArgs", () => {
     expect(custom.applied).toEqual([]);
     expect(custom.ignored.map((item) => item.option)).toEqual(["conditionOnPreviousText"]);
     expect(custom.ignored[0].reason).toContain("loop-prevention");
+  });
+
+  it("custom flavor surfaces conditionOnPreviousText=true as ignored too — the provenance contract covers both values", () => {
+    const custom = resolveWhisperDecodeArgs("custom", {
+      ...DEFAULT_DECODE,
+      conditionOnPreviousText: true,
+    });
+    expect(custom.args).toEqual([]);
+    const entry = custom.ignored.find((item) => item.option === "conditionOnPreviousText");
+    expect(entry).toBeDefined();
+    expect(entry?.reason).toContain("CASTRECALL_WHISPER_COMMAND");
   });
 
   it("ignores whisper.cpp-unsupported options with a reason instead of dropping them silently", () => {
