@@ -39,6 +39,11 @@ export type ResolvedConfig = {
     command?: string;
     /** Model path (whisper.cpp) or model name (openai-whisper/mlx/ctranslate2). */
     model?: string;
+    /**
+     * CastRecall-managed quality preset (fast/balanced/best), resolved to a concrete
+     * mlx-community model on Apple Silicon (mlx-whisper) only. See resolveWhisperModel.
+     */
+    preset?: string;
     /** Accept mlx-whisper's low-quality default model instead of requiring CASTRECALL_WHISPER_MODEL. */
     allowLowQuality: boolean;
   };
@@ -146,6 +151,7 @@ export function resolveConfig(
       disabled: envFlag(env.CASTRECALL_DISABLE_LOCAL_WHISPER) ?? false,
       command: nonEmpty(env.CASTRECALL_WHISPER_COMMAND),
       model: nonEmpty(env.CASTRECALL_WHISPER_MODEL),
+      preset: nonEmpty(env.CASTRECALL_LOCAL_WHISPER_PRESET)?.toLowerCase(),
       allowLowQuality: envFlag(env.CASTRECALL_WHISPER_ALLOW_LOW_QUALITY) ?? false,
     },
     stt: {

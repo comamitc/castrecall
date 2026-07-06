@@ -60,6 +60,7 @@ export function resolveConfig(settings = {}, env = process.env) {
             disabled: envFlag(env.CASTRECALL_DISABLE_LOCAL_WHISPER) ?? false,
             command: nonEmpty(env.CASTRECALL_WHISPER_COMMAND),
             model: nonEmpty(env.CASTRECALL_WHISPER_MODEL),
+            preset: nonEmpty(env.CASTRECALL_LOCAL_WHISPER_PRESET)?.toLowerCase(),
             allowLowQuality: envFlag(env.CASTRECALL_WHISPER_ALLOW_LOW_QUALITY) ?? false,
         },
         stt: {

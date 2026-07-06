@@ -13,7 +13,7 @@ import { buildReviewCandidate } from "./review.js";
 import { SearchIndex } from "./search.js";
 import { buildSetupPlan, classifyExportDir, detectGbrain, PRIVACY_DEFAULTS, } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
-import { WHISPER_CPP_MODEL_MISSING_MESSAGE, detectLocalWhisper, localWhisperReadiness, } from "./transcripts/local-whisper.js";
+import { detectLocalWhisper, localWhisperReadiness, resolveWhisperModel, } from "./transcripts/local-whisper.js";
 import { sttAvailability } from "./transcripts/stt.js";
 import { taddyConfigured } from "./transcripts/taddy.js";
 import { podchaserConfigured } from "./transcripts/podchaser.js";
@@ -165,9 +165,15 @@ export async function setupStatus(config, deps = {}) {
             taddy: taddyConfigured(config) ? "configured" : "not configured (TADDY_API_KEY, TADDY_USER_ID)",
             podchaser: podchaserConfigured(config) ? "configured" : "not configured (PODCHASER_API_KEY)",
             localWhisper: whisper.detected
-                ? localWhisperReadiness(whisper, config.localWhisper).ready
-                    ? `detected (${whisper.detected.flavor}) — free, private transcription`
-                    : `detected (${whisper.detected.flavor}) but NOT ready — ${WHISPER_CPP_MODEL_MISSING_MESSAGE}`
+                ? (() => {
+                    const readiness = localWhisperReadiness(whisper, config.localWhisper);
+                    if (!readiness.ready) {
+                        return `detected (${whisper.detected.flavor}) but NOT ready — ${readiness.reason}`;
+                    }
+                    const resolved = resolveWhisperModel(whisper.detected.flavor, config.localWhisper);
+                    return (`detected (${whisper.detected.flavor}) — free, private transcription` +
+                        (resolved.model ? ` using ${resolved.model}` : ""));
+                })()
                 : `unavailable — ${whisper.reason}`,
             stt: stt.ok ? `enabled (${config.stt.provider})` : `off — ${stt.reason}`,
         },
