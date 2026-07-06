@@ -34,6 +34,10 @@ export type RungOutcome = {
   retryable?: boolean;
   /** Set on a "miss" rung when the transcript may simply not be available yet (worth polling again later). */
   recheckable?: boolean;
+  /** Set on the "skipped" local-whisper rung when the corpus-scale preflight (issue #55), not a
+   * real failure, is why this rung didn't run — this is a reversible policy gate, not evidence
+   * the episode is untranscribable. */
+  preflightBlocked?: boolean;
 };
 
 export type LadderResult = {
@@ -255,6 +259,7 @@ export async function runTranscriptLadder(
         "(castrecall_transcription_preflight). Run castrecall_fetch_transcript directly for this " +
         "episode, or opt in for the whole run with CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or " +
         "CASTRECALL_LOCAL_WHISPER_PRESET=best.",
+      preflightBlocked: true,
     });
   } else {
     try {

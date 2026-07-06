@@ -967,8 +967,64 @@ describe("runPipeline", () => {
         ready: true,
         lowQualityOptIn: false,
       });
-      expect(result.transcripts.stored).toBe(0);
+      expect(result.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
       await expect(fs.access(markerPath)).rejects.toThrow();
+    });
+
+    it("does not advance retry/failure state when a run is preflight-blocked, so episodes are stored immediately once the operator opts in (issue #55 review)", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const blockedResult = (await runPipeline(
+        config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+      expect(blockedResult.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
+
+      const stateAfterBlock = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+      for (let i = 0; i < CORPUS_SCALE_MIN_EPISODES; i++) {
+        const episode = stateAfterBlock.episodes[`ep-${i}`];
+        expect(episode.transcriptStatus).toBe("none");
+        expect(episode.transcriptError).toBeUndefined();
+        expect(episode.transcriptRetry).toBeUndefined();
+        expect(episode.transcriptRecheck).toBeUndefined();
+      }
+
+      // No backoff was recorded, so every episode is immediately re-attempted
+      // on the very next tick rather than deferred or permanently failed —
+      // the same count is preflight-blocked again, none silently dropped.
+      const secondBlockedResult = (await runPipeline(
+        config({ CASTRECALL_LOCAL_WHISPER_PRESET: "fast" }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+      expect(secondBlockedResult.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
+      await expect(fs.access(markerPath)).rejects.toThrow();
+
+      // Once the operator opts in, the executable is actually invoked for
+      // every episode instead of the run being stuck deferred/failed.
+      const recoveredResult = (await runPipeline(
+        config({
+          CASTRECALL_LOCAL_WHISPER_PRESET: "fast",
+          CASTRECALL_WHISPER_ALLOW_LOW_QUALITY: "true",
+        }),
+        {},
+        { fetchImpl: fetchImplNoNewListensPlusAudio(), env: { PATH: binDir } },
+      )) as Record<string, any>;
+      expect(recoveredResult.preflight).toMatchObject({ blocked: false, lowQualityOptIn: true });
+      expect(recoveredResult.transcripts.preflightDeferred).toBeUndefined();
+      await expect(fs.access(markerPath)).resolves.toBeUndefined();
     });
 
     it("does not block once CASTRECALL_WHISPER_ALLOW_LOW_QUALITY opts in, and the executable is invoked", async () => {

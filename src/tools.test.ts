@@ -724,6 +724,25 @@ describe("tools", () => {
       );
       await expect(fs.access(markerPath)).resolves.toBeUndefined();
     });
+
+    it("returns preflight-blocked (not no-transcript) and never advances retry/failure state when the preflight block is the only reason no transcript was produced (issue #55 review)", async () => {
+      await seedReadyLowQualityEpisode();
+      const result = (await fetchTranscript(
+        lowQualityConfig(),
+        { episodeUuid: "ep-1", scheduled: true, skipLocalWhisper: true },
+        { fetchImpl: missAllButAudio, env: { PATH: binDir } },
+      )) as any;
+
+      expect(result.status).toBe("preflight-blocked");
+      await expect(fs.access(markerPath)).rejects.toThrow();
+
+      const state = await new Storage(dir).loadState();
+      const episode = state.episodes["ep-1"];
+      expect(episode.transcriptStatus).toBe("none");
+      expect(episode.transcriptError).toBeUndefined();
+      expect(episode.transcriptRetry).toBeUndefined();
+      expect(episode.transcriptRecheck).toBeUndefined();
+    });
   });
 
   describe("transcriptionPreflight (issue #55)", () => {

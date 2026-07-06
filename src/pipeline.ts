@@ -172,6 +172,7 @@ export async function runPipeline(
 
     let stored = 0;
     let failed = 0;
+    let preflightDeferred = 0;
     const errors: Array<{
       stage: "transcript" | "export" | "review";
       episodeUuid: string;
@@ -185,10 +186,16 @@ export async function runPipeline(
           { episodeUuid: episode.uuid, scheduled: true, skipLocalWhisper: preflight.blocked },
           deps,
         )) as {
-          status: "stored" | "already-stored" | "no-transcript";
+          status: "stored" | "already-stored" | "no-transcript" | "preflight-blocked";
         };
         if (result.status === "stored" || result.status === "already-stored") {
           stored += 1;
+        } else if (result.status === "preflight-blocked") {
+          // Not a transcript failure (see fetchTranscript): the episode's
+          // retry/failure state was never advanced, so it must not be counted
+          // as `failed` here either — that would make the quality gate look
+          // like a source failure in scheduled-run reporting.
+          preflightDeferred += 1;
         } else {
           failed += 1;
         }
@@ -254,7 +261,12 @@ export async function runPipeline(
 
     return {
       newListens: syncResult.newListens.length,
-      transcripts: { stored, failed, ...(deferred > 0 ? { deferred } : {}) },
+      transcripts: {
+        stored,
+        failed,
+        ...(deferred > 0 ? { deferred } : {}),
+        ...(preflightDeferred > 0 ? { preflightDeferred } : {}),
+      },
       preflight,
       ...(config.exportDir ? { exports: { exported } } : {}),
       reviews: { generated, skipped },

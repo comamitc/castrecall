@@ -513,7 +513,7 @@ alive, recover with a one-off `castrecall_run_pipeline` call passing `breakStale
 ```bash
 npm install
 npm run typecheck   # tsc --noEmit
-npm test            # vitest (538 tests: parsing, normalization, storage idempotency, corpus export, credential storage/session handling, periodic-sync pipeline, cross-episode digest, corpus-scale transcription preflight, error paths)
+npm test            # vitest (540 tests: parsing, normalization, storage idempotency, corpus export, credential storage/session handling, periodic-sync pipeline, cross-episode digest, corpus-scale transcription preflight, error paths)
 npm run plugin:build     # tsc + openclaw plugins build (regenerates openclaw.plugin.json)
 npm run plugin:validate  # openclaw plugins validate
 ```
