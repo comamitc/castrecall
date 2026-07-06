@@ -40,14 +40,17 @@ Note: the goal text's "roadmap order" (#7 first) was the stale engine ranking; t
 - [x] release v0.5.0 — PR #34 merged, version 0.4.0→0.5.0, tag pushed, GitHub release published, milestone closed.
 - [x] #9 Taddy webhooks (as polling recheck) — PR #35 squash-merged, issue closed. Three pre-merge rounds: implementation review approved; dist drift after review-fix commits (rebuilt); manual-recovery finding — spent STT retry budget now gates scheduled runs only, a direct `castrecall_fetch_transcript` call re-attempts STT as the skipped-rung message advertises (+ regression test). 307 tests green on main.
 - [x] release v0.6.0 — PR #36 merged, version 0.5.0→0.6.0, tag pushed, GitHub release published, milestone closed.
-- [x] #8 ClawHub publish readiness — metadata/CI-only, shipped standalone as v0.6.1 rather than
-      bundled into v0.7.0 (0.6.0 was already tagged; a fresh patch gives a clean, internally
-      consistent pinnable release). Manifest version drift fixed (was frozen at 0.3.0 since
-      v0.1.0 while package.json moved on) and CI-guarded via `openclaw plugins build --check`
-      sibling to the existing dist-diff guard; package renamed `castrecall`→`@comamitc/castrecall`
-      (plugin `id` unchanged); `assets/icon.svg` + manifest `icon` field; `docs/RELEASING.md`
-      runbook. `clawhub package publish` + post-publish README flip remain a credentialed
-      maintainer step (see docs/RELEASING.md).
+- [ ] #8 ClawHub publish readiness — NOT complete; issue stays open until the ClawHub
+      listing is actually live and installable. Readiness work (metadata/CI-only) is done and
+      shipped standalone as v0.6.1 rather than bundled into v0.7.0 (0.6.0 was already tagged; a
+      fresh patch gives a clean, internally consistent pinnable release): manifest version drift
+      fixed (was frozen at 0.3.0 since v0.1.0 while package.json moved on) and CI-guarded via
+      `openclaw plugins build --check` sibling to the existing dist-diff guard; package renamed
+      `castrecall`→`@comamitc/castrecall` (plugin `id` unchanged); `assets/icon.svg` + manifest
+      `icon` field; a review-flow screenshot; `docs/RELEASING.md` runbook. Still blocking:
+      `clawhub package publish` + post-publish README flip (see docs/RELEASING.md and the
+      release line below) — close #8 only once those have happened and the listing is verified
+      installable.
 - [ ] release v0.6.1 (maintainer: tag, gh release, then `clawhub package publish` + README flip)
 - [ ] #5 → v0.7.0 · [ ] #4 → v0.8.0 · [ ] #11 → v0.9.0 (release after each)
 

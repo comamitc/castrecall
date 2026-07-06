@@ -94,6 +94,8 @@ CastRecall is a tool plugin with no GUI of its own, so the most honest
 "screenshot" of the review flow is its actual output. `castrecall_generate_review`
 writes one markdown file per episode to `review/pending/<episodeUuid>.md`:
 
+![castrecall_generate_review terminal output and the resulting review candidate markdown file](assets/screenshot-review-flow.svg)
+
 ```
 $ castrecall_generate_review
 { "generated": 1, "skipped": 0 }
