@@ -53,9 +53,17 @@
 27. **#45** Transcript cleanup pass (punctuation, sentence boundaries, formatting) — v0.16.0
 28. **#46** Optional proper-noun correction glossary — v0.16.0 (plugs into #45's cleanup pass)
 
+### v0.17.0–v0.18.0 — remote STT track (added 2026-07-06)
+
+29. **#61** Generic remote STT provider contract — v0.17.0 (foundation; no bespoke one-machine integrations)
+30. **#62** WhisperX remote STT worker reference implementation — v0.17.0 (first implementation of #61's contract)
+31. **#63** Setup/status checks for remote STT endpoints — v0.18.0 (validates #61-contract endpoints; builds on #55's preflight)
+32. **#64** Document remote/self-hosted STT provider setup — v0.18.0 (docs last, covering the full provider model)
+
 ## Notes
 
 - Acceptance criteria exist on the v0.1.0/v0.2.0 issues (#15, #14, #16, #3, #2); remaining short tickets get specs via intake when they approach the front of the queue.
 - Only verified dependency in the original set: **#15 → #14** (content hash before export idempotency).
 - Quality-track ordering dependencies: **#42 → #41**, **#43 → #44**, **#45 → #46** (each first issue provides the mechanism its successor consumes).
 - Local-Whisper track ordering dependencies: **#51 → #52**, **#53 → #54**, **#55 → #56** (gate before preset, settings before provenance, features before docs).
+- Remote STT track ordering dependencies: **#61 → #62 → #63 → #64** (contract → reference worker → endpoint checks → docs); queued after the local-Whisper track so #54/#55's provenance and preflight surfaces are finalized before remote STT plugs into them.
