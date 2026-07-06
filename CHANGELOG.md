@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.10.0 — 2026-07-06
+
+The memory-curation lane closes the loop: review candidates can now be
+resolved, with promotion always explicit and human-worded.
+
+- **`castrecall_resolve_review`** (#1, PR #60): the conversation is the UI —
+  an agent surfaces a pending review candidate in chat, you say what to
+  keep, and the agent records the decision. `promote` requires `content`
+  (the exact text you chose, written verbatim as a frontmattered note under
+  `CASTRECALL_NOTES_DIR` with attribution but never the full transcript);
+  `discard` writes nothing and retires the candidate. Either way the
+  candidate moves `review/pending/` → `review/resolved/` and cannot be
+  resolved twice. The gate is contractual: `castrecall_generate_review`
+  remains structurally unable to promote anything.
+- **Crash-safe resolution** (same PR, two review rounds): the
+  pending→resolved move is link+unlink (never clobbers an existing resolved
+  candidate), compensates a genuinely half-done move so retries can redo it,
+  treats a concurrently-removed pending file as completion rather than
+  deleting the only surviving copy, and rolls the move back if recording
+  the disposition fails afterward — no path leaves an episode stranded
+  without a recorded decision.
+
 ## v0.9.0 — 2026-07-06
 
 Feed discovery gets a third leg: Listen Notes, used only as a verified
