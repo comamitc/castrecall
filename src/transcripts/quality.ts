@@ -54,7 +54,7 @@ export const DEFAULT_QUALITY_THRESHOLDS = {
   REVIEWABLE_MIN: 60,
 } as const;
 
-export type QualityThresholds = Partial<typeof DEFAULT_QUALITY_THRESHOLDS>;
+export type QualityThresholds = Partial<Record<keyof typeof DEFAULT_QUALITY_THRESHOLDS, number>>;
 
 /** Machine transcription rungs have no independent confidence signal, unlike a published RSS/Taddy/Podchaser transcript. */
 const MACHINE_SOURCES: ReadonlySet<LadderRung> = new Set(["local-whisper", "stt"]);
