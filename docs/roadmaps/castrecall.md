@@ -22,7 +22,7 @@
 
 ### v0.4.0–v0.9.0 — ladder breadth & distribution
 
-8. **#13** Platform-caption sources (Apple/Pocket Casts) — v0.4.0
+8. **#13** Platform-caption sources (Apple/Pocket Casts) — v0.4.0, investigated and closed as **no-go** (no ladder rung shipped); see `docs/transcript-source-investigation.md`
 9. **#12** STT: Deepgram provider — v0.4.0
 10. **#10** Podchaser provider — v0.5.0
 11. **#9** Taddy webhooks — v0.6.0
