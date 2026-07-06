@@ -5,18 +5,19 @@
  *
  * Two-phase scoring, with ranking settled entirely from the index. Phase 1
  * scores every doc (tf-length-normalized + idf-lite over term frequencies)
- * and resolves quoted-phrase bonuses from index fingerprints alone: hashed
- * adjacent-token-pair bigrams as a cheap necessary-condition prefilter,
- * then hashed per-occurrence token@position fingerprints to confirm true
- * contiguity. No transcript is ever read to rank, so an exact phrase match
- * can never be hidden behind higher-scoring false positives (every
- * candidate is fully scored) and a broad query can never trigger a
- * corpus-wide transcript scan. Phase 2 reads only the final top `limit`
- * docs to build snippets. The index stores term frequencies and one-way
- * FNV hashes only — no plaintext prose, and positions appear solely inside
- * one-way occurrence hashes. Nothing in it is more revealing than the
- * transcript files it sits beside, and all of it is rebuilt from them on
- * contentHash or schema change.
+ * and resolves quoted-phrase bonuses from indexed positional postings:
+ * sorted token positions keyed by a one-way hash of each term, so exact
+ * contiguity is confirmed by walking the rarest phrase term's positions
+ * with binary searches — work proportional to that term's frequency, not
+ * to document length, and never a transcript read. Ranking is therefore
+ * complete over every candidate before any IO: an exact phrase match can
+ * never be hidden behind higher-scoring false positives, and no query
+ * shape triggers corpus-wide transcript scans. Phase 2 reads only the
+ * final top `limit` docs to build snippets. The index stores plaintext
+ * vocabulary (termFreq — inherent to keyword scoring) but never the word
+ * sequence: positions are keyed by one-way term hashes, so the index is no
+ * more revealing than the transcript files it sits beside, and all of it
+ * is rebuilt from them on contentHash or schema change.
  */
 
 import { randomUUID } from "node:crypto";
@@ -74,15 +75,13 @@ export type IndexedDocument = {
   contentHash: string;
   length: number;
   termFreq: Record<string, number>;
-  /** Unique FNV-1a hashes of each adjacent token pair — cheap phrase prefilter, not recoverable prose. */
-  bigrams: string[];
   /**
-   * One 64-bit one-way hash per token occurrence (`token@position`), in
-   * token order. Lets a quoted phrase's exact contiguity be confirmed by
-   * membership probes alone — no transcript read — while keeping the index
-   * free of plaintext prose.
+   * Sorted token positions keyed by a 64-bit one-way hash of each term.
+   * Lets a quoted phrase's exact contiguity be confirmed from the index
+   * alone — no transcript read — without persisting the plaintext word
+   * sequence.
    */
-  occurrences: string[];
+  postings: Record<string, number[]>;
 };
 
 function fnv1a(input: string): string {
@@ -94,72 +93,67 @@ function fnv1a(input: string): string {
   return hash.toString(16).padStart(8, "0");
 }
 
-/** One-way fingerprint of an adjacent token pair. ` ` separator keeps ("ab","c") ≠ ("a","bc"). */
-export function hashBigram(first: string, second: string): string {
-  return fnv1a(`${first} ${second}`);
-}
-
 /**
- * One-way 64-bit fingerprint of a token occurrence at a token index. Two
+ * One-way 64-bit hash of a term, keying its positional postings. Two
  * independent 32-bit FNV-1a passes are concatenated so accidental
- * collisions (which would fake a contiguity probe) are negligible even
- * across hour-long transcripts.
+ * collisions (which would merge two terms' postings and could fake a
+ * contiguity check) are negligible.
  */
-export function hashOccurrence(term: string, position: number): string {
-  const key = `${term} ${position}`;
-  return fnv1a(key) + fnv1a(`${key}#`);
+export function hashTerm(term: string): string {
+  return fnv1a(term) + fnv1a(`${term}#`);
 }
 
-/** Build a document's term-frequency + fingerprint record from its transcript text. Pure. */
+/** Build a document's term-frequency + positional-postings record from its transcript text. Pure. */
 export function buildDocument(uuid: string, contentHash: string, text: string): IndexedDocument {
   const tokens = tokenize(text);
   const termFreq: Record<string, number> = {};
-  for (const token of tokens) termFreq[token] = (termFreq[token] ?? 0) + 1;
-  const bigrams = new Set<string>();
-  for (let i = 0; i + 1 < tokens.length; i++) bigrams.add(hashBigram(tokens[i], tokens[i + 1]));
-  const occurrences = tokens.map((token, i) => hashOccurrence(token, i));
-  return { uuid, contentHash, length: tokens.length, termFreq, bigrams: Array.from(bigrams), occurrences };
+  const postings: Record<string, number[]> = {};
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
+    termFreq[token] = (termFreq[token] ?? 0) + 1;
+    (postings[hashTerm(token)] ??= []).push(i);
+  }
+  return { uuid, contentHash, length: tokens.length, termFreq, postings };
 }
 
-/**
- * Index-only phrase eligibility: every phrase token present AND every
- * adjacent phrase pair's bigram fingerprint present. Necessary but not
- * sufficient for a contiguous match (e.g. "a b … b c" carries both "a b"
- * and "b c" without "a b c"), so Phase 2 still verifies by reading — but
- * docs holding the tokens only non-contiguously are excluded up front,
- * without transcript IO.
- */
-export function phraseEligible(doc: IndexedDocument, phrase: string[]): boolean {
-  if (phrase.length === 0) return false;
-  if (!phrase.every((term) => (doc.termFreq[term] ?? 0) > 0)) return false;
-  if (phrase.length === 1) return true;
-  const fingerprints = new Set(doc.bigrams);
-  for (let i = 0; i + 1 < phrase.length; i++) {
-    if (!fingerprints.has(hashBigram(phrase[i], phrase[i + 1]))) return false;
+function includesSorted(sorted: number[], value: number): boolean {
+  let lo = 0;
+  let hi = sorted.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] === value) return true;
+    if (sorted[mid] < value) lo = mid + 1;
+    else hi = mid - 1;
   }
-  return true;
+  return false;
 }
 
 /**
  * Exact, index-only contiguity check: the phrase matches iff some start
- * index has every phrase token's occurrence fingerprint at consecutive
- * positions. Settles what `phraseEligible`'s bigram chains can only
- * approximate (e.g. "a b … b c" passes the chain without containing
- * "a b c"), still without reading any transcript. Pass a prebuilt
- * `occurrences` set when probing several phrases against one doc.
+ * index has every phrase token at consecutive positions. Walks the RAREST
+ * phrase term's postings and binary-searches the others, so the work is
+ * proportional to that term's frequency (times log of the others'), never
+ * to document length — no transcript read, no per-doc allocation.
  */
-export function phraseConfirmed(
-  doc: IndexedDocument,
-  phrase: string[],
-  occurrences?: Set<string>,
-): boolean {
+export function phraseConfirmed(doc: IndexedDocument, phrase: string[]): boolean {
   if (phrase.length === 0) return false;
-  if (!phrase.every((term) => (doc.termFreq[term] ?? 0) > 0)) return false;
+  const lists: number[][] = [];
+  for (const term of phrase) {
+    const positions = doc.postings[hashTerm(term)];
+    if (!positions || positions.length === 0) return false;
+    lists.push(positions);
+  }
   if (phrase.length === 1) return true;
-  const probes = occurrences ?? new Set(doc.occurrences);
-  outer: for (let start = 0; start + phrase.length <= doc.length; start++) {
+  let rarest = 0;
+  for (let j = 1; j < lists.length; j++) {
+    if (lists[j].length < lists[rarest].length) rarest = j;
+  }
+  outer: for (const position of lists[rarest]) {
+    const start = position - rarest;
+    if (start < 0 || start + phrase.length > doc.length) continue;
     for (let j = 0; j < phrase.length; j++) {
-      if (!probes.has(hashOccurrence(phrase[j], start + j))) continue outer;
+      if (j === rarest) continue;
+      if (!includesSorted(lists[j], start + j)) continue outer;
     }
     return true;
   }
@@ -384,14 +378,13 @@ export class SearchIndex {
     let changed = corpus.length !== existing.length;
     for (const entry of corpus) {
       const current = byUuid.get(entry.uuid);
-      // Schema check alongside contentHash: docs persisted before the
-      // bigram/occurrence fingerprints existed rebuild themselves on the
-      // next search.
+      // Schema check alongside contentHash: docs persisted before
+      // positional postings existed rebuild themselves on the next search.
       if (
         current &&
         current.contentHash === entry.contentHash &&
-        Array.isArray(current.bigrams) &&
-        Array.isArray(current.occurrences)
+        current.postings !== null &&
+        typeof current.postings === "object"
       ) {
         reconciled.push(current);
         continue;
@@ -422,24 +415,23 @@ export class SearchIndex {
     const limit = clampLimit(opts.limit);
 
     // Every candidate's final score — keyword score plus phrase bonuses —
-    // is computed from the index alone: the bigram-chain prefilter cheaply
-    // rejects docs holding the tokens only non-contiguously, and the
-    // occurrence fingerprints confirm exact contiguity for the rest. No
-    // transcript is read to rank, so ranking is complete over ALL
-    // candidates: an exact phrase match can never be hidden behind
-    // higher-scoring false positives, and no query shape — however broad —
-    // triggers corpus-wide transcript IO.
+    // is computed from the index alone: positional postings confirm exact
+    // contiguity in work proportional to the rarest phrase term's
+    // frequency, not document length. No transcript is read to rank, so
+    // ranking is complete over ALL candidates: an exact phrase match can
+    // never be hidden behind higher-scoring false positives, and no query
+    // shape — however broad — triggers corpus-wide transcript IO or
+    // per-document scans.
     const docByUuid = new Map(docs.map((doc) => [doc.uuid, doc]));
     const ranked = candidateUuids
       .map((uuid) => {
         const doc = docByUuid.get(uuid);
         let bonus = 0;
-        if (doc && query.phrases.length > 0) {
-          let probes: Set<string> | undefined;
+        if (doc) {
           for (const phrase of query.phrases) {
-            if (phrase.length === 0 || !phraseEligible(doc, phrase)) continue;
-            probes ??= new Set(doc.occurrences);
-            if (phraseConfirmed(doc, phrase, probes)) bonus += phrase.length * PHRASE_BONUS_WEIGHT;
+            if (phrase.length > 0 && phraseConfirmed(doc, phrase)) {
+              bonus += phrase.length * PHRASE_BONUS_WEIGHT;
+            }
           }
         }
         return { uuid, score: (keywordScores.get(uuid) ?? 0) + bonus };

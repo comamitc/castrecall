@@ -15,7 +15,6 @@ import {
   parseQuery,
   phraseBonus,
   phraseConfirmed,
-  phraseEligible,
   scoreKeywords,
   SearchIndex,
   tokenize,
@@ -111,32 +110,6 @@ describe("phraseBonus", () => {
   });
 });
 
-describe("phraseEligible", () => {
-  it("accepts a doc holding the phrase contiguously", () => {
-    const doc = buildDocument("doc", "h1", "we discuss climate policy in depth");
-    expect(phraseEligible(doc, ["climate", "policy"])).toBe(true);
-  });
-
-  it("rejects a doc holding the tokens only non-contiguously", () => {
-    const doc = buildDocument("doc", "h1", "climate change shapes every policy debate");
-    expect(phraseEligible(doc, ["climate", "policy"])).toBe(false);
-  });
-
-  it("treats a single-token phrase as eligible on term presence alone", () => {
-    const doc = buildDocument("doc", "h1", "climate is the topic");
-    expect(phraseEligible(doc, ["climate"])).toBe(true);
-  });
-
-  it("is necessary but not sufficient: a chained-bigram gap pattern stays eligible and is settled by phraseConfirmed", () => {
-    // "alpha beta … beta gamma" carries both "alpha beta" and "beta gamma"
-    // fingerprints without the trigram — eligibility must include it (the
-    // occurrence-fingerprint check rejects the bonus), never the reverse.
-    const doc = buildDocument("doc", "h1", "alpha beta filler beta gamma");
-    expect(phraseEligible(doc, ["alpha", "beta", "gamma"])).toBe(true);
-    expect(phraseBonus([["alpha", "beta", "gamma"]], tokenize("alpha beta filler beta gamma"))).toBe(0);
-  });
-});
-
 describe("phraseConfirmed", () => {
   it("agrees with the text-based contiguity check across match shapes", () => {
     const cases: Array<{ text: string; phrase: string[] }> = [
@@ -146,6 +119,7 @@ describe("phraseConfirmed", () => {
       { text: "the host got to alpha beta gamma eventually", phrase: ["alpha", "beta", "gamma"] },
       { text: "alpha beta", phrase: ["alpha", "beta", "gamma"] },
       { text: "solo", phrase: ["solo"] },
+      { text: "repeat repeat repeat", phrase: ["repeat", "repeat"] },
     ];
     for (const { text, phrase } of cases) {
       const doc = buildDocument("doc", "h1", text);
@@ -155,15 +129,30 @@ describe("phraseConfirmed", () => {
     }
   });
 
-  it("rejects the chained-bigram false positive that passes phraseEligible", () => {
+  it("rejects a chained gap pattern where every adjacent pair exists but the full phrase never does", () => {
+    // "alpha beta … beta gamma" contains "alpha beta" and "beta gamma" as
+    // pairs without ever containing "alpha beta gamma" contiguously.
     const doc = buildDocument("doc", "h1", "alpha beta filler beta gamma");
-    expect(phraseEligible(doc, ["alpha", "beta", "gamma"])).toBe(true);
     expect(phraseConfirmed(doc, ["alpha", "beta", "gamma"])).toBe(false);
+    expect(phraseBonus([["alpha", "beta", "gamma"]], tokenize("alpha beta filler beta gamma"))).toBe(0);
+  });
+
+  it("treats a single-token phrase as confirmed on term presence alone", () => {
+    const doc = buildDocument("doc", "h1", "climate is the topic");
+    expect(phraseConfirmed(doc, ["climate"])).toBe(true);
   });
 
   it("confirms a phrase found only at the very end of a document", () => {
     const doc = buildDocument("doc", "h1", "filler filler filler climate policy");
     expect(phraseConfirmed(doc, ["climate", "policy"])).toBe(true);
+  });
+
+  it("anchors on the rarest term even when it is not the first phrase token", () => {
+    // "the" is frequent, "lazy" rare — the walk starts from "lazy" and must
+    // still find the phrase whose start is one position earlier.
+    const doc = buildDocument("doc", "h1", "the quick fox and the lazy dog near the river");
+    expect(phraseConfirmed(doc, ["the", "lazy"])).toBe(true);
+    expect(phraseConfirmed(doc, ["lazy", "the"])).toBe(false);
   });
 });
 
@@ -343,13 +332,12 @@ describe("SearchIndex", () => {
           return text;
         },
       });
-    // Every noise doc passes the bigram-chain prefilter for "alpha beta
-    // gamma": it carries both required adjacent-pair bigrams ("alpha beta"
-    // and "beta gamma"), but only via a chain ("alpha beta filler beta
-    // gamma") — the tokens never sit contiguously. High term repetition
-    // also gives every noise doc a much higher keyword score than the true
-    // match. The occurrence fingerprints must reject them all from the
-    // index alone.
+    // Every noise doc contains all three phrase tokens and even every
+    // adjacent pair ("alpha beta", "beta gamma") — but only via a chain
+    // ("alpha beta filler beta gamma"); the tokens never sit contiguously.
+    // High term repetition also gives every noise doc a much higher
+    // keyword score than the true match. The positional postings must
+    // reject them all from the index alone.
     const noiseEntries = Array.from({ length: 60 }, (_, i) =>
       counted(`noise-${i}`, "alpha beta filler beta gamma ".repeat(5).trim()),
     );
@@ -445,30 +433,17 @@ describe("SearchIndex", () => {
     ];
     await index.search('"climate policy"', {}, corpus);
 
-    // Strip the fingerprint fields, simulating an index written by the
+    // Strip the postings field, simulating an index written by the
     // term-frequency-only schema.
     const indexPath = path.join(dir, "search-index.json");
     const parsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
       docs: Array<Record<string, unknown>>;
     };
-    for (const doc of parsed.docs) {
-      delete doc.bigrams;
-      delete doc.occurrences;
-    }
+    for (const doc of parsed.docs) delete doc.postings;
     await fs.writeFile(indexPath, JSON.stringify(parsed), "utf8");
 
     const result = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
     expect(result.hits.map((hit) => hit.episodeUuid)).toContain("match");
-
-    // An index missing only the occurrence fingerprints (bigram-era schema)
-    // also rebuilds.
-    const reparsed = JSON.parse(await fs.readFile(indexPath, "utf8")) as {
-      docs: Array<Record<string, unknown>>;
-    };
-    for (const doc of reparsed.docs) delete doc.occurrences;
-    await fs.writeFile(indexPath, JSON.stringify(reparsed), "utf8");
-    const again = await new SearchIndex(dir).search('"climate policy"', {}, corpus);
-    expect(again.hits.map((hit) => hit.episodeUuid)).toContain("match");
   });
 
   it("does not throw ENOENT when two searches persist concurrently, since each persist writes a unique temp file", async () => {
