@@ -826,6 +826,62 @@ describe("tools", () => {
     expect(state.episodes["ep-1"].transcriptRecheck).toBeUndefined();
   });
 
+  it("clears stale transcriptRecheck when a later attempt terminally misses before the recheck horizon", async () => {
+    const storage = new Storage(dir);
+    await storage.init();
+    await storage.recordListens([
+      {
+        uuid: "ep-1",
+        title: "Episode One",
+        url: "https://cdn.example.com/ep1.mp3",
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+      },
+    ]);
+    const taddyConfig = config({ TADDY_API_KEY: "key", TADDY_USER_ID: "user" });
+    let clock = Date.parse("2026-01-01T00:00:00Z");
+    const deps = { env: { PATH: "" }, now: () => new Date(clock) };
+
+    const pendingFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({
+            data: {
+              getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "TRANSCRIBING" },
+            },
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+
+    await fetchTranscript(taddyConfig, { episodeUuid: "ep-1" }, { ...deps, fetchImpl: pendingFetchImpl });
+    const afterFirst = await new Storage(dir).loadState();
+    expect(afterFirst.episodes["ep-1"].transcriptRecheck?.attempts).toBe(1);
+
+    // Well before the 14-day recheck horizon, Taddy now definitively reports no transcript
+    // (no taddyTranscribeStatus at all) — a non-recheckable, terminal miss.
+    clock += 60_000;
+    const missFetchImpl = (async (input: any) => {
+      const url = String(input);
+      if (url === "https://api.taddy.org") {
+        return new Response(
+          JSON.stringify({ data: { getPodcastEpisode: { uuid: "ep-1", transcript: null } } }),
+          { status: 200 },
+        );
+      }
+      return new Response("nope", { status: 404 });
+    }) as typeof fetch;
+    const last = (await fetchTranscript(taddyConfig, { episodeUuid: "ep-1" }, { ...deps, fetchImpl: missFetchImpl })) as any;
+    expect(last.status).toBe("no-transcript");
+    expect(last.recheck).toBeUndefined();
+    const finalState = await new Storage(dir).loadState();
+    expect(finalState.episodes["ep-1"].transcriptStatus).toBe("failed");
+    expect(finalState.episodes["ep-1"].transcriptRecheck).toBeUndefined();
+  });
+
   it("fetch_transcript prefers the retryable STT path over recheck when both apply (billing precedence)", async () => {
     const storage = new Storage(dir);
     await storage.init();

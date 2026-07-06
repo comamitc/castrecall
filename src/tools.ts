@@ -493,7 +493,12 @@ export async function fetchTranscript(
     } else {
       await storage.updateEpisode(
         record.uuid,
-        { transcriptStatus: "failed", transcriptError, transcriptRetry: undefined },
+        {
+          transcriptStatus: "failed",
+          transcriptError,
+          transcriptRetry: undefined,
+          transcriptRecheck: undefined,
+        },
         now,
       );
     }
