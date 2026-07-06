@@ -266,6 +266,37 @@ describe("buildCorpusPages", () => {
       expect(page.content).not.toContain("transcript_tool_version:");
     }
   });
+
+  it("surfaces transcript quality score/tier/reasons in frontmatter when present (issue #41)", () => {
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: {
+        ...PROVENANCE,
+        quality: { score: 82, tier: "reviewable", reasons: ["no-speaker-labels", "no-timestamps"] },
+      },
+      text: "Body text.",
+      contentHash: "hash",
+    });
+    for (const page of pages) {
+      expect(page.content).toContain("transcript_quality_score: 82");
+      expect(page.content).toContain('transcript_quality_tier: "reviewable"');
+      expect(page.content).toContain('transcript_quality_reasons: ["no-speaker-labels","no-timestamps"]');
+    }
+  });
+
+  it("omits every transcript_quality_* line for a legacy provenance with no quality", () => {
+    const pages = buildCorpusPages({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Body text.",
+      contentHash: "hash",
+    });
+    for (const page of pages) {
+      expect(page.content).not.toContain("transcript_quality_score:");
+      expect(page.content).not.toContain("transcript_quality_tier:");
+      expect(page.content).not.toContain("transcript_quality_reasons:");
+    }
+  });
 });
 
 describe("CorpusExporter", () => {
@@ -339,6 +370,92 @@ describe("CorpusExporter", () => {
     for (const [f, mtime] of beforeStats) {
       expect((await fs.stat(path.join(dir, f))).mtimeMs).toBe(mtime);
     }
+  });
+
+  it("re-exports on an unchanged content hash to backfill quality frontmatter missing from a pre-upgrade export (issue #41)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    const beforeIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(beforeIndex).not.toContain("transcript_quality_score:");
+
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 82, tier: "reviewable", reasons: ["no-timestamps"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    expect(second.skipped).toBe(false);
+    expect(second.exported).toBeGreaterThan(0);
+
+    const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(afterIndex).toContain("transcript_quality_score: 82");
+
+    const third = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 82, tier: "reviewable", reasons: ["no-timestamps"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    expect(third.skipped).toBe(true);
+  });
+
+  it("re-exports on an unchanged content hash when quality is rescored, so frontmatter never goes stale (issue #41)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 82, tier: "reviewable", reasons: ["no-timestamps"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    const beforeIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(beforeIndex).toContain("transcript_quality_score: 82");
+
+    const second = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 55, tier: "search-only", reasons: ["no-timestamps", "no-speaker-labels"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    expect(second.skipped).toBe(false);
+    expect(second.exported).toBeGreaterThan(0);
+
+    const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(afterIndex).toContain("transcript_quality_score: 55");
+    expect(afterIndex).toContain('transcript_quality_tier: "search-only"');
+    expect(afterIndex).toContain('transcript_quality_reasons: ["no-timestamps","no-speaker-labels"]');
+  });
+
+  it("never erases an already-scored export when legacy provenance without quality re-exports the same hash (issue #41 review)", async () => {
+    const exporter = new CorpusExporter(dir);
+    await exporter.exportEpisode({
+      record: RECORD,
+      provenance: { ...PROVENANCE, quality: { score: 82, tier: "reviewable", reasons: ["no-timestamps"] } },
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    const beforeIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(beforeIndex).toContain("transcript_quality_score: 82");
+
+    // A pre-#41 sidecar carries no quality field. Re-exporting the same
+    // content with it must NOT count the scored page as stale — that would
+    // rewrite the page without any transcript_quality_* lines and destroy
+    // the only machine-readable quality signal consumers have.
+    const legacy = await exporter.exportEpisode({
+      record: RECORD,
+      provenance: PROVENANCE,
+      text: "Some transcript text.",
+      contentHash: "stable-hash",
+    });
+    expect(legacy.skipped).toBe(true);
+    expect(legacy.exported).toBe(0);
+
+    const afterIndex = await fs.readFile(path.join(dir, "podcasts", "example-show", EP1_DIR, "index.md"), "utf8");
+    expect(afterIndex).toContain("transcript_quality_score: 82");
   });
 
   it("replaces the episode dir with no stale files when the content hash changes", async () => {

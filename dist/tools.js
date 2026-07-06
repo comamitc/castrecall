@@ -14,6 +14,7 @@ import { SearchIndex } from "./search.js";
 import { buildSetupPlan, classifyExportDir, classifyNotesDir, detectGbrain, PRIVACY_DEFAULTS, } from "./setup.js";
 import { runTranscriptLadder } from "./transcripts/ladder.js";
 import { detectRepetitionLoop } from "./transcripts/loop-detection.js";
+import { scoreTranscriptQuality } from "./transcripts/quality.js";
 import { detectLocalWhisper, localWhisperReadiness, resolveWhisperDecodeArgs, resolveWhisperModel, } from "./transcripts/local-whisper.js";
 import { buildTranscriptionPreflight } from "./transcripts/preflight.js";
 import { sttAvailability } from "./transcripts/stt.js";
@@ -506,6 +507,11 @@ export async function fetchTranscript(config, params, deps = {}) {
                 "castrecall_fetch_transcript again to regenerate.",
         };
     }
+    const quality = scoreTranscriptQuality({
+        text: result.transcript.text,
+        source: result.transcript.source,
+        segments: result.transcript.segments,
+    });
     const provenance = {
         platform: "pocketcasts",
         podcastTitle: record.podcastTitle,
@@ -521,6 +527,7 @@ export async function fetchTranscript(config, params, deps = {}) {
         format: result.transcript.format,
         provider: result.transcript.provider,
         generation: result.transcript.generation,
+        quality,
         fetchedAt: now().toISOString(),
         privacyClass: "private-source",
     };
@@ -545,6 +552,7 @@ export async function fetchTranscript(config, params, deps = {}) {
         format: result.transcript.format,
         transcriptPath: stored.textPath,
         provenancePath: stored.provenancePath,
+        quality,
         ladder: result.rungs,
         export: exportResult,
         note: "Transcript content is stored as private source material. Use castrecall_generate_review " +

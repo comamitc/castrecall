@@ -45,7 +45,12 @@ export type ExportResult = {
 };
 /**
  * Publishes corpus pages under `<exportDir>/podcasts/<show-slug>/<episode-slug>/`.
- * Idempotent by content hash: an unchanged episode re-exports nothing. A
+ * Idempotent by content hash: an unchanged episode re-exports nothing, unless
+ * provenance now carries quality scoring (issue #41) that the existing export
+ * lacks or disagrees with — that forces a re-export so upgraded installs
+ * backfill the new frontmatter, and later rescoring (e.g. a corrected
+ * timestamp/speaker-coverage rule) doesn't leave stale score/tier/reasons
+ * behind, instead of staying stale until the transcript text changes. A
  * changed hash replaces the whole episode directory so no stale section
  * files from a previous, longer transcript survive.
  */

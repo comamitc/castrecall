@@ -159,6 +159,9 @@ function frontmatterLines(title, meta) {
             ? `transcript_decode_ignored: ${yamlString(JSON.stringify(gen.decode.ignored.map((entry) => entry.option)))}`
             : undefined,
         gen?.toolVersion ? `transcript_tool_version: ${yamlString(gen.toolVersion)}` : undefined,
+        meta.quality ? `transcript_quality_score: ${meta.quality.score}` : undefined,
+        meta.quality ? `transcript_quality_tier: ${yamlString(meta.quality.tier)}` : undefined,
+        meta.quality ? `transcript_quality_reasons: ${JSON.stringify(meta.quality.reasons)}` : undefined,
         "---",
     ];
     return lines.filter((line) => line !== undefined);
@@ -186,6 +189,7 @@ export function buildCorpusPages(options) {
         transcriptSource: provenance.transcriptSource,
         contentHash,
         generation: provenance.generation,
+        quality: provenance.quality,
     };
     const pages = [];
     const sectionLinks = [];
@@ -217,10 +221,26 @@ export function buildCorpusPages(options) {
     return pages;
 }
 const CONTENT_HASH_LINE = /^content_hash: "([^"]*)"$/m;
-async function readExistingContentHash(episodeDir) {
+const QUALITY_SCORE_LINE = /^transcript_quality_score: (\d+)$/m;
+const QUALITY_TIER_LINE = /^transcript_quality_tier: "([^"]*)"$/m;
+const QUALITY_REASONS_LINE = /^transcript_quality_reasons: (\[[^\]]*\])$/m;
+async function readExistingExportMeta(episodeDir) {
     try {
         const indexContent = await fs.readFile(path.join(episodeDir, "index.md"), "utf8");
-        return indexContent.match(CONTENT_HASH_LINE)?.[1];
+        const scoreMatch = indexContent.match(QUALITY_SCORE_LINE);
+        const tierMatch = indexContent.match(QUALITY_TIER_LINE);
+        const reasonsMatch = indexContent.match(QUALITY_REASONS_LINE);
+        const quality = scoreMatch && tierMatch && reasonsMatch
+            ? {
+                score: Number(scoreMatch[1]),
+                tier: tierMatch[1],
+                reasons: JSON.parse(reasonsMatch[1]),
+            }
+            : undefined;
+        return {
+            contentHash: indexContent.match(CONTENT_HASH_LINE)?.[1],
+            quality,
+        };
     }
     catch {
         return undefined;
@@ -228,7 +248,12 @@ async function readExistingContentHash(episodeDir) {
 }
 /**
  * Publishes corpus pages under `<exportDir>/podcasts/<show-slug>/<episode-slug>/`.
- * Idempotent by content hash: an unchanged episode re-exports nothing. A
+ * Idempotent by content hash: an unchanged episode re-exports nothing, unless
+ * provenance now carries quality scoring (issue #41) that the existing export
+ * lacks or disagrees with — that forces a re-export so upgraded installs
+ * backfill the new frontmatter, and later rescoring (e.g. a corrected
+ * timestamp/speaker-coverage rule) doesn't leave stale score/tier/reasons
+ * behind, instead of staying stale until the transcript text changes. A
  * changed hash replaces the whole episode directory so no stale section
  * files from a previous, longer transcript survive.
  */
@@ -241,8 +266,17 @@ export class CorpusExporter {
         const showSlug = slugify(options.record.podcastTitle, "show");
         const episodeSlug = episodeDirSlug(options.record);
         const targetDir = path.join(this.exportDir, "podcasts", showSlug, episodeSlug);
-        const existingHash = await readExistingContentHash(targetDir);
-        if (existingHash === options.contentHash) {
+        const existing = await readExistingExportMeta(targetDir);
+        // Quality reconciliation only runs when the incoming provenance
+        // actually carries a quality value: legacy pre-#41 sidecars have none,
+        // and re-exporting a same-hash episode against an already-scored page
+        // just to REMOVE its score/tier/reasons would erase the only
+        // machine-readable quality signal downstream consumers have. A scored
+        // page therefore only re-exports when the incoming quality disagrees.
+        const qualityStale = existing !== undefined &&
+            options.provenance.quality !== undefined &&
+            JSON.stringify(existing.quality) !== JSON.stringify(options.provenance.quality);
+        if (existing?.contentHash === options.contentHash && !qualityStale) {
             return { exported: 0, skipped: true, dir: targetDir };
         }
         const pages = buildCorpusPages(options);

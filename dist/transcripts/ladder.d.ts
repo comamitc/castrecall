@@ -12,6 +12,7 @@ import { type ResolvedConfig } from "../config.js";
 import type { FetchLike } from "../pocketcasts/client.js";
 import { type ResolvedFeedItem } from "../resolver.js";
 import type { ListenRecord } from "../storage.js";
+import type { TranscriptSegment } from "./normalize.js";
 import { type LocalWhisperGeneration } from "./local-whisper.js";
 export type LadderRung = "rss" | "taddy" | "podchaser" | "local-whisper" | "stt";
 export type RungOutcome = {
@@ -37,6 +38,8 @@ export type LadderResult = {
         provider?: string;
         /** Exact local-transcription provenance (issue #54); only set on a local-whisper hit. */
         generation?: LocalWhisperGeneration;
+        /** Structured segments (timing, speaker), when the rung parsed them; only set on an RSS hit today. */
+        segments?: TranscriptSegment[];
     };
     feedItem?: ResolvedFeedItem;
     rungs: RungOutcome[];
