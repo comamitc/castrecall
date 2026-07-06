@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.16.0 — 2026-07-06
+
+The transcript quality track completes: readable transcripts, and known
+proper nouns corrected deterministically.
+
+- **Transcript cleanup pass** (#45, PR #81): a conservative, versioned
+  cleanup improves punctuation, sentence boundaries, paragraphing,
+  whitespace, and caption artifacts without ever adding, reordering, or
+  inventing a word. Cleanup provenance records the version and exactly
+  which steps changed the text, and segment recovery from raw artifacts is
+  gated by a timing-aware hash so drifted cue timestamps (or drifted text)
+  can never contaminate exported timing — legacy hash-less sidecars fall
+  back to exact-text matching only.
+- **Proper-noun correction glossary** (#46, PR #82): an optional
+  user/project glossary (`CASTRECALL_GLOSSARY` JSON) corrects known STT
+  manglings ("chat gpt" → "ChatGPT") with exact whole-token matching only —
+  no fuzzy matching, global longest-first resolution, single-pass
+  application with no cascades — and every applied correction recorded in
+  provenance. Matching scales to large glossaries (two native scans total,
+  constant-time lookup with a Unicode-fold-safe fallback), and glossaries
+  whose case-insensitive variants are indistinguishable under Unicode case
+  folding while mapping to different canonicals are rejected at load time
+  (`matchCase: true` is the exact-matching escape hatch). Segment text is
+  corrected through the same cleanup-normalized path as the transcript.
+
 ## v0.15.0 — 2026-07-06
 
 Transcripts gain structure: timing and speakers survive from provider
