@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { promises as fs } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveConfig } from "../config.js";
 import type { ListenRecord } from "../storage.js";
 import { runTranscriptLadder } from "./ladder.js";
@@ -83,5 +86,31 @@ describe("runTranscriptLadder feed resolution with Listen Notes configured", () 
     expect(rss.detail).toBe(
       "Could not resolve the podcast's RSS feed URL (Pocket Casts feed export and iTunes search both missed).",
     );
+  });
+});
+
+describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () => {
+  let binDir: string;
+  const missAll = (async () => new Response("nope", { status: 404 })) as typeof fetch;
+
+  beforeEach(async () => {
+    binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+  });
+
+  afterEach(async () => {
+    await fs.rm(binDir, { recursive: true, force: true });
+  });
+
+  it("skips (not hit, not failed) with an actionable CASTRECALL_WHISPER_MODEL message when no model is set", async () => {
+    const result = await runTranscriptLadder(config({}), RECORD, {
+      fetchImpl: missAll,
+      env: { PATH: binDir },
+      skipStt: true,
+    });
+
+    const whisperRung = result.rungs.find((r) => r.rung === "local-whisper")!;
+    expect(whisperRung.outcome).toBe("skipped");
+    expect(whisperRung.detail).toContain("CASTRECALL_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo");
   });
 });

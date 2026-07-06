@@ -6,7 +6,9 @@ import { resolveConfig } from "../config.js";
 import {
   detectLocalWhisper,
   findOnPath,
+  localWhisperReadiness,
   transcribeWithLocalWhisper,
+  type WhisperDetection,
 } from "./local-whisper.js";
 
 describe("detectLocalWhisper", () => {
@@ -72,6 +74,39 @@ describe("findOnPath", () => {
   });
 });
 
+describe("localWhisperReadiness", () => {
+  const MLX_DETECTED: WhisperDetection = {
+    detected: { flavor: "mlx-whisper", command: "/usr/local/bin/mlx_whisper" },
+  };
+  const WHISPER_CPP_DETECTED: WhisperDetection = {
+    detected: { flavor: "whisper.cpp", command: "/usr/local/bin/whisper-cli" },
+  };
+
+  it("is not ready for mlx-whisper with no model and no opt-in", () => {
+    const result = localWhisperReadiness(MLX_DETECTED, {});
+    expect(result).toMatchObject({ ready: false, needsModel: true, detected: true });
+    expect(result.reason).toContain("CASTRECALL_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo");
+  });
+
+  it("is ready for mlx-whisper once a model is set", () => {
+    const result = localWhisperReadiness(MLX_DETECTED, {
+      model: "mlx-community/whisper-large-v3-turbo",
+    });
+    expect(result).toMatchObject({ ready: true, needsModel: false, detected: true });
+  });
+
+  it("is ready for mlx-whisper with no model when low quality is explicitly allowed", () => {
+    const result = localWhisperReadiness(MLX_DETECTED, { allowLowQuality: true });
+    expect(result).toMatchObject({ ready: true, needsModel: false, detected: true });
+  });
+
+  it("still requires a model for whisper.cpp regardless of the mlx opt-in (regression)", () => {
+    const result = localWhisperReadiness(WHISPER_CPP_DETECTED, { allowLowQuality: true });
+    expect(result).toMatchObject({ ready: false, needsModel: true, detected: true });
+    expect(result.reason).toContain("CASTRECALL_WHISPER_MODEL");
+  });
+});
+
 describe("transcribeWithLocalWhisper", () => {
   const audioFetch = (async () =>
     new Response("fake audio bytes standing in for a transcript", { status: 200 })) as typeof fetch;
@@ -120,6 +155,46 @@ describe("transcribeWithLocalWhisper", () => {
           env: { PATH: binDir },
         }),
       ).rejects.toThrowError(/CASTRECALL_WHISPER_MODEL/);
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("requires CASTRECALL_WHISPER_MODEL for mlx-whisper and never invokes the executable", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig({}, {});
+      await expect(
+        transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+          fetchImpl: audioFetch,
+          env: { PATH: binDir },
+          execImpl: () => {
+            throw new Error("exec must not run when the MLX model is unset");
+          },
+        }),
+      ).rejects.toThrowError(/CASTRECALL_WHISPER_MODEL/);
+    } finally {
+      await fs.rm(binDir, { recursive: true, force: true });
+    }
+  });
+
+  it("runs mlx-whisper with no model when CASTRECALL_WHISPER_ALLOW_LOW_QUALITY is set", async () => {
+    const binDir = await fs.mkdtemp(path.join(os.tmpdir(), "castrecall-bin-"));
+    try {
+      await fs.writeFile(path.join(binDir, "mlx_whisper"), "#!/bin/sh\n", { mode: 0o755 });
+      const config = resolveConfig({}, { CASTRECALL_WHISPER_ALLOW_LOW_QUALITY: "true" });
+      const result = await transcribeWithLocalWhisper(config, "https://cdn.example.com/ep.mp3", {
+        fetchImpl: audioFetch,
+        env: { PATH: binDir },
+        execImpl: async (argv) => {
+          const workDir = argv[argv.indexOf("--output-dir") + 1];
+          await fs.writeFile(path.join(workDir, "episode.txt"), "low-quality but private transcript");
+          return { code: 0, stdout: "", stderr: "" };
+        },
+      });
+      expect(result.provider).toBe("local-whisper:mlx-whisper");
+      expect(result.text).toBe("low-quality but private transcript");
     } finally {
       await fs.rm(binDir, { recursive: true, force: true });
     }
