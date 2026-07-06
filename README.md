@@ -184,10 +184,11 @@ Every result carries full provenance so anything quoted stays attributable:
 
 `snippet` is display-formatted (`**term**`-highlighted, `…`-elided);
 `snippetText` is the exact, verbatim transcript slice it was built from.
-Search is backed by a small on-disk term-frequency index under
-`.index/search-index.json` in the data dir — private, rebuildable, and never
-containing transcript prose. It's reconciled automatically as transcripts are
-added or change; deleting it just costs the next search a rebuild.
+Search is backed by a small on-disk index (term frequencies plus hash-keyed
+positional postings) under `.index/search-index.v1.json` in the data dir —
+private, rebuildable, and never containing the transcript word sequence.
+It's reconciled automatically as transcripts are added or change; deleting
+it just costs the next search a rebuild.
 
 ## Listened-episode filter
 
@@ -306,7 +307,7 @@ sidecar — review candidates and `state.json` are never exported.
 │                                  # contentHash, schemaVersion
 ├── review/pending/<episodeUuid>.md   # approval-gated review candidates
 ├── .staging/                     # reserved scratch for atomic writes — ignore it
-└── .index/                       # reserved: castrecall_search's rebuildable term-freq cache — ignore it
+└── .index/                       # reserved: castrecall_search's rebuildable index cache — ignore it
 ```
 
 `state.json` and `provenance.json` are a versioned, machine-readable
