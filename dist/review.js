@@ -92,7 +92,7 @@ function sentenceChunks(text) {
         chunks.push(current);
     return chunks;
 }
-function yamlString(value) {
+export function yamlString(value) {
     return JSON.stringify(value);
 }
 function reviewUrl(value) {

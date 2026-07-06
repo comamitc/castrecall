@@ -8,6 +8,7 @@
  *     transcript.txt               — normalized plain text
  *     provenance.json              — where it came from and when
  *   review/pending/<episodeUuid>.md — approval-gated review candidates
+ *   review/pending/digest-<slug>.md — approval-gated cross-episode digests
  *
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
@@ -280,6 +281,12 @@ export declare class Storage {
     reviewCandidatePath(episodeUuid: string): string;
     /** Write a review candidate once; never overwrite a pending review. */
     writeReviewCandidate(episodeUuid: string, markdown: string): Promise<{
+        path: string;
+        alreadyExists: boolean;
+    }>;
+    digestPath(slug: string): string;
+    /** Write a digest once; never overwrite a pending digest — same write-once semantics as writeReviewCandidate. */
+    writeDigest(slug: string, markdown: string): Promise<{
         path: string;
         alreadyExists: boolean;
     }>;

@@ -20,3 +20,4 @@ export declare function buildReviewCandidate(options: {
  * semantic summarization belongs to the reviewing agent/human, not this plugin.
  */
 export declare function pickExcerpts(text: string): string[];
+export declare function yamlString(value: string): string;

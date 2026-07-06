@@ -14,6 +14,7 @@ import {
   hasCachedPocketCastsTokenRecord,
   resolvePocketCastsCredentials,
 } from "./pocketcasts/session.js";
+import { buildDigest, type DigestEpisodeInput } from "./digest.js";
 import { buildReviewCandidate } from "./review.js";
 import { SearchIndex, type CorpusEntry } from "./search.js";
 import {
@@ -714,6 +715,72 @@ export async function search(
   const index = new SearchIndex(storage.indexDir());
   const { hits } = await index.search(query, { limit: params.limit }, corpus);
   return { results: hits };
+}
+
+const DEFAULT_DIGEST_WINDOW_DAYS = 30;
+const MS_PER_DAY = 24 * 60 * 60_000;
+
+/**
+ * Cross-episode digest over a recent time window, filtered on `firstSeenAt`
+ * — the only honest "when I absorbed it" signal in v0 (Pocket Casts episodes
+ * carry no listened-at timestamp; provenance.listenTimestamp is itself
+ * derived from firstSeenAt in fetchTranscript above). Mirrors generateReview:
+ * loads state, reads transcripts for stored episodes, builds a pure
+ * structural document, and writes it to the same approval-gated review lane.
+ */
+export async function digest(
+  config: ResolvedConfig,
+  params: { days?: number },
+  deps: ToolDeps = {},
+): Promise<unknown> {
+  const storage = storageFor(config);
+  const state = await storage.loadState();
+  const now = deps.now ?? (() => new Date());
+  const nowDate = now();
+  const days = params.days && params.days > 0 ? params.days : DEFAULT_DIGEST_WINDOW_DAYS;
+  const windowStart = new Date(nowDate.getTime() - days * MS_PER_DAY);
+
+  const inWindow = Object.values(state.episodes).filter(
+    (record) => Date.parse(record.firstSeenAt) >= windowStart.getTime(),
+  );
+
+  if (inWindow.length === 0) {
+    return {
+      episodes: 0,
+      shows: 0,
+      transcribed: 0,
+      window: { days, start: windowStart.toISOString(), end: nowDate.toISOString() },
+      path: null,
+      alreadyExists: false,
+    };
+  }
+
+  const episodes: DigestEpisodeInput[] = [];
+  for (const record of inWindow) {
+    if (record.transcriptStatus === "stored") {
+      const transcriptText = await storage.readTranscript(record.uuid);
+      episodes.push({ record, transcriptText });
+    } else {
+      episodes.push({ record });
+    }
+  }
+
+  const { markdown, summary } = buildDigest({
+    episodes,
+    days,
+    windowStart,
+    windowEnd: nowDate,
+    generatedAt: nowDate,
+  });
+
+  const slug = `${nowDate.toISOString().slice(0, 10)}-${days}d`;
+  const written = await storage.writeDigest(slug, markdown);
+
+  return {
+    ...summary,
+    path: written.path,
+    alreadyExists: written.alreadyExists,
+  };
 }
 
 function summarizeListen(record: ListenRecord): Record<string, unknown> {

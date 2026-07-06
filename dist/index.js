@@ -11,7 +11,7 @@ import { Type } from "typebox";
 import { defineToolPlugin } from "openclaw/plugin-sdk/tool-plugin";
 import { resolveConfig } from "./config.js";
 import { runPipeline } from "./pipeline.js";
-import { fetchTranscript, generateReview, listRecent, search, setup, setupStatus, syncHistory, } from "./tools.js";
+import { digest, fetchTranscript, generateReview, listRecent, search, setup, setupStatus, syncHistory, } from "./tools.js";
 const configSchema = Type.Object({
     dataDir: Type.Optional(Type.String({
         description: "Where CastRecall stores transcripts and review candidates. Defaults to ~/.openclaw/castrecall. The CASTRECALL_DATA_DIR env var overrides this.",
@@ -124,6 +124,21 @@ export default defineToolPlugin({
                 })),
             }),
             execute: async (params, settings) => search(resolveConfig(settings), params),
+        }),
+        tool({
+            name: "castrecall_digest",
+            description: "Cross-episode digest over a recent time window (default 30 days): listening pattern " +
+                "(episode/show counts, transcript-source breakdown), recurring topics by term frequency, " +
+                "and notable verbatim excerpts, each attributed to its podcast and episode. Structural " +
+                "aggregation only — semantic synthesis ('what have I been absorbing, and how is it shaping " +
+                "my thinking?') is left to the reviewing agent. Writes one approval-gated digest per " +
+                "window to review/pending/, same as castrecall_generate_review.",
+            parameters: Type.Object({
+                days: Type.Optional(Type.Number({
+                    description: "Size of the listening window in days, ending now (default 30).",
+                })),
+            }),
+            execute: async (params, settings) => digest(resolveConfig(settings), params),
         }),
         tool({
             name: "castrecall_run_pipeline",

@@ -8,6 +8,7 @@
  *     transcript.txt               — normalized plain text
  *     provenance.json              — where it came from and when
  *   review/pending/<episodeUuid>.md — approval-gated review candidates
+ *   review/pending/digest-<slug>.md — approval-gated cross-episode digests
  *
  * Nothing here is ever written into OpenClaw's durable memory by CastRecall.
  */
@@ -481,6 +482,24 @@ export class Storage {
     async writeReviewCandidate(episodeUuid, markdown) {
         await this.init();
         const filePath = this.reviewCandidatePath(episodeUuid);
+        try {
+            await fs.writeFile(filePath, markdown, { encoding: "utf8", flag: "wx" });
+            return { path: filePath, alreadyExists: false };
+        }
+        catch (error) {
+            if (error.code === "EEXIST") {
+                return { path: filePath, alreadyExists: true };
+            }
+            throw error;
+        }
+    }
+    digestPath(slug) {
+        return path.join(this.reviewPendingDir(), `digest-${safeName(slug)}.md`);
+    }
+    /** Write a digest once; never overwrite a pending digest — same write-once semantics as writeReviewCandidate. */
+    async writeDigest(slug, markdown) {
+        await this.init();
+        const filePath = this.digestPath(slug);
         try {
             await fs.writeFile(filePath, markdown, { encoding: "utf8", flag: "wx" });
             return { path: filePath, alreadyExists: false };

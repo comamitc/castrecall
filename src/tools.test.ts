@@ -14,6 +14,7 @@ import {
   type Provenance,
 } from "./storage.js";
 import {
+  digest,
   fetchTranscript,
   generateReview,
   listRecent,
@@ -1447,5 +1448,178 @@ describe("tools", () => {
     const again = (await generateReview(cfg, { episodeUuid: "ep-1" })) as Record<string, any>;
     expect(again.generated).toHaveLength(0);
     expect(again.skipped[0].reason).toContain("already exists");
+  });
+
+  describe("digest", () => {
+    function listen(uuid: string, overrides: Record<string, any> = {}) {
+      return {
+        uuid,
+        title: `Episode ${uuid}`,
+        url: `https://cdn.example.com/${uuid}.mp3`,
+        podcastUuid: "pod-1",
+        podcastTitle: "Example Show",
+        ...overrides,
+      };
+    }
+
+    function longText(marker: string): string {
+      return Array.from(
+        { length: 4 },
+        (_, i) =>
+          `Paragraph ${i} exploring ${marker} in enough depth and detail to be a substantial excerpt candidate for a human reviewer.`,
+      ).join("\n\n");
+    }
+
+    it("aggregates in-window stored transcripts into one approval-gated digest", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      const now = () => new Date("2026-07-06T00:00:00.000Z");
+      await storage.recordListens([listen("ep-1"), listen("ep-2", { podcastTitle: "Other Show" })], now);
+
+      await storage.storeTranscript("ep-1", {
+        raw: "raw",
+        ext: "txt",
+        text: longText("reconstructive"),
+        provenance: { ...PROVENANCE, episodeUuid: "ep-1" },
+      });
+      await storage.updateEpisode("ep-1", { transcriptStatus: "stored", transcriptSource: "rss" }, now);
+
+      await storage.storeTranscript("ep-2", {
+        raw: "raw",
+        ext: "txt",
+        text: longText("marker987xyz"),
+        provenance: { ...PROVENANCE, episodeUuid: "ep-2" },
+      });
+      await storage.updateEpisode("ep-2", { transcriptStatus: "stored", transcriptSource: "rss" }, now);
+
+      const result = (await digest(config(), {}, { now })) as Record<string, any>;
+      expect(result.episodes).toBe(2);
+      expect(result.shows).toBe(2);
+      expect(result.transcribed).toBe(2);
+      expect(path.basename(result.path)).toBe("digest-2026-07-06-30d.md");
+      expect(path.basename(result.path).match(/digest-/g)).toHaveLength(1);
+      expect(result.path.startsWith(storage.reviewPendingDir())).toBe(true);
+
+      const markdown = await fs.readFile(result.path, "utf8");
+      expect(markdown).toContain("status: pending-review");
+      expect(markdown).toContain("privacy: private-source");
+      expect(markdown).toContain("reconstructive");
+      expect(markdown).toContain("marker987xyz");
+      expect(markdown).toContain("Other Show");
+    });
+
+    it("filters the window on firstSeenAt: excludes an episode 30 days ago, includes one 2 days ago", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([listen("old")], () => new Date("2026-06-06T00:00:00.000Z"));
+      await storage.recordListens([listen("recent")], () => new Date("2026-07-04T00:00:00.000Z"));
+
+      const result = (await digest(
+        config(),
+        { days: 7 },
+        { now: () => new Date("2026-07-06T00:00:00.000Z") },
+      )) as Record<string, any>;
+      expect(result.episodes).toBe(1);
+    });
+
+    it("counts a listened-but-not-transcribed episode in totals but excludes it from topics/excerpts", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      const now = () => new Date("2026-07-06T00:00:00.000Z");
+      await storage.recordListens([listen("ep-1"), listen("ep-2")], now);
+      await storage.storeTranscript("ep-1", {
+        raw: "raw",
+        ext: "txt",
+        text: longText("uniqueterm42"),
+        provenance: { ...PROVENANCE, episodeUuid: "ep-1" },
+      });
+      await storage.updateEpisode("ep-1", { transcriptStatus: "stored", transcriptSource: "rss" }, now);
+      // ep-2 stays transcriptStatus "none" — listened, never transcribed.
+
+      const result = (await digest(config(), {}, { now })) as Record<string, any>;
+      expect(result.episodes).toBe(2);
+      expect(result.transcribed).toBe(1);
+      const markdown = await fs.readFile(result.path, "utf8");
+      expect(markdown).toContain("uniqueterm42");
+    });
+
+    it("tolerates a stale stored record whose transcript file is missing: does not abort and does not count it as transcribed", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      const now = () => new Date("2026-07-06T00:00:00.000Z");
+      await storage.recordListens([listen("ep-1"), listen("ep-2")], now);
+
+      await storage.storeTranscript("ep-1", {
+        raw: "raw",
+        ext: "txt",
+        text: longText("uniqueterm42"),
+        provenance: { ...PROVENANCE, episodeUuid: "ep-1" },
+      });
+      await storage.updateEpisode("ep-1", { transcriptStatus: "stored", transcriptSource: "rss" }, now);
+
+      // ep-2: state says "stored" but no transcript file was ever written — a stale/corrupted record.
+      await storage.updateEpisode("ep-2", { transcriptStatus: "stored", transcriptSource: "rss" }, now);
+
+      const result = (await digest(config(), {}, { now })) as Record<string, any>;
+      expect(result.episodes).toBe(2);
+      expect(result.transcribed).toBe(1);
+      const markdown = await fs.readFile(result.path, "utf8");
+      expect(markdown).toContain("uniqueterm42");
+      expect(markdown).toContain("unavailable: 1");
+    });
+
+    it("is idempotent: a second run with the same window reports alreadyExists and never overwrites", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      const now = () => new Date("2026-07-06T00:00:00.000Z");
+      await storage.recordListens([listen("ep-1")], now);
+      await storage.storeTranscript("ep-1", {
+        raw: "raw",
+        ext: "txt",
+        text: longText("firstrun"),
+        provenance: { ...PROVENANCE, episodeUuid: "ep-1" },
+      });
+      await storage.updateEpisode("ep-1", { transcriptStatus: "stored", transcriptSource: "rss" }, now);
+
+      const first = (await digest(config(), {}, { now })) as Record<string, any>;
+      expect(first.alreadyExists).toBe(false);
+      const second = (await digest(config(), {}, { now })) as Record<string, any>;
+      expect(second.alreadyExists).toBe(true);
+      expect(second.path).toBe(first.path);
+      const markdown = await fs.readFile(first.path, "utf8");
+      expect(markdown).toContain("firstrun");
+    });
+
+    it("returns a stable empty summary and writes no file on an empty corpus", async () => {
+      const result = (await digest(
+        config(),
+        {},
+        { now: () => new Date("2026-07-06T00:00:00.000Z") },
+      )) as Record<string, any>;
+      expect(result).toEqual({
+        episodes: 0,
+        shows: 0,
+        transcribed: 0,
+        window: { days: 30, start: "2026-06-06T00:00:00.000Z", end: "2026-07-06T00:00:00.000Z" },
+        path: null,
+        alreadyExists: false,
+      });
+      expect(await new Storage(dir).listPendingReviews()).toEqual([]);
+    });
+
+    it("returns the same empty summary shape when episodes exist but none fall in the window", async () => {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([listen("old")], () => new Date("2026-01-01T00:00:00.000Z"));
+
+      const result = (await digest(
+        config(),
+        { days: 7 },
+        { now: () => new Date("2026-07-06T00:00:00.000Z") },
+      )) as Record<string, any>;
+      expect(result.episodes).toBe(0);
+      expect(result.path).toBeNull();
+      expect(await storage.listPendingReviews()).toEqual([]);
+    });
   });
 });

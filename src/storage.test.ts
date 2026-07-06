@@ -105,6 +105,22 @@ describe("Storage", () => {
     expect(await storage.listPendingReviews()).toEqual(["ep-1.md"]);
   });
 
+  it("writes digests to review/pending with a single digest- prefix and no double prefix", async () => {
+    const written = await storage.writeDigest("2026-07-06-30d", "# Digest\n");
+    expect(written.alreadyExists).toBe(false);
+    expect(written.path).toBe(storage.digestPath("2026-07-06-30d"));
+    expect(path.basename(written.path)).toBe("digest-2026-07-06-30d.md");
+    expect(written.path).toContain(`${path.sep}review${path.sep}pending${path.sep}`);
+  });
+
+  it("writes a digest once and never overwrites a pending digest", async () => {
+    const first = await storage.writeDigest("2026-07-06-30d", "original\n");
+    expect(first.alreadyExists).toBe(false);
+    const second = await storage.writeDigest("2026-07-06-30d", "replacement\n");
+    expect(second.alreadyExists).toBe(true);
+    expect(await fs.readFile(first.path, "utf8")).toBe("original\n");
+  });
+
   it("sanitizes hostile episode uuids used in paths", async () => {
     const evil = "../../escape";
     await storage.storeTranscript(evil, {
