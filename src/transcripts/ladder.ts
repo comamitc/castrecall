@@ -57,13 +57,20 @@ export async function runTranscriptLadder(
 
   // Rung 1: RSS <podcast:transcript>
   try {
-    feedUrl = await resolveFeedUrl(record.podcastUuid, record.podcastTitle, fetchImpl);
+    feedUrl = await resolveFeedUrl(
+      record.podcastUuid,
+      record.podcastTitle,
+      fetchImpl,
+      {},
+      config.listenNotes.apiKey,
+    );
     if (!feedUrl) {
       rungs.push({
         rung: "rss",
         outcome: "failed",
-        detail:
-          "Could not resolve the podcast's RSS feed URL (Pocket Casts feed export and iTunes search both missed).",
+        detail: config.listenNotes.apiKey
+          ? "Could not resolve the podcast's RSS feed URL (Pocket Casts feed export, iTunes search, and Listen Notes all missed)."
+          : "Could not resolve the podcast's RSS feed URL (Pocket Casts feed export and iTunes search both missed).",
       });
     } else {
       feedItem = await resolveFeedItem(

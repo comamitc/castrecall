@@ -77,6 +77,16 @@ describe("resolveConfig", () => {
     expect(resolveConfig({}, { PODCHASER_API_KEY: "  " }).podchaser.apiKey).toBeUndefined();
   });
 
+  it("resolves LISTENNOTES_API_KEY into config.listenNotes.apiKey", () => {
+    const config = resolveConfig({}, { LISTENNOTES_API_KEY: "ln_x" });
+    expect(config.listenNotes.apiKey).toBe("ln_x");
+  });
+
+  it("leaves config.listenNotes.apiKey undefined when LISTENNOTES_API_KEY is unset or blank", () => {
+    expect(resolveConfig({}, {}).listenNotes.apiKey).toBeUndefined();
+    expect(resolveConfig({}, { LISTENNOTES_API_KEY: "  " }).listenNotes.apiKey).toBeUndefined();
+  });
+
   it("leaves corpus export off (undefined) by default", () => {
     const config = resolveConfig({}, {});
     expect(config.exportDir).toBeUndefined();

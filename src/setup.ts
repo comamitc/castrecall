@@ -184,6 +184,16 @@ export function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): Set
         "(see https://api-docs.podchaser.com/docs/authorization/), not a raw client secret.",
     },
     {
+      id: "providers.listenNotes",
+      title: "Listen Notes feed discovery (optional)",
+      status: config.listenNotes.apiKey ? "configured" : "optional-off",
+      envVars: ["LISTENNOTES_API_KEY"],
+      explanation:
+        "Optional feed-URL discovery fallback, not a transcript-ladder rung — Listen Notes' own " +
+        "docs say under 1% of episodes have transcripts. Used only when the Pocket Casts feed-export " +
+        "endpoint and iTunes Search both miss the podcast's RSS feed URL.",
+    },
+    {
       id: "providers.localWhisper",
       title: "Local Whisper (optional, free & fully private)",
       status: whisperReady ? "configured" : "optional-off",

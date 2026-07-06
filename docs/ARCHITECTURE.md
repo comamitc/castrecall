@@ -347,6 +347,9 @@ feed. Feed URL resolution tries, in order:
 1. `refresh.pocketcasts.com/import/export_feed_urls` — the unauthenticated
    endpoint community export tools use (unofficial, brittle).
 2. iTunes Search API matched by podcast title (official, fuzzy).
+3. Listen Notes podcast search (optional, needs `LISTENNOTES_API_KEY`), matched
+   by podcast title — a last-resort discovery fallback, not a transcript-ladder
+   rung; Listen Notes' own docs say under 1% of episodes have transcripts.
 
 Feed items are matched by enclosure URL (query-stripped), then GUID, then
 normalized title.

@@ -29,6 +29,10 @@ export type ResolvedConfig = {
     /** Pre-minted OAuth2 bearer access token from Podchaser's requestAccessToken mutation. */
     apiKey?: string;
   };
+  listenNotes: {
+    /** Optional feed-URL discovery fallback, used only when Pocket Casts feed export and iTunes Search both miss. */
+    apiKey?: string;
+  };
   localWhisper: {
     disabled: boolean;
     /** Custom command template with an {input} placeholder; transcript expected on stdout. */
@@ -132,6 +136,9 @@ export function resolveConfig(
     },
     podchaser: {
       apiKey: nonEmpty(env.PODCHASER_API_KEY),
+    },
+    listenNotes: {
+      apiKey: nonEmpty(env.LISTENNOTES_API_KEY),
     },
     localWhisper: {
       disabled: envFlag(env.CASTRECALL_DISABLE_LOCAL_WHISPER) ?? false,
