@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.13.0 — 2026-07-06
+
+Local-Whisper guardrails, part three: look before you transcribe a corpus.
+
+- **Corpus-scale transcription preflight** (#55, PR #72):
+  `castrecall_run_pipeline` now summarizes the selected transcription
+  backend, concrete model, and quality classification before touching a
+  worklist, and blocks corpus-scale local transcription when the config is
+  low-quality (fast preset, allow-low-quality opt-out, or backend default)
+  unless explicitly overridden. A preflight block is a reversible policy
+  gate: affected episodes return `preflight-blocked` with zero state
+  writes — no retry, recheck, or failure metadata advances — so fixing the
+  config makes everything immediately eligible again. Single-episode
+  `castrecall_fetch_transcript` calls are never gated.
+- **Local-model docs** (#56, PR #73): README and `.env.example` now make
+  the quality requirements impossible to miss — MLX needs an explicit
+  model or preset (never the silent upstream tiny default), whisper.cpp
+  needs a ggml path, and each preset's concrete model is spelled out.
+
 ## v0.12.0 — 2026-07-06
 
 Local-Whisper guardrails, part two: loop-safe decoding you can steer, and
