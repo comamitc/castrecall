@@ -9,6 +9,8 @@ const GRAPHQL_URL = "https://api.podchaser.com/graphql";
 const TRANSCRIPT_URL = "https://transcripts.example.com/ep1.json";
 
 const DEFAULT_TOKEN = "pk_test_token";
+const PODCAST_TITLE = "Example Show";
+const FEED_URL = "https://feeds.example.com/show.xml";
 
 function config(env: NodeJS.ProcessEnv = { PODCHASER_API_KEY: DEFAULT_TOKEN }) {
   return resolveConfig({}, env);
@@ -24,15 +26,20 @@ function graphqlResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
 }
 
-function episodeByGuidResponse(transcripts: unknown[]): Response {
-  return graphqlResponse({ data: { episode: { title: "Episode One", transcripts } } });
+function episodeByGuidResponse(
+  transcripts: unknown[],
+  podcast: unknown = { title: PODCAST_TITLE, rssUrl: FEED_URL },
+): Response {
+  return graphqlResponse({ data: { episode: { title: "Episode One", transcripts, podcast } } });
 }
 
 function notFoundResponse(): Response {
   return graphqlResponse({ errors: [{ message: "Episode not found" }] });
 }
 
-function searchResponse(episodes: Array<{ title: string; transcripts: unknown[] }>): Response {
+function searchResponse(
+  episodes: Array<{ title: string; transcripts: unknown[]; podcast?: unknown }>,
+): Response {
   return graphqlResponse({ data: { episodes: { data: episodes } } });
 }
 
@@ -69,7 +76,7 @@ describe("fetchPodchaserTranscript", () => {
 
     const result = await fetchPodchaserTranscript(
       config(),
-      { guid: "guid-1", title: "Episode One" },
+      { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE },
       fetchImpl,
       RETRY,
     );
@@ -91,7 +98,7 @@ describe("fetchPodchaserTranscript", () => {
       throw new Error(`unexpected fetch: ${url}`);
     }) as typeof fetch;
 
-    await fetchPodchaserTranscript(config(), { guid: "guid-1", title: "Episode One" }, fetchImpl, RETRY);
+    await fetchPodchaserTranscript(config(), { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE }, fetchImpl, RETRY);
 
     expect(capturedVariables).toEqual({ identifier: { id: "guid-1", type: "GUID" } });
   });
@@ -114,7 +121,7 @@ describe("fetchPodchaserTranscript", () => {
 
     const result = await fetchPodchaserTranscript(
       config(),
-      { guid: "guid-1", title: "Episode One" },
+      { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE },
       fetchImpl,
       RETRY,
     );
@@ -140,7 +147,7 @@ describe("fetchPodchaserTranscript", () => {
 
     const result = await fetchPodchaserTranscript(
       config(),
-      { guid: "guid-1", title: "Episode One" },
+      { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE },
       fetchImpl,
       RETRY,
     );
@@ -156,7 +163,11 @@ describe("fetchPodchaserTranscript", () => {
         if (body.query.includes("GetEpisodeByGuid")) return notFoundResponse();
         return searchResponse([
           { title: "Some Other Episode", transcripts: [] },
-          { title: "Episode One", transcripts: [{ url: TRANSCRIPT_URL, transcriptType: "raw_JSON" }] },
+          {
+            title: "Episode One",
+            transcripts: [{ url: TRANSCRIPT_URL, transcriptType: "raw_JSON" }],
+            podcast: { title: PODCAST_TITLE, rssUrl: FEED_URL },
+          },
         ]);
       }
       if (url === TRANSCRIPT_URL) {
@@ -167,7 +178,7 @@ describe("fetchPodchaserTranscript", () => {
 
     const result = await fetchPodchaserTranscript(
       config(),
-      { guid: "guid-1", title: "Episode One" },
+      { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE },
       fetchImpl,
       RETRY,
     );
@@ -187,7 +198,7 @@ describe("fetchPodchaserTranscript", () => {
 
     const result = await fetchPodchaserTranscript(
       config(),
-      { guid: "guid-1", title: "Episode One" },
+      { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE },
       fetchImpl,
       RETRY,
     );
@@ -203,7 +214,7 @@ describe("fetchPodchaserTranscript", () => {
 
     const result = await fetchPodchaserTranscript(
       config(),
-      { guid: "guid-1", title: "Episode One" },
+      { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE },
       fetchImpl,
       RETRY,
     );
@@ -224,7 +235,7 @@ describe("fetchPodchaserTranscript", () => {
 
     const result = await fetchPodchaserTranscript(
       config(),
-      { guid: "guid-1", title: "Episode One" },
+      { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE },
       fetchImpl,
       RETRY,
     );
@@ -245,7 +256,7 @@ describe("fetchPodchaserTranscript", () => {
 
     const result = await fetchPodchaserTranscript(
       config(),
-      { guid: "guid-1", title: "Episode One" },
+      { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE },
       fetchImpl,
       RETRY,
     );
@@ -265,7 +276,7 @@ describe("fetchPodchaserTranscript", () => {
     }) as typeof fetch;
 
     await expect(
-      fetchPodchaserTranscript(config(), { guid: "guid-1", title: "Episode One" }, fetchImpl, RETRY),
+      fetchPodchaserTranscript(config(), { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE }, fetchImpl, RETRY),
     ).rejects.toThrowError(/HTTP 404/);
   });
 
@@ -274,10 +285,10 @@ describe("fetchPodchaserTranscript", () => {
     for (const status of [401, 403]) {
       const fetchImpl = (async () => new Response("nope", { status })) as typeof fetch;
       await expect(
-        fetchPodchaserTranscript(configuredWith(token), { guid: "guid-1", title: "Episode One" }, fetchImpl, RETRY),
+        fetchPodchaserTranscript(configuredWith(token), { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE }, fetchImpl, RETRY),
       ).rejects.toThrowError(CastrecallSetupError);
       try {
-        await fetchPodchaserTranscript(configuredWith(token), { guid: "guid-1", title: "Episode One" }, fetchImpl, RETRY);
+        await fetchPodchaserTranscript(configuredWith(token), { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE }, fetchImpl, RETRY);
       } catch (error) {
         expect((error as Error).message).not.toContain(token);
       }
@@ -288,13 +299,86 @@ describe("fetchPodchaserTranscript", () => {
     const token = "pk_super_secret_token";
     const fetchImpl = (async () => new Response("boom", { status: 500 })) as typeof fetch;
     await expect(
-      fetchPodchaserTranscript(configuredWith(token), { guid: "guid-1", title: "Episode One" }, fetchImpl, RETRY),
+      fetchPodchaserTranscript(configuredWith(token), { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE }, fetchImpl, RETRY),
     ).rejects.toThrowError(/HTTP 500/);
     try {
-      await fetchPodchaserTranscript(configuredWith(token), { guid: "guid-1", title: "Episode One" }, fetchImpl, RETRY);
+      await fetchPodchaserTranscript(configuredWith(token), { guid: "guid-1", title: "Episode One", podcastTitle: PODCAST_TITLE }, fetchImpl, RETRY);
     } catch (error) {
       expect((error as Error).message).not.toContain(token);
       expect(error).not.toBeInstanceOf(CastrecallSetupError);
     }
+  });
+
+  it("GUID hit for a matching guid on a different podcast is treated as a miss", async () => {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === GRAPHQL_URL) {
+        return episodeByGuidResponse(
+          [{ url: TRANSCRIPT_URL, transcriptType: "raw_JSON" }],
+          { title: "Some Other Show", rssUrl: "https://feeds.example.com/other.xml" },
+        );
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await fetchPodchaserTranscript(
+      config(),
+      { guid: "guid-1", title: "Episode One", feedUrl: FEED_URL, podcastTitle: PODCAST_TITLE },
+      fetchImpl,
+      RETRY,
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("title fallback matches the same title on two podcasts and only accepts the one from the resolved feed", async () => {
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === GRAPHQL_URL) {
+        const body = JSON.parse(String(init?.body)) as { query: string };
+        if (body.query.includes("GetEpisodeByGuid")) return notFoundResponse();
+        return searchResponse([
+          {
+            title: "Episode One",
+            transcripts: [{ url: "https://transcripts.example.com/wrong.json", transcriptType: "raw_JSON" }],
+            podcast: { title: "Some Other Show", rssUrl: "https://feeds.example.com/other.xml" },
+          },
+          {
+            title: "Episode One",
+            transcripts: [{ url: TRANSCRIPT_URL, transcriptType: "raw_JSON" }],
+            podcast: { title: PODCAST_TITLE, rssUrl: FEED_URL },
+          },
+        ]);
+      }
+      if (url === TRANSCRIPT_URL) {
+        return new Response(JSON.stringify([{ utterance: "correct show" }]), { status: 200 });
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await fetchPodchaserTranscript(
+      config(),
+      { guid: "guid-1", title: "Episode One", feedUrl: FEED_URL, podcastTitle: PODCAST_TITLE },
+      fetchImpl,
+      RETRY,
+    );
+    expect(result).toEqual({ text: "correct show", sourceUrl: TRANSCRIPT_URL });
+  });
+
+  it("returns undefined (miss) when there is no feed URL or podcast title to scope the match against", async () => {
+    const fetchImpl = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === GRAPHQL_URL) {
+        return episodeByGuidResponse([{ url: TRANSCRIPT_URL, transcriptType: "raw_JSON" }]);
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    }) as typeof fetch;
+
+    const result = await fetchPodchaserTranscript(
+      config(),
+      { guid: "guid-1", title: "Episode One" },
+      fetchImpl,
+      RETRY,
+    );
+    expect(result).toBeUndefined();
   });
 });

@@ -30,9 +30,15 @@ type PodchaserTranscriptRef = {
   transcriptType?: string | null;
 };
 
+type PodchaserPodcastRef = {
+  title?: string | null;
+  rssUrl?: string | null;
+};
+
 type PodchaserEpisode = {
   title?: string | null;
   transcripts?: PodchaserTranscriptRef[] | null;
+  podcast?: PodchaserPodcastRef | null;
 };
 
 export function podchaserConfigured(config: ResolvedConfig): boolean {
@@ -41,11 +47,14 @@ export function podchaserConfigured(config: ResolvedConfig): boolean {
 
 /**
  * Look an episode up by RSS GUID first (exact), then by title, and return its transcript.
+ * Podchaser episode GUIDs and titles are only unique within a podcast, so every candidate
+ * is validated against the resolved feed's URL (or podcast title, as a fallback) before its
+ * transcript is accepted — an unscoped match is treated as a miss rather than a hit.
  * Returns undefined when Podchaser knows the episode but has no usable transcript.
  */
 export async function fetchPodchaserTranscript(
   config: ResolvedConfig,
-  episode: { guid?: string; title: string },
+  episode: { guid?: string; title: string; feedUrl?: string; podcastTitle?: string },
   fetchImpl: FetchLike = fetch,
   retry: RetryOptions = {},
 ): Promise<PodchaserTranscript | undefined> {
@@ -57,21 +66,54 @@ export async function fetchPodchaserTranscript(
     );
   }
 
-  const attempts: Array<() => Promise<PodchaserEpisode | undefined>> = [];
+  const expectedPodcast = { feedUrl: episode.feedUrl, podcastTitle: episode.podcastTitle };
+  const attempts: Array<() => Promise<PodchaserEpisode[]>> = [];
   if (episode.guid) {
-    attempts.push(() => lookupByGuid(config, episode.guid as string, fetchImpl, retry));
+    attempts.push(async () => {
+      const found = await lookupByGuid(config, episode.guid as string, fetchImpl, retry);
+      return found ? [found] : [];
+    });
   }
   attempts.push(() => lookupByTitle(config, episode.title, fetchImpl, retry));
 
   for (const attempt of attempts) {
-    const episodeData = await attempt();
-    if (!episodeData) continue;
-    const ref = selectTranscriptRef(episodeData.transcripts);
-    if (!ref?.url) continue;
-    const text = await fetchTranscriptUrl(ref.url, fetchImpl, retry);
-    if (text) return { text, sourceUrl: ref.url };
+    const candidates = await attempt();
+    for (const episodeData of candidates) {
+      if (!matchesExpectedPodcast(episodeData.podcast, expectedPodcast)) continue;
+      const ref = selectTranscriptRef(episodeData.transcripts);
+      if (!ref?.url) continue;
+      const text = await fetchTranscriptUrl(ref.url, fetchImpl, retry);
+      if (text) return { text, sourceUrl: ref.url };
+    }
   }
   return undefined;
+}
+
+/**
+ * Require the candidate episode's podcast to match the resolved feed before accepting it —
+ * without scoping context (no feed URL or podcast title to compare against) a match cannot
+ * be verified, so it's treated as a miss rather than trusted.
+ */
+function matchesExpectedPodcast(
+  candidatePodcast: PodchaserPodcastRef | null | undefined,
+  expected: { feedUrl?: string; podcastTitle?: string },
+): boolean {
+  if (!expected.feedUrl && !expected.podcastTitle) return false;
+  if (expected.feedUrl && candidatePodcast?.rssUrl) {
+    return normalizeUrl(candidatePodcast.rssUrl) === normalizeUrl(expected.feedUrl);
+  }
+  if (expected.podcastTitle && candidatePodcast?.title) {
+    return normalizeTitle(candidatePodcast.title) === normalizeTitle(expected.podcastTitle);
+  }
+  return false;
+}
+
+function normalizeUrl(url: string): string {
+  return url.trim().toLowerCase().replace(/^https?:\/\/(www\.)?/, "").replace(/\/+$/, "");
+}
+
+function normalizeTitle(title: string): string {
+  return title.trim().toLowerCase();
 }
 
 async function lookupByGuid(
@@ -84,6 +126,7 @@ async function lookupByGuid(
     episode(identifier: $identifier) {
       title
       transcripts { url source transcriptType }
+      podcast { title rssUrl }
     }
   }`;
   const result = await podchaserRequest(
@@ -101,17 +144,17 @@ async function lookupByTitle(
   title: string,
   fetchImpl: FetchLike,
   retry: RetryOptions,
-): Promise<PodchaserEpisode | undefined> {
+): Promise<PodchaserEpisode[]> {
   const query = `query FindEpisodeByTitle($searchTerm: String!) {
     episodes(searchTerm: $searchTerm) {
-      data { title transcripts { url source transcriptType } }
+      data { title transcripts { url source transcriptType } podcast { title rssUrl } }
     }
   }`;
   const result = await podchaserRequest(config, query, { searchTerm: title }, fetchImpl, retry);
   const list =
     (result?.episodes as { data?: PodchaserEpisode[] } | null | undefined)?.data ?? [];
-  const normalizedTitle = title.trim().toLowerCase();
-  return list.find((candidate) => candidate.title?.trim().toLowerCase() === normalizedTitle);
+  const normalizedTitle = normalizeTitle(title);
+  return list.filter((candidate) => candidate.title && normalizeTitle(candidate.title) === normalizedTitle);
 }
 
 function selectTranscriptRef(

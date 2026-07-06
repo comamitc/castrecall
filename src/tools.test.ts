@@ -590,6 +590,7 @@ describe("tools", () => {
                     transcripts: [
                       { url: "https://transcripts.example.com/ep1.json", transcriptType: "raw_JSON" },
                     ],
+                    podcast: { title: "Example Show", rssUrl: null },
                   },
                 ],
               },

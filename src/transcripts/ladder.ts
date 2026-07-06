@@ -51,10 +51,11 @@ export async function runTranscriptLadder(
   const env = options.env ?? process.env;
   const rungs: RungOutcome[] = [];
   let feedItem: ResolvedFeedItem | undefined;
+  let feedUrl: string | undefined;
 
   // Rung 1: RSS <podcast:transcript>
   try {
-    const feedUrl = await resolveFeedUrl(record.podcastUuid, record.podcastTitle, fetchImpl);
+    feedUrl = await resolveFeedUrl(record.podcastUuid, record.podcastTitle, fetchImpl);
     if (!feedUrl) {
       rungs.push({
         rung: "rss",
@@ -170,7 +171,12 @@ export async function runTranscriptLadder(
     try {
       const podchaser = await fetchPodchaserTranscript(
         config,
-        { guid: feedItem?.itemGuid, title: record.title },
+        {
+          guid: feedItem?.itemGuid,
+          title: record.title,
+          feedUrl,
+          podcastTitle: record.podcastTitle,
+        },
         fetchImpl,
       );
       if (podchaser) {
