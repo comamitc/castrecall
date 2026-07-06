@@ -265,24 +265,27 @@ describe("glossary", () => {
       ]);
     });
 
-    it("resolves the first-in-alternation canonical when two different-canonical variants fold together under /iu despite different toLowerCase() keys (issue #46 review: cross-key fold collision)", () => {
-      // Greek small mu (\u03bc) and the micro sign (\u00b5) case-fold to the same
-      // value under /iu, but their toLowerCase() results differ from each
-      // other ("\u03bc".toLowerCase() stays "\u03bc", "\u00b5".toLowerCase() stays "\u00b5") \u2014
-      // so a naive toLowerCase()-keyed fast path finds each canonical only
-      // for its OWN literal spelling and never notices the regex alternation
-      // can attribute either spelling to whichever alternative is listed
-      // first. Sorted longest-first then locale order, "\u03bc" (Mu) precedes
-      // "\u00b5" (Micro) in the alternation, so scanning the LITERAL micro sign
-      // must still resolve to "Mu" \u2014 the alternation's first match \u2014 not
-      // silently "Micro" via the fast-path's own-spelling lookup.
+    it("fails compilation when two different-canonical variants are indistinguishable under /iu (issue #46 review: fold-collision ambiguity)", () => {
+      // Greek small mu (\u03bc) and the micro sign (\u00b5) case-fold together
+      // under /iu, so a case-insensitive scanner cannot tell which spelling
+      // it matched. Mapping them to different canonicals is inherently
+      // ambiguous config — reject it up front, like same-lowercase-key
+      // ambiguity, instead of silently overriding one exact spelling.
+      expect(() =>
+        compileGlossary([
+          { canonical: "Mu", variants: ["\u03bc"] },
+          { canonical: "Micro", variants: ["\u00b5"] },
+        ]),
+      ).toThrow(CastrecallSetupError);
+    });
+
+    it("allows fold-colliding spellings with distinct canonicals via matchCase: true (exact matching)", () => {
       const compiled = compileGlossary([
-        { canonical: "Mu", variants: ["\u03bc"] },
-        { canonical: "Micro", variants: ["\u00b5"] },
+        { canonical: "Mu", variants: ["\u03bc"], matchCase: true },
+        { canonical: "Micro", variants: ["\u00b5"], matchCase: true },
       ]);
-      const result = applyGlossary("read \u00b5 here", compiled);
-      expect(result.text).toBe("read Mu here");
-      expect(result.corrections).toEqual([{ canonical: "Mu", variant: "\u03bc", count: 1 }]);
+      const result = applyGlossary("read \u00b5 and \u03bc here", compiled);
+      expect(result.text).toBe("read Micro and Mu here");
     });
 
     it("accepts a well-formed glossary", () => {

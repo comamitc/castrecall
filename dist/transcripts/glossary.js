@@ -107,16 +107,16 @@ export function compileGlossary(entries) {
             });
         }
         if (!caseSensitive) {
-            // toLowerCase() is only a faithful proxy for the pattern's /iu Unicode
-            // case folding when both variants are pure ASCII. A non-ASCII variant
-            // (e.g. Kelvin sign, micro sign, Greek final sigma) can /iu-fold
-            // against a DIFFERENT-canonical variant whose toLowerCase() key
-            // doesn't match it, so the fast path above can return the wrong
-            // canonical instead of merely missing. Detect those cross-key
-            // collisions — scoped to variants containing a non-ASCII character,
-            // since a same-length pure-ASCII pair can never diverge this way —
-            // and evict both keys so lookups fall through to the authoritative,
-            // alternation-ordered `fallback` below instead of the ambiguous key.
+            // Under /iu the scanner cannot distinguish two variants that Unicode
+            // case-fold to the same value (micro sign vs Greek mu, final sigma vs
+            // sigma…). If such a pair maps to DIFFERENT canonicals, every match of
+            // either spelling is inherently ambiguous — any resolution rule (map
+            // order, alternation order) would silently override one of the user's
+            // exact configured spellings. Fail closed at compile time, exactly
+            // like the same-lowercase-key ambiguity above; entries that need
+            // fold-distinct spellings can set matchCase: true, whose scanner
+            // matches exactly. Scoped to non-ASCII variants — same-length pure-
+            // ASCII pairs are already covered by the toLowerCase key check.
             for (const a of classVariants) {
                 if (/^[\x00-\x7f]*$/.test(a.variant))
                     continue;
@@ -126,8 +126,10 @@ export function compileGlossary(entries) {
                         continue;
                     }
                     if (aExact.test(b.variant)) {
-                        byMatch.delete(a.variant.toLowerCase());
-                        byMatch.delete(b.variant.toLowerCase());
+                        throw new CastrecallSetupError(`Glossary variants "${a.variant}" (→ "${a.canonical}") and "${b.variant}" ` +
+                            `(→ "${b.canonical}") are indistinguishable under case-insensitive Unicode ` +
+                            "matching. Give them the same canonical, or set matchCase: true on their " +
+                            "entries to match the exact spellings.");
                     }
                 }
             }
