@@ -80,7 +80,7 @@ Ask your agent to run `castrecall_setup` — it walks through everything below i
 | --- | --- |
 | `castrecall_setup_status` | Setup/health report: configured providers, ladder availability, counts. Run first. |
 | `castrecall_setup` | Guided first-run setup: walks through credentials (keychain-preferred, env-var fallback), storage, privacy defaults, optional providers, and export directory. `{ verify: true }` makes a read-only Pocket Casts test call. Never edits config or writes secrets itself. |
-| `castrecall_sync_history` | Read-only Pocket Casts history sync; records new listens idempotently. Keychain-preferred credentials with an env-var fallback; reuses the cached session token instead of logging in every sync. |
+| `castrecall_sync_history` | Read-only Pocket Casts history sync; records new listens idempotently. Only episodes that pass the "meaningfully listened" filter are stored — see below. Keychain-preferred credentials with an env-var fallback; reuses the cached session token instead of logging in every sync. |
 | `castrecall_recent` | Lists synced listens with transcript status and episode UUIDs. |
 | `castrecall_fetch_transcript` | Runs the transcript ladder for one episode; stores transcript + provenance. Also exports markdown pages when `CASTRECALL_EXPORT_DIR` is set. |
 | `castrecall_generate_review` | Writes approval-gated review candidates for stored transcripts. |
@@ -97,6 +97,17 @@ Cheapest and most open first; every rung reports why it hit, missed, or was skip
 
 If no rung produces a transcript, the episode is marked `failed` with the per-rung reasons — no fake output, ever.
 
+## Listened-episode filter
+
+Pocket Casts' `/user/history` endpoint returns everything you've opened, including episodes you only sampled or skipped through. `castrecall_sync_history` applies a "meaningfully listened" filter to that history **at ingestion time**, before an episode is ever recorded into CastRecall state:
+
+1. `playingStatus == 3` (Pocket Casts marked it fully played) — always accepted.
+2. Otherwise, if `duration` is known: accepted only if `playedUpTo / duration >= CASTRECALL_MIN_LISTEN_RATIO` (default `0.8`). A long episode with a low ratio is never rescued by the seconds floor below.
+3. Otherwise (duration missing or unusable): accepted if `playedUpTo >= CASTRECALL_MIN_LISTEN_SECONDS` (default `300`).
+4. If neither `duration`, `playedUpTo`, nor `playingStatus` is usable, the episode is skipped by default; set `CASTRECALL_RECORD_UNKNOWN_LISTENS=true` to record it anyway.
+
+`castrecall_sync_history` reports `fetched`, `eligible`, and `skippedAsNotListened` counts so you can see how many history entries were filtered out. This filter only affects **newly ingested** episodes — it never deletes or re-evaluates episodes, transcripts, or review candidates already stored from a prior sync.
+
 ## Environment variables
 
 | Variable | Required | Purpose |
@@ -106,6 +117,9 @@ If no rung produces a transcript, the episode is marked `failed` with the per-ru
 | `CASTRECALL_SECRET_SERVICE` | no | Service name under which OS keychain entries are stored (default `castrecall`). |
 | `CASTRECALL_DATA_DIR` | no | Data dir (default `~/.openclaw/castrecall`). |
 | `CASTRECALL_HISTORY_LIMIT` | no | Max entries per sync (default 100). |
+| `CASTRECALL_MIN_LISTEN_RATIO` | no | Minimum `playedUpTo`/`duration` ratio to accept a partial listen (default `0.8`). See "Listened-episode filter" above. |
+| `CASTRECALL_MIN_LISTEN_SECONDS` | no | Minimum `playedUpTo` seconds to accept a listen when duration is missing (default `300`). |
+| `CASTRECALL_RECORD_UNKNOWN_LISTENS` | no | `true` to record episodes with no usable duration/playedUpTo/playingStatus (default off — skipped). |
 | `CASTRECALL_EXPORT_DIR` | no | Enables corpus export (markdown pages) to this directory. Off by default — see "Corpus export" below. |
 | `TADDY_API_KEY` / `TADDY_USER_ID` | no | Enables the Taddy ladder rung. |
 | `CASTRECALL_WHISPER_MODEL` | for whisper.cpp | ggml model path (whisper.cpp) or model name (other Whisper CLIs). |

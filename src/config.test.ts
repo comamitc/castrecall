@@ -59,6 +59,38 @@ describe("resolveConfig", () => {
     const config = resolveConfig({ exportDir: "/from/settings" }, {});
     expect(config.exportDir).toBe("/from/settings");
   });
+
+  it("defaults listenFilter to a 0.8 ratio, 300s floor, and recordUnknown off", () => {
+    const config = resolveConfig({}, {});
+    expect(config.listenFilter).toEqual({ minRatio: 0.8, minSeconds: 300, recordUnknown: false });
+  });
+
+  it("reads listenFilter knobs from the environment", () => {
+    const config = resolveConfig(
+      {},
+      {
+        CASTRECALL_MIN_LISTEN_RATIO: "0.5",
+        CASTRECALL_MIN_LISTEN_SECONDS: "120",
+        CASTRECALL_RECORD_UNKNOWN_LISTENS: "1",
+      },
+    );
+    expect(config.listenFilter).toEqual({ minRatio: 0.5, minSeconds: 120, recordUnknown: true });
+  });
+
+  it("falls back to listenFilter defaults on invalid or out-of-range env values", () => {
+    const config = resolveConfig(
+      {},
+      {
+        CASTRECALL_MIN_LISTEN_RATIO: "abc",
+        CASTRECALL_MIN_LISTEN_SECONDS: "0",
+        CASTRECALL_RECORD_UNKNOWN_LISTENS: "",
+      },
+    );
+    expect(config.listenFilter).toEqual({ minRatio: 0.8, minSeconds: 300, recordUnknown: false });
+
+    const overRatio = resolveConfig({}, { CASTRECALL_MIN_LISTEN_RATIO: "2" });
+    expect(overRatio.listenFilter.minRatio).toBe(0.8);
+  });
 });
 
 describe("requirePocketCastsCredentials", () => {

@@ -40,6 +40,15 @@ export type ResolvedConfig = {
         /** Service name under which OS keychain entries are stored. */
         service: string;
     };
+    /** Threshold for what counts as "meaningfully listened" before sync ingests an episode — see issue #24. */
+    listenFilter: {
+        /** Minimum playedUpTo/duration ratio to accept a partial listen. */
+        minRatio: number;
+        /** Minimum playedUpTo seconds to accept a short/no-duration listen. */
+        minSeconds: number;
+        /** Accept episodes with no usable duration/playedUpTo/playingStatus at all. */
+        recordUnknown: boolean;
+    };
 };
 export declare function envFlag(value: string | undefined): boolean | undefined;
 /**
