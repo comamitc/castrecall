@@ -22,15 +22,31 @@ const KNOWN_BINARIES = [
 ];
 export const WHISPER_CPP_MODEL_MISSING_MESSAGE = "whisper.cpp needs a ggml model file. Set CASTRECALL_WHISPER_MODEL=/path/to/ggml-<size>.bin " +
     "(download one with whisper.cpp's models script or from Hugging Face ggerganov/whisper.cpp).";
+export const MLX_WHISPER_MODEL_MISSING_MESSAGE = "mlx_whisper defaults to the tiny model, too weak for a transcript corpus. Set " +
+    "CASTRECALL_WHISPER_MODEL=mlx-community/whisper-large-v3-turbo (or another model), or set " +
+    "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true to accept low-quality/fast transcription.";
 /**
  * Single source of truth for whether the local Whisper rung can actually RUN
- * (not merely whether a binary was detected): whisper.cpp additionally needs
- * a ggml model via CASTRECALL_WHISPER_MODEL. Status surfaces must use this,
- * never raw detection, or they report "ready" for a rung that will throw.
+ * at usable quality (not merely whether a binary was detected): whisper.cpp
+ * needs a ggml model via CASTRECALL_WHISPER_MODEL or it can't run at all;
+ * mlx-whisper can run without one, but silently falls back to Whisper's tiny
+ * model, so it additionally needs an explicit model (or an opt-in to accept
+ * that low quality) before it's quality-ready. Status surfaces must use this,
+ * never raw detection, or they report "ready" for a rung that will throw or
+ * quietly produce a toy-quality transcript.
  */
 export function localWhisperReadiness(detection, localWhisperConfig) {
-    const needsModel = detection.detected?.flavor === "whisper.cpp" && !localWhisperConfig.model;
-    return { ready: Boolean(detection.detected) && !needsModel, needsModel };
+    const detected = Boolean(detection.detected);
+    const flavor = detection.detected?.flavor;
+    const hasModel = Boolean(localWhisperConfig.model);
+    const needsModel = (flavor === "whisper.cpp" && !hasModel) ||
+        (flavor === "mlx-whisper" && !hasModel && !localWhisperConfig.allowLowQuality);
+    const reason = needsModel
+        ? flavor === "whisper.cpp"
+            ? WHISPER_CPP_MODEL_MISSING_MESSAGE
+            : MLX_WHISPER_MODEL_MISSING_MESSAGE
+        : undefined;
+    return { ready: detected && !needsModel, detected, needsModel, reason };
 }
 export async function detectLocalWhisper(config, env = process.env) {
     if (config.localWhisper.disabled) {
@@ -144,6 +160,9 @@ async function runWhisper(detected, config, audioPath, workDir, execImpl, env = 
             return readProducedTxt(workDir, audioPath);
         }
         case "mlx-whisper": {
+            if (!model && !config.localWhisper.allowLowQuality) {
+                throw new CastrecallSetupError(MLX_WHISPER_MODEL_MISSING_MESSAGE);
+            }
             const argv = [
                 detected.command,
                 audioPath,
