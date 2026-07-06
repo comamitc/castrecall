@@ -76,7 +76,8 @@ summarizes the #51–#53 config surface; #56 documents all of it last.
 - [x] #54 exact provider/model/decode provenance — PR #70 squash-merged, issue closed. `provenance.generation` records backend, model, model source, preset, output format, and applied/ignored decode settings across storage, setup/status, review candidates, and corpus export. One review round: older stored generation shapes (ignored-only decode, missing fields) crashed review rendering → normalized with regression tests for both legacy shapes.
 - [x] release v0.12.0 — PR #71 merged, version 0.11.0→0.12.0 (manifest regenerated), tag pushed, GitHub release published, milestone closed (number 14 — the v0.12.0 title, post-swap).
 - [x] #55 corpus-scale transcription preflight — PR #72 squash-merged, issue closed. `castrecall_run_pipeline` now runs a preflight that names the selected backend/model/quality class and blocks corpus-scale local transcription on low-quality config (fast preset / allow-low-quality / backend default) unless explicitly overridden; blocked episodes return `preflight-blocked` with ZERO state writes (reversible gate takes precedence over retry/recheck bookkeeping — review round 2). One mechanical block (plan-revision section header), one dist drift, two review rounds. 548 tests green.
-- [ ] #56 local-model docs → release v0.13.0
+- [x] #56 local-model docs — PR #73 squash-merged, issue closed. Clean run (0 findings). README/.env.example spell out per-backend model requirements and preset resolutions.
+- [x] release v0.13.0 — PR #74 merged, version 0.12.0→0.13.0 (manifest regenerated), tag pushed, GitHub release published, milestone closed (number 15). Local-Whisper quality track (#51–#56) complete.
 
 ### v0.14.0–v0.16.0 — transcript quality track (added 2026-07-06, issues #41–#46)
 
