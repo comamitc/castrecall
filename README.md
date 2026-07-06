@@ -207,6 +207,12 @@ If no rung produces a transcript, the episode is marked `failed` with the per-ru
 
 **Repetition-loop quarantine (issue #42).** As a backstop behind the decode-time mitigations above, every ladder source's output is checked for a repeated phrase or word loop before it's stored. A hit sets `transcriptStatus: "quarantined"` with the loop reason instead of storing the text — it's never searched, exported, or reviewed, and scheduled runs won't retry it (that would just re-run the same looping model). Re-run `castrecall_fetch_transcript` after changing `CASTRECALL_LOCAL_WHISPER_PRESET` or the STT provider to regenerate. `castrecall_setup_status`'s `counts.transcriptsQuarantined` and `pipelineErrors` surface these episodes.
 
+## Transcript cleanup pass
+
+Before a transcript is stored, `transcript.txt` gets a conservative, deterministic cleanup pass (on by default; set `CASTRECALL_TRANSCRIPT_CLEANUP=false` to disable it): standalone caption cues (`[MUSIC]`, `(inaudible)`, ...) and leading caption markers (`>>`, `- `) are stripped, glued/duplicated punctuation is de-glued (`word.Next` → `word. Next`, `word ,next` → `word, next`, `?.` → `?`), single-newline speaker turns are paragraph-separated, and whitespace is re-collapsed. It never adds punctuation that wasn't there, never rewrites, paraphrases, or summarizes, and never adds or removes a spoken word — the only tokens it can delete are the curated cue markers, and that's checked by a token-preservation invariant in `cleanup.test.ts`.
+
+`raw.<ext>` is always the verbatim source, untouched by cleanup, so the pre-cleanup text is always recoverable by re-normalizing it. Every stored transcript's `provenance.json` carries a `cleanup: { version, applied }` field naming which transform steps actually changed the text (`applied: []` when the input was already clean) — omitted entirely when `CASTRECALL_TRANSCRIPT_CLEANUP=false`, so "ran, no-op" is distinguishable from "never ran."
+
 ## Corpus-scale transcription preflight
 
 Processing dozens of episodes with local Whisper can take hours, so CastRecall never starts that work silently. Before generating any transcripts, `castrecall_run_pipeline` computes a preflight from the same detection/model-resolution logic the ladder itself uses: how many synced episodes are still missing a transcript and could fall through to local generation, the selected backend and concrete model, whether that model is **quality-approved**, **low-quality**, or **unknown**, a rough runtime class (with an explicit "this is a rough estimate" caveat — no audio durations are known ahead of time), whether timestamps/segments will survive into the stored transcript, and that local audio is always temporary (downloaded to a temp dir, deleted right after transcription, never retained).
@@ -292,6 +298,7 @@ Pocket Casts' `/user/history` endpoint returns everything you've opened, includi
 | `CASTRECALL_SECRET_SERVICE` | no | Service name under which OS keychain entries are stored (default `castrecall`). |
 | `CASTRECALL_DATA_DIR` | no | Data dir (default `~/.openclaw/castrecall`). |
 | `CASTRECALL_HISTORY_LIMIT` | no | Max entries per sync (default 100). |
+| `CASTRECALL_TRANSCRIPT_CLEANUP` | no | `false` to store `transcript.txt` exactly as normalized, with no cleanup pass (default `true`). See "Transcript cleanup pass" above. |
 | `CASTRECALL_MIN_LISTEN_RATIO` | no | Minimum `playedUpTo`/`duration` ratio to accept a partial listen (default `0.8`). See "Listened-episode filter" above. |
 | `CASTRECALL_MIN_LISTEN_SECONDS` | no | Minimum `playedUpTo` seconds to accept a listen when duration is missing (default `300`). |
 | `CASTRECALL_RECORD_UNKNOWN_LISTENS` | no | `true` to record episodes with no usable duration/playedUpTo/playingStatus (default off — skipped). |
@@ -442,9 +449,10 @@ review candidates and `state.json` are never exported.
 ├── state.json                    # sync state: seen listens, transcript status, schemaVersion
 ├── sources/<episodeUuid>/        # private source material
 │   ├── raw.<ext>                 # transcript exactly as fetched/generated
-│   ├── transcript.txt            # normalized plain text
+│   ├── transcript.txt            # normalized, cleaned plain text (see "Transcript cleanup pass")
 │   └── provenance.json           # platform, feed, URLs, timestamps, source, privacy class,
-│                                  # quality score/tier/reasons, contentHash, schemaVersion
+│                                  # quality score/tier/reasons, cleanup version/applied,
+│                                  # contentHash, schemaVersion
 ├── review/pending/<episodeUuid>.md   # approval-gated review candidates
 ├── review/resolved/<episodeUuid>.md  # candidates moved out by castrecall_resolve_review
 ├── .staging/                     # reserved scratch for atomic writes — ignore it

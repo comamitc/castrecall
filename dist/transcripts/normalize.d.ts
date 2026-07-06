@@ -43,3 +43,5 @@ export declare function htmlToText(html: string): string;
  * across sources.
  */
 export declare function segmentsToText(segments: TranscriptSegment[]): string;
+/** Exported so `cleanup.ts` can reuse the exact same whitespace rules for its final re-collapse pass. */
+export declare function collapseWhitespace(text: string): string;

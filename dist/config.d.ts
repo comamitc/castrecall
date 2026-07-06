@@ -81,6 +81,10 @@ export type ResolvedConfig = {
         /** Service name under which OS keychain entries are stored. */
         service: string;
     };
+    transcriptCleanup: {
+        /** Deterministic punctuation/caption-artifact/whitespace cleanup pass (issue #45), on by default. */
+        enabled: boolean;
+    };
     /** Threshold for what counts as "meaningfully listened" before sync ingests an episode — see issue #24. */
     listenFilter: {
         /** Minimum playedUpTo/duration ratio to accept a partial listen. */

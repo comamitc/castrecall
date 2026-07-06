@@ -96,6 +96,9 @@ export function resolveConfig(settings = {}, env = process.env) {
             keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,
             service: nonEmpty(env.CASTRECALL_SECRET_SERVICE) ?? "castrecall",
         },
+        transcriptCleanup: {
+            enabled: envFlag(env.CASTRECALL_TRANSCRIPT_CLEANUP) ?? true,
+        },
         listenFilter: {
             minRatio,
             minSeconds,

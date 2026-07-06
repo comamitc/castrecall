@@ -156,6 +156,16 @@ describe("resolveConfig", () => {
     expect(overRatio.listenFilter.minRatio).toBe(0.8);
   });
 
+  it("defaults transcriptCleanup.enabled to true", () => {
+    const config = resolveConfig({}, {});
+    expect(config.transcriptCleanup.enabled).toBe(true);
+  });
+
+  it("disables transcriptCleanup via CASTRECALL_TRANSCRIPT_CLEANUP=0", () => {
+    const config = resolveConfig({}, { CASTRECALL_TRANSCRIPT_CLEANUP: "0" });
+    expect(config.transcriptCleanup.enabled).toBe(false);
+  });
+
   it("normalizes CASTRECALL_LOCAL_WHISPER_PRESET to lowercase", () => {
     const config = resolveConfig({}, { CASTRECALL_LOCAL_WHISPER_PRESET: "Best" });
     expect(config.localWhisper.preset).toBe("best");

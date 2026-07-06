@@ -259,7 +259,8 @@ export function segmentsToText(segments) {
     }
     return collapseWhitespace(parts.join(" "));
 }
-function collapseWhitespace(text) {
+/** Exported so `cleanup.ts` can reuse the exact same whitespace rules for its final re-collapse pass. */
+export function collapseWhitespace(text) {
     return text
         .replace(/\r\n/g, "\n")
         .split("\n")

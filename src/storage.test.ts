@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PocketCastsEpisode } from "./pocketcasts/client.js";
+import { cleanTranscript } from "./transcripts/cleanup.js";
 import { normalizeTranscript } from "./transcripts/normalize.js";
 import {
   BACKOFF_BASE_MS,
@@ -155,6 +156,25 @@ describe("Storage", () => {
     const derived = await storage.deriveSegmentsFromRaw("ep-1", text);
     expect(derived).toEqual([
       expect.objectContaining({ startSeconds: 0, endSeconds: 2, text }),
+    ]);
+  });
+
+  it("derives segments for a cleaned transcript whose text differs from the raw normalization (issue #45)", async () => {
+    const raw = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nA short transcript ,body.";
+    const normalized = normalizeTranscript(raw, "vtt");
+    const cleanedText = cleanTranscript(normalized.text).text;
+    expect(cleanedText).not.toBe(normalized.text);
+    await storage.storeTranscript("ep-1", {
+      raw,
+      ext: "vtt",
+      text: cleanedText,
+      provenance: { ...PROVENANCE, format: "vtt" },
+    });
+    expect(await storage.readSegments("ep-1")).toBeUndefined();
+
+    const derived = await storage.deriveSegmentsFromRaw("ep-1", cleanedText);
+    expect(derived).toEqual([
+      expect.objectContaining({ startSeconds: 0, endSeconds: 2, text: "A short transcript ,body." }),
     ]);
   });
 

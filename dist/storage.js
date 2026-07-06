@@ -20,6 +20,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CastrecallSetupError } from "./config.js";
+import { cleanTranscript } from "./transcripts/cleanup.js";
 import { normalizeTranscript, } from "./transcripts/normalize.js";
 /**
  * Version of the on-disk data-dir contract (provenance.json / state.json
@@ -478,11 +479,12 @@ export class Storage {
      * Recover segment timing for a transcript stored before the `segments.json`
      * sidecar existed (issue #43), by re-normalizing the still-present
      * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
-     * freshly normalized text matches `expectedText` exactly, so a raw file
-     * that has drifted from the recorded transcript.txt can never contaminate
-     * export with mismatched timing. Returns `undefined` when there is no raw
-     * artifact, its format is unrecognized, it fails to parse, or its
-     * normalized text no longer matches.
+     * freshly normalized text matches `expectedText` exactly, OR the cleanup
+     * pass (issue #45) applied to that normalized text matches it — so a raw
+     * file that has drifted from the recorded transcript.txt can never
+     * contaminate export with mismatched timing, whether or not the stored
+     * text was cleaned. Returns `undefined` when there is no raw artifact, its
+     * format is unrecognized, it fails to parse, or neither form matches.
      */
     async deriveSegmentsFromRaw(episodeUuid, expectedText) {
         const provenance = await this.readProvenance(episodeUuid);
@@ -503,7 +505,8 @@ export class Storage {
         catch {
             return undefined;
         }
-        if (normalized.text !== expectedText)
+        const matches = normalized.text === expectedText || cleanTranscript(normalized.text).text === expectedText;
+        if (!matches)
             return undefined;
         return normalized.segments?.length ? normalized.segments : undefined;
     }

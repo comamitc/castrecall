@@ -391,10 +391,11 @@ can be repaired or removed manually; it never deletes them silently.
 | `transcriptSourceUrl`, `provider` | Optional rung-specific detail. |
 | `generation` | Exact local-transcription provenance (issue #54): only set when `transcriptSource` is `"local-whisper"`. See below. |
 | `quality` | Deterministic transcript quality score (issue #41): `score` (0-100), `tier` (`quote-safe`/`reviewable`/`search-only`), and machine-readable `reasons`. See below. |
+| `cleanup` | Deterministic cleanup-pass provenance (issue #45): `version` and the named transform steps that actually changed the text (`applied: []` when the input was already clean). Present whenever the cleanup pass ran, even as a no-op; omitted entirely when `CASTRECALL_TRANSCRIPT_CLEANUP=false` disabled it, so "ran, no-op" is distinguishable from "never ran". See below. |
 | `format` | Raw transcript format (`vtt`, `srt`, `json`, `txt`, ...). |
 | `fetchedAt` | ISO timestamp of the fetch that produced this sidecar. |
 | `privacyClass` | Always `"private-source"`. |
-| `contentHash` | sha256 (hex) of the exact bytes written to `transcript.txt` — the normalized transcript text. Computed once, at first write, so it is stable across re-runs; downstream consumers can key idempotency off it. |
+| `contentHash` | sha256 (hex) of the exact bytes written to `transcript.txt` — the normalized, cleaned transcript text (see "Transcript cleanup pass", issue #45). Computed once, at first write, so it is stable across re-runs; downstream consumers can key idempotency off it. |
 | `schemaVersion` | Data-dir contract version (currently `1`). |
 
 ### `segments.json` (issue #43)
@@ -609,6 +610,53 @@ operator-initiated: since no `transcript.txt` exists, `hasTranscript` stays
 false, so changing `CASTRECALL_LOCAL_WHISPER_PRESET` or the STT provider and
 calling `castrecall_fetch_transcript` again re-runs the full ladder; clean
 output then stores normally and clears `transcriptError`.
+
+### Transcript cleanup pass (issue #45)
+
+Raw transcripts are readable but rough: STT output glues punctuation to the
+next word, and caption sources leave behind non-speech cue markers and
+caption-carets. `transcripts/cleanup.ts`'s `cleanTranscript` is a pure
+transform — no I/O, mirrors `loop-detection.ts`/`quality.ts`'s
+options-with-defaults/exported-result-type shape — run in `fetchTranscript`
+right after loop detection and quality scoring (both of which stay on
+`result.transcript.text`, the raw-normalized text, so their coverage/quality
+math never sees cleaned-up text) and just before `storeTranscript`.
+
+Five named, ordered steps, each only appended to the result's `applied` list
+when it actually changes the text: `strip-standalone-cues` (removes a line
+that consists solely of an allowlisted non-speech cue like `[MUSIC]` or
+`(inaudible)` — a cue embedded mid-sentence is left alone), `strip-caption-markers`
+(leading `>>`/`>>>` carets and dialogue dashes at line start),
+`fix-punctuation-glue` (de-glues/de-duplicates *existing* punctuation only —
+`word.Next` → `word. Next`, `word ,next` → `word, next`, `?.` → `?` — never
+adds punctuation where none existed), `separate-speaker-turns` (promotes a
+single `\nName:` turn boundary to a blank-line paragraph break), and
+`collapse-whitespace` (a final re-collapse, reusing `normalize.ts`'s
+`collapseWhitespace`, since cue/marker removal can introduce new blank lines
+or runs of spaces).
+
+The hard invariant — enforced by a property test in `cleanup.test.ts` — is
+that `spokenTokens(cleanTranscript(x).text)` equals `spokenTokens(x)` for any
+input `x`, where `spokenTokens` tokenizes text with standalone cue lines
+removed first (the same removal `cleanTranscript` itself performs). Cleanup
+therefore can delete *only* allowlisted cue tokens; every other token is
+preserved in order — it never paraphrases, summarizes, or invents a word.
+Every step is pure regex/string manipulation (no model call), so cleanup is
+deterministic and idempotent by construction.
+
+`CASTRECALL_TRANSCRIPT_CLEANUP=false` disables the pass entirely: `transcript.txt`
+is then stored exactly as `normalizeTranscript` produced it, and
+`provenance.cleanup` is omitted (rather than written as a no-op), so "ran,
+no-op" (`applied: []`) is distinguishable from "never ran." `raw.<ext>` is
+never touched by cleanup either way, so the pre-cleanup text is always
+recoverable by re-normalizing it — `deriveSegmentsFromRaw`'s exact-match guard
+(issue #43) was extended to accept a match on `normalizeTranscript(raw).text`
+*or* `cleanTranscript(normalizeTranscript(raw).text).text`, so segment-timing
+recovery keeps working for both cleaned and pre-#45/disabled-cleanup
+episodes. `segments.json` itself is unaffected by cleanup — it's written from
+the ladder's raw segment objects, so corpus export's timestamped sections
+still quote raw (uncleaned) segment text even when the aggregate
+`transcript.txt` is cleaned; that divergence is intentional, not a bug.
 
 ## Future rungs / ideas (not in v0)
 

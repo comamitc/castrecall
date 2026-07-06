@@ -172,6 +172,17 @@ export type Provenance = {
      * Additive; pre-#41 sidecars simply lack it.
      */
     quality?: TranscriptQuality;
+    /**
+     * Deterministic cleanup pass provenance (issue #45): version and the named
+     * transform steps that actually changed the text. Present whenever cleanup
+     * ran, even with `applied: []` (ran, no-op) — omitted entirely when cleanup
+     * was disabled (`CASTRECALL_TRANSCRIPT_CLEANUP=0`), distinguishing "ran,
+     * no-op" from "never ran". Additive; pre-#45 sidecars simply lack it.
+     */
+    cleanup?: {
+        version: number;
+        applied: string[];
+    };
     fetchedAt: string;
     privacyClass: "private-source";
 };
@@ -323,11 +334,12 @@ export declare class Storage {
      * Recover segment timing for a transcript stored before the `segments.json`
      * sidecar existed (issue #43), by re-normalizing the still-present
      * `raw.<ext>` artifact — never by re-fetching. Only trusted when the
-     * freshly normalized text matches `expectedText` exactly, so a raw file
-     * that has drifted from the recorded transcript.txt can never contaminate
-     * export with mismatched timing. Returns `undefined` when there is no raw
-     * artifact, its format is unrecognized, it fails to parse, or its
-     * normalized text no longer matches.
+     * freshly normalized text matches `expectedText` exactly, OR the cleanup
+     * pass (issue #45) applied to that normalized text matches it — so a raw
+     * file that has drifted from the recorded transcript.txt can never
+     * contaminate export with mismatched timing, whether or not the stored
+     * text was cleaned. Returns `undefined` when there is no raw artifact, its
+     * format is unrecognized, it fails to parse, or neither form matches.
      */
     deriveSegmentsFromRaw(episodeUuid: string, expectedText: string): Promise<TranscriptSegment[] | undefined>;
     /**
