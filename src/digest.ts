@@ -220,10 +220,15 @@ export function buildDigest(options: {
   return { markdown: `${lines.filter((line) => line !== undefined).join("\n")}\n`, summary };
 }
 
-/** Blockquotes untrusted verbatim text line-by-line so an embedded newline can't break out of the quote. */
+/**
+ * Blockquotes untrusted verbatim text line-by-line so an embedded line
+ * break can't break out of the quote. Splits on every Markdown line
+ * ending — LF, CRLF, and lone CR — since a bare `\r` also starts a new
+ * logical line for Markdown renderers.
+ */
 function blockquote(text: string): string {
   return text
-    .split("\n")
+    .split(/\r\n?|\n/)
     .map((line) => `> ${line}`)
     .join("\n");
 }
