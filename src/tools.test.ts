@@ -743,6 +743,47 @@ describe("tools", () => {
       expect(episode.transcriptRetry).toBeUndefined();
       expect(episode.transcriptRecheck).toBeUndefined();
     });
+
+    it("preflight block takes precedence over a recheckable rung: no recheck state advances while the gate is down (issue #55 review 2)", async () => {
+      // Taddy is still transcribing (recheckable) AND the preflight gate
+      // blocked local Whisper. Recording the recheck backoff here would
+      // keep the episode deferred even after the operator fixes the
+      // transcription config — the reversible policy gate must win.
+      await seedReadyLowQualityEpisode();
+      const taddyPending = (async (input: unknown) => {
+        const url = String(input);
+        if (url === "https://api.taddy.org") {
+          return new Response(
+            JSON.stringify({
+              data: {
+                getPodcastEpisode: { uuid: "ep-1", transcript: null, taddyTranscribeStatus: "PROCESSING" },
+              },
+            }),
+            { status: 200 },
+          );
+        }
+        if (url.endsWith("ep1.mp3")) return new Response("fake audio bytes", { status: 200 });
+        return new Response("nope", { status: 404 });
+      }) as typeof fetch;
+
+      const result = (await fetchTranscript(
+        config({
+          CASTRECALL_LOCAL_WHISPER_PRESET: "fast",
+          TADDY_API_KEY: "key",
+          TADDY_USER_ID: "user",
+        }),
+        { episodeUuid: "ep-1", scheduled: true, skipLocalWhisper: true },
+        { fetchImpl: taddyPending, env: { PATH: binDir } },
+      )) as any;
+
+      expect(result.status).toBe("preflight-blocked");
+      const state = await new Storage(dir).loadState();
+      const episode = state.episodes["ep-1"];
+      expect(episode.transcriptStatus).toBe("none");
+      expect(episode.transcriptRecheck).toBeUndefined();
+      expect(episode.transcriptRetry).toBeUndefined();
+      expect(episode.transcriptError).toBeUndefined();
+    });
   });
 
   describe("transcriptionPreflight (issue #55)", () => {

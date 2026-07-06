@@ -511,7 +511,20 @@ export async function fetchTranscript(
     let retry: ListenRecord["transcriptRetry"];
     let recheck: ListenRecord["transcriptRecheck"];
     let preflightDeferred = false;
-    if (retryable && !sttExhausted) {
+    if (preflightBlocked) {
+      // The corpus-scale preflight (issue #55) blocked a transcription tier
+      // for this run — a reversible policy gate, not evidence about the
+      // episode. It takes precedence over EVERY state transition below:
+      // advancing retry/recheck/failure metadata here would let a
+      // quality-gate block masquerade as a source failure and keep the
+      // episode deferred (or terminally failed) even after the operator
+      // fixes the config (CASTRECALL_LOCAL_WHISPER_PRESET or
+      // CASTRECALL_WHISPER_ALLOW_LOW_QUALITY). No storage write at all:
+      // transcriptStatus stays "none" and any persisted retry/recheck
+      // state is left exactly as it was, so the episode is immediately
+      // eligible the moment the gate lifts.
+      preflightDeferred = true;
+    } else if (retryable && !sttExhausted) {
       const delay = Math.min(BACKOFF_BASE_MS * 2 ** (consecutiveFailures - 1), BACKOFF_CAP_MS);
       retry = {
         consecutiveFailures,
@@ -567,16 +580,6 @@ export async function fetchTranscript(
           now,
         );
       }
-    } else if (preflightBlocked && !sttExhausted) {
-      // The corpus-scale preflight (issue #55) blocked local Whisper for this
-      // run only — a reversible policy gate, not evidence the episode is
-      // untranscribable. Never advance retry/failure state here: doing so
-      // would make a quality-gate block behave like a source failure, and the
-      // episode would stay stuck (deferred by backoff, or no longer selected)
-      // even after the operator fixes the config (CASTRECALL_LOCAL_WHISPER_PRESET
-      // or CASTRECALL_WHISPER_ALLOW_LOW_QUALITY). Leaving transcriptStatus
-      // "none" untouched keeps the episode immediately eligible next run.
-      preflightDeferred = true;
     } else {
       await storage.updateEpisode(
         record.uuid,
