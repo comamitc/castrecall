@@ -105,7 +105,8 @@ on top of them instead of churning those files twice. Order (dependency-driven):
 worker implements it; #63's setup/status endpoint checks validate it (built on
 #55's finished preflight); #64 documents the full provider model last.
 
-- [ ] #61 generic remote STT provider contract → then #62 WhisperX reference worker → release v0.17.0
+- [x] #61 generic remote STT provider contract — PR #84 squash-merged, issue closed. ELEVEN review rounds (ties #46 for hardest): health probe wired into castrecall_setup per contract; retryable poll timeouts; disk-spooled uploads (no full-episode buffering); async-job resume by persisted job_id (no duplicate GPU work) keyed by full request config; only explicit unknown-job 404/410 triggers fresh submit; ambiguous 401/403 keeps the handle with a bounded (3) failure counter that resets on authenticated progress; PollDeadlineError moved beside its parent (circular-import class-extends crashed plugin load); remote-stt restored to the SOURCE config schema enum (manifest regen had exposed hand-edit drift). 750 tests green.
+- [ ] #62 WhisperX reference worker → release v0.17.0
 - [ ] #63 remote-endpoint setup/status checks → then #64 remote/self-hosted STT docs → release v0.18.0
 
 > HANDOFF 2026-07-06: goal ended on the original machine after v0.5.0. #9's pipeline run was stopped at worktree setup (no work produced) and the issue reset to `pipeline:ready`; its local worktree/branch were removed. Resumed from #9 on the new machine 2026-07-06.
