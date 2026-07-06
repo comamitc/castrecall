@@ -42,6 +42,16 @@ describe("detectRepetitionLoop", () => {
       expect(result.coverage).toBeGreaterThanOrEqual(DEFAULT_LOOP_THRESHOLDS.COVERAGE_THRESHOLD);
     });
 
+    it("flags a repeated 12+ word sentence (loop longer than the old WINDOW_MAX)", () => {
+      const sentence =
+        "thank you so much for listening to this episode and please subscribe";
+      const text = repeatPhrase(sentence, 6);
+      const result = detectRepetitionLoop(text);
+      expect(result.looped).toBe(true);
+      expect(result.phrase).toBe(sentence);
+      expect(result.repetitions).toBe(6);
+    });
+
     it("flags a loop across whitespace/punctuation/case variants of the same phrase", () => {
       const prefix = "in this episode we cover several interesting topics related to technology";
       const variants = ["Thank you.", "thank you…", "Thank you", "THANK YOU!"];

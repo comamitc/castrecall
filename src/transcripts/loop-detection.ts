@@ -41,7 +41,7 @@ export type LoopThresholds = Partial<{
 export const DEFAULT_LOOP_THRESHOLDS = {
   MIN_TOKENS: 60,
   WORD_RUN_THRESHOLD: 20,
-  WINDOW_MAX: 10,
+  WINDOW_MAX: 40,
   MIN_REPEATS: 6,
   MIN_LOOP_TOKENS: 30,
   COVERAGE_THRESHOLD: 0.35,
