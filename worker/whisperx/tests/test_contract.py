@@ -5,14 +5,16 @@ job lifecycle, option-forwarding, and backpressure in isolation from the
 filesystem/network staging path (covered separately in test_cleanup.py).
 """
 
+import asyncio
 import threading
+import time
 
 import app as app_module
 from conftest import wait_for_status
 
 
-async def _fake_stage_audio(audio_url, audio_bytes, filename):
-    return "/tmp/fake-staged-audio.mp3"
+async def _fake_stage_audio(audio_url, staged_path):
+    return staged_path or "/tmp/fake-staged-audio.mp3"
 
 
 def _patch_stage_audio(monkeypatch):
@@ -47,6 +49,15 @@ def test_health_with_correct_token(client, auth_headers):
     body = response.json()
     assert body["implementation"] == "whisperx"
     assert "model" in body
+
+
+def test_health_reports_503_when_not_ready(client, auth_headers, monkeypatch):
+    monkeypatch.setattr(
+        app_module, "whisperx_check_readiness", lambda model, compute_type: (False, "CUDA is not available")
+    )
+    response = client.get("/health", headers=auth_headers)
+    assert response.status_code == 503
+    assert "CUDA is not available" in response.json()["detail"]
 
 
 def test_health_with_wrong_token_is_401_and_leaks_nothing(client):
@@ -317,5 +328,87 @@ def test_backpressure_returns_429_past_max_queued_jobs(monkeypatch):
 
         second = blocked_client.post("/transcribe", headers=headers, json={"audio_url": "https://example.com/b.mp3"})
         assert second.status_code == 429
+
+
+def test_url_downloads_are_bounded_by_max_active_not_max_queued(monkeypatch):
+    """MAX_QUEUED_JOBS lets several jobs queue at once, but downloading the
+    audio is staging work that should only run while `store.semaphore` (the
+    MAX_ACTIVE_JOBS gate) is held -- otherwise every queued podcast URL
+    downloads concurrently regardless of how many can actually transcribe.
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("WORKER_TOKEN", "staging-token")
+    monkeypatch.setenv("MAX_QUEUED_JOBS", "3")
+    monkeypatch.setenv("MAX_ACTIVE_JOBS", "1")
+    headers = {"authorization": "Bearer staging-token"}
+
+    release = threading.Event()
+    active_downloads = 0
+    peak_downloads = 0
+
+    class _SlowResponse:
+        status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b"fake-audio-bytes"
+
+    class _SlowStreamCtx:
+        async def __aenter__(self):
+            nonlocal active_downloads, peak_downloads
+            active_downloads += 1
+            peak_downloads = max(peak_downloads, active_downloads)
+            await asyncio.to_thread(release.wait, 5)
+            return _SlowResponse()
+
+        async def __aexit__(self, exc_type, exc, tb):
+            nonlocal active_downloads
+            active_downloads -= 1
+            return False
+
+    class _SlowAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url):
+            return _SlowStreamCtx()
+
+    with TestClient(app_module.app) as slow_client:
+        monkeypatch.setattr(app_module.httpx, "AsyncClient", _SlowAsyncClient)
+        monkeypatch.setattr(
+            app_module,
+            "whisperx_transcribe",
+            lambda path, opts, hf_token: {
+                "segments": [],
+                "model": "m",
+                "implementation": "whisperx",
+                "duration": 0,
+                "warnings": [],
+            },
+        )
+
+        job_ids = []
+        for i in range(3):
+            response = slow_client.post(
+                "/transcribe", headers=headers, json={"audio_url": f"https://example.com/{i}.mp3"}
+            )
+            assert response.status_code == 200
+            job_ids.append(response.json()["job_id"])
+
+        time.sleep(0.3)
+        assert peak_downloads == 1, "downloads must be serialized by MAX_ACTIVE_JOBS, not run at MAX_QUEUED_JOBS width"
+
+        release.set()
+        for job_id in job_ids:
+            wait_for_status(slow_client, job_id, headers, "completed")
 
         release.set()

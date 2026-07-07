@@ -27,6 +27,7 @@ def client(monkeypatch, token):
     monkeypatch.setenv("MAX_ACTIVE_JOBS", "1")
     monkeypatch.setenv("MAX_QUEUED_JOBS", "16")
     monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(app_module, "whisperx_check_readiness", lambda model, compute_type: (True, None))
     with TestClient(app_module.app) as test_client:
         yield test_client
 

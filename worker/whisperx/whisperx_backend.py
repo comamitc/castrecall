@@ -11,6 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Optional
 
+_ready_cache: set[tuple[str, str]] = set()
+
 
 @dataclass(frozen=True)
 class TranscribeOptions:
@@ -20,6 +22,36 @@ class TranscribeOptions:
     compute_type: str = "float16"
     timestamps: bool = True
     diarize: bool = False
+
+
+def check_readiness(model: str, compute_type: str) -> tuple[bool, Optional[str]]:
+    """Readiness probe backing `/health`: verifies CUDA is available and the
+    configured model actually loads, rather than only echoing config back.
+
+    A successful load is cached per `(model, compute_type)` — loading a
+    model like `large-v3` is a multi-GB operation, and `/health` is polled
+    repeatedly (CastRecall's setup/status checks), so re-loading it on every
+    poll would be prohibitively expensive. Failures are never cached, so a
+    transient issue (e.g. the model finishes downloading) is reflected on
+    the very next poll.
+    """
+    cache_key = (model, compute_type)
+    if cache_key in _ready_cache:
+        return True, None
+    try:
+        import torch  # type: ignore
+    except Exception as exc:
+        return False, f"torch is not importable: {exc}"
+    if not torch.cuda.is_available():
+        return False, "CUDA is not available"
+    try:
+        import whisperx  # type: ignore
+
+        whisperx.load_model(model, "cuda", compute_type=compute_type)
+    except Exception as exc:
+        return False, f"model {model!r} failed to load: {exc}"
+    _ready_cache.add(cache_key)
+    return True, None
 
 
 def transcribe(audio_path: str, opts: TranscribeOptions, hf_token: Optional[str]) -> dict:

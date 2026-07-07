@@ -7,7 +7,15 @@ import types
 
 import pytest
 
-from whisperx_backend import TranscribeOptions, transcribe
+import whisperx_backend
+from whisperx_backend import TranscribeOptions, check_readiness, transcribe
+
+
+@pytest.fixture(autouse=True)
+def _clear_readiness_cache():
+    whisperx_backend._ready_cache.clear()
+    yield
+    whisperx_backend._ready_cache.clear()
 
 
 class FakeModel:
@@ -104,3 +112,65 @@ def test_diarize_with_hf_token_assigns_speakers(monkeypatch):
     assert calls["diarize"] == 1
     assert result["warnings"] == []
     assert result["segments"][0]["speaker"] == 0
+
+
+# --- check_readiness -----------------------------------------------------
+
+
+def _install_fake_torch(monkeypatch, *, cuda_available: bool):
+    fake_torch = types.ModuleType("torch")
+    fake_torch.cuda = types.SimpleNamespace(is_available=lambda: cuda_available)
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+
+
+def test_check_readiness_without_torch_reports_not_ready(monkeypatch):
+    # Real path, no mocking: proves the worker reports not-ready instead of
+    # a false "ok" when torch/whisperx aren't installed (this test's own
+    # environment, per requirements-test.txt) or CUDA isn't present.
+    monkeypatch.setitem(sys.modules, "torch", None)
+    ready, reason = check_readiness("large-v3", "float16")
+    assert ready is False
+    assert "torch" in reason
+
+
+def test_check_readiness_cuda_unavailable_reports_not_ready(monkeypatch):
+    _install_fake_torch(monkeypatch, cuda_available=False)
+    ready, reason = check_readiness("large-v3", "float16")
+    assert ready is False
+    assert "CUDA" in reason
+
+
+def test_check_readiness_model_load_failure_reports_reason(monkeypatch):
+    _install_fake_torch(monkeypatch, cuda_available=True)
+    fake_whisperx = types.ModuleType("whisperx")
+
+    def failing_load_model(model, device, compute_type=None):
+        raise RuntimeError("out of memory")
+
+    fake_whisperx.load_model = failing_load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+
+    ready, reason = check_readiness("large-v3", "float16")
+    assert ready is False
+    assert "out of memory" in reason
+
+
+def test_check_readiness_success_is_cached_per_model_and_compute_type(monkeypatch):
+    _install_fake_torch(monkeypatch, cuda_available=True)
+    fake_whisperx = types.ModuleType("whisperx")
+    calls = {"load_model": 0}
+
+    def load_model(model, device, compute_type=None):
+        calls["load_model"] += 1
+        return object()
+
+    fake_whisperx.load_model = load_model
+    monkeypatch.setitem(sys.modules, "whisperx", fake_whisperx)
+
+    assert check_readiness("large-v3", "float16") == (True, None)
+    assert check_readiness("large-v3", "float16") == (True, None)
+    assert calls["load_model"] == 1
+
+    # A different compute_type is a cache miss and loads again.
+    assert check_readiness("large-v3", "int8") == (True, None)
+    assert calls["load_model"] == 2

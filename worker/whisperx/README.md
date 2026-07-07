@@ -29,7 +29,7 @@ suffix**:
 
 | Canonical (CastRecall calls these) | Purpose |
 | --- | --- |
-| `GET  {base}/health` | readiness probe |
+| `GET  {base}/health` | readiness probe: `200` only once CUDA is available and the configured model loads; `503` otherwise |
 | `POST {base}/transcribe` | submit |
 | `GET  {base}/jobs/{job_id}` | poll status; `result` field once completed |
 
@@ -171,6 +171,13 @@ default (`MAX_ACTIVE_JOBS=1`). Jobs queued or processing beyond
 `remote-stt` provider already classifies `429` as retryable
 (`isRetryableHttpStatus` in `src/transcripts/stt.ts`), so a busy worker
 naturally defers the episode instead of failing it.
+
+`MAX_QUEUED_JOBS` only bounds how many jobs may be *waiting*; downloading a
+job's `audio_url` is deferred until `MAX_ACTIVE_JOBS` actually admits it, so
+at most `MAX_ACTIVE_JOBS` audio downloads ever run concurrently — not up to
+`MAX_QUEUED_JOBS` of them. A multipart file upload is streamed straight to
+disk as it's received instead of buffered in memory, since the request
+body has to be consumed regardless of queue capacity.
 
 ## Running the tests without a GPU
 

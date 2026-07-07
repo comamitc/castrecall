@@ -15,8 +15,8 @@ from conftest import wait_for_status
 def _spy_stage_audio(monkeypatch, captured: list):
     real_stage_audio = app_module._stage_audio
 
-    async def spy(audio_url, audio_bytes, filename):
-        path = await real_stage_audio(audio_url, audio_bytes, filename)
+    async def spy(audio_url, staged_path):
+        path = await real_stage_audio(audio_url, staged_path)
         captured.append(path)
         return path
 
@@ -45,6 +45,43 @@ def test_temp_file_removed_after_success(client, auth_headers, monkeypatch):
 
     assert len(captured) == 1
     assert not pathlib.Path(captured[0]).exists()
+
+
+def test_multipart_upload_streamed_to_disk_matches_uploaded_bytes(client, auth_headers, monkeypatch):
+    """The upload is now streamed to a temp file in 1MB chunks (see
+    `_stream_upload_to_tempfile`) instead of read fully into memory first.
+    Uses a payload larger than one chunk to prove multi-chunk writes don't
+    corrupt or truncate the staged file.
+    """
+    captured_content: list = []
+    real_stage_audio = app_module._stage_audio
+
+    async def spy(audio_url, staged_path):
+        path = await real_stage_audio(audio_url, staged_path)
+        captured_content.append(pathlib.Path(path).read_bytes())
+        return path
+
+    monkeypatch.setattr(app_module, "_stage_audio", spy)
+    monkeypatch.setattr(
+        app_module,
+        "whisperx_transcribe",
+        lambda path, opts, hf_token: {
+            "segments": [],
+            "model": "m",
+            "implementation": "whisperx",
+            "duration": 0,
+            "warnings": [],
+        },
+    )
+
+    payload = b"x" * (1024 * 1024 + 12345)  # spans more than one 1MB read chunk
+    submitted = client.post(
+        "/transcribe", headers=auth_headers, files={"file": ("episode.mp3", payload, "audio/mpeg")}
+    )
+    job_id = submitted.json()["job_id"]
+    wait_for_status(client, job_id, auth_headers, "completed")
+
+    assert captured_content == [payload]
 
 
 def test_temp_file_removed_after_backend_exception(client, auth_headers, monkeypatch):
@@ -98,6 +135,30 @@ def test_temp_file_kept_when_delete_audio_false(monkeypatch):
             assert kept_path.exists()
         finally:
             kept_path.unlink(missing_ok=True)
+
+
+def test_multipart_upload_rejected_by_backpressure_leaves_no_temp_file(monkeypatch):
+    """A multipart upload is streamed to disk before the queue-full check
+    runs (the request body must be consumed either way). A 429 rejection
+    must still clean up that staged file instead of leaking it.
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("WORKER_TOKEN", "full-queue-token")
+    monkeypatch.setenv("MAX_QUEUED_JOBS", "0")
+    headers = {"authorization": "Bearer full-queue-token"}
+
+    tmp_dir = pathlib.Path(tempfile.gettempdir())
+    before = {p.name for p in tmp_dir.glob("whisperx-worker-*")}
+
+    with TestClient(app_module.app) as full_client:
+        response = full_client.post(
+            "/transcribe", headers=headers, files={"file": ("episode.mp3", b"fake bytes", "audio/mpeg")}
+        )
+        assert response.status_code == 429
+
+    after = {p.name for p in tmp_dir.glob("whisperx-worker-*")}
+    assert after == before
 
 
 def test_download_failure_marks_job_failed_and_leaves_no_temp_file(client, auth_headers, monkeypatch):

@@ -4,7 +4,7 @@ Implements the generic remote STT contract CastRecall's `remote-stt`
 provider actually speaks (`src/transcripts/remote-stt.ts`, mirrored in the
 root README's "Remote STT contract"):
 
-    GET  {base}/health              -> readiness probe, never a hard failure
+    GET  {base}/health              -> readiness probe: 200 once CUDA/model load, else 503
     POST {base}/transcribe          -> submit (JSON audio_url, or multipart file)
     GET  {base}/jobs/{job_id}       -> poll: queued -> processing -> completed | failed
 
@@ -39,6 +39,7 @@ from fastapi import FastAPI, HTTPException, Request
 
 from config import Settings, load_settings
 from whisperx_backend import TranscribeOptions
+from whisperx_backend import check_readiness as whisperx_check_readiness
 from whisperx_backend import transcribe as whisperx_transcribe
 
 DOWNLOAD_TIMEOUT_SECONDS = 60.0 * 30  # long-form podcast episodes can take a while to fetch
@@ -114,8 +115,14 @@ def _coerce_int(raw: Any, default: int) -> int:
     return int(raw)
 
 
-async def _parse_transcribe_request(request: Request) -> tuple[dict[str, Any], Optional[bytes], Optional[str]]:
-    """Returns (fields, uploaded_bytes, uploaded_filename)."""
+async def _parse_transcribe_request(request: Request) -> tuple[dict[str, Any], Optional[str], Optional[str]]:
+    """Returns (fields, staged_path, uploaded_filename).
+
+    Multipart uploads are streamed straight to a temp file in chunks here
+    rather than read fully into memory as `bytes` — podcast episodes can be
+    hundreds of MB, and buffering a whole episode in RAM while its job sits
+    in the queue defeats the queue's own backpressure.
+    """
     content_type = request.headers.get("content-type", "")
     if content_type.startswith("multipart/form-data"):
         form = await request.form()
@@ -130,22 +137,39 @@ async def _parse_transcribe_request(request: Request) -> tuple[dict[str, Any], O
             "diarize": form.get("diarize"),
         }
         if upload is not None and hasattr(upload, "read"):
-            return fields, await upload.read(), getattr(upload, "filename", None)
+            filename = getattr(upload, "filename", None)
+            path = await _stream_upload_to_tempfile(upload, filename)
+            return fields, path, filename
         return fields, None, None
     body = await request.json() if await request.body() else {}
     return body, None, None
 
 
+async def _stream_upload_to_tempfile(upload: Any, filename: Optional[str]) -> str:
+    suffix = Path(filename or "").suffix or ".mp3"
+    fd, path = tempfile.mkstemp(prefix="whisperx-worker-", suffix=suffix)
+    try:
+        with open(fd, "wb") as f:
+            while chunk := await upload.read(1024 * 1024):
+                f.write(chunk)
+        return path
+    except Exception:
+        Path(path).unlink(missing_ok=True)
+        raise
+
+
 async def _submit_transcribe(request: Request) -> dict[str, str]:
     settings = get_settings(request)
     store = get_store(request)
-    fields, audio_bytes, filename = await _parse_transcribe_request(request)
+    fields, staged_path, filename = await _parse_transcribe_request(request)
     audio_url = fields.get("audio_url") or None
 
-    if not audio_url and audio_bytes is None:
+    if not audio_url and staged_path is None:
         raise HTTPException(status_code=400, detail="audio_url or an uploaded file is required")
 
     if store.active_count() >= store.max_queued:
+        if staged_path:
+            Path(staged_path).unlink(missing_ok=True)
         raise HTTPException(status_code=429, detail="worker queue is full; try again later")
 
     opts = TranscribeOptions(
@@ -160,24 +184,29 @@ async def _submit_transcribe(request: Request) -> dict[str, str]:
     job_id = str(uuid.uuid4())
     store.jobs[job_id] = {"status": "queued", "result": None, "error": None}
     asyncio.create_task(
-        _run_job(job_id, audio_url=audio_url, audio_bytes=audio_bytes, filename=filename, opts=opts, settings=settings, store=store)
+        _run_job(job_id, audio_url=audio_url, staged_path=staged_path, opts=opts, settings=settings, store=store)
     )
     return {"job_id": job_id, "status": "queued"}
 
 
-async def _stage_audio(audio_url: Optional[str], audio_bytes: Optional[bytes], filename: Optional[str]) -> str:
-    suffix = Path((filename or (audio_url or "")).split("?")[0]).suffix or ".mp3"
+async def _stage_audio(audio_url: Optional[str], staged_path: Optional[str]) -> str:
+    """Returns the local path to transcribe. An already-staged upload is
+    returned as-is; an `audio_url` is downloaded here instead — called only
+    once `store.semaphore` is held (see `_run_job`), so at most
+    `MAX_ACTIVE_JOBS` downloads ever run concurrently instead of up to
+    `MAX_QUEUED_JOBS`.
+    """
+    if staged_path is not None:
+        return staged_path
+    suffix = Path(audio_url.split("?")[0]).suffix or ".mp3"
     fd, path = tempfile.mkstemp(prefix="whisperx-worker-", suffix=suffix)
     try:
         with open(fd, "wb") as f:
-            if audio_bytes is not None:
-                f.write(audio_bytes)
-            else:
-                async with httpx.AsyncClient(follow_redirects=True, timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
-                    async with client.stream("GET", audio_url) as response:
-                        response.raise_for_status()
-                        async for chunk in response.aiter_bytes():
-                            f.write(chunk)
+            async with httpx.AsyncClient(follow_redirects=True, timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
+                async with client.stream("GET", audio_url) as response:
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes():
+                        f.write(chunk)
         return path
     except Exception:
         Path(path).unlink(missing_ok=True)
@@ -188,8 +217,7 @@ async def _run_job(
     job_id: str,
     *,
     audio_url: Optional[str],
-    audio_bytes: Optional[bytes],
-    filename: Optional[str],
+    staged_path: Optional[str],
     opts: TranscribeOptions,
     settings: Settings,
     store: JobStore,
@@ -197,8 +225,8 @@ async def _run_job(
     store.jobs[job_id]["status"] = "processing"
     audio_path: Optional[str] = None
     try:
-        audio_path = await _stage_audio(audio_url, audio_bytes, filename)
         async with store.semaphore:
+            audio_path = await _stage_audio(audio_url, staged_path)
             raw = await asyncio.to_thread(whisperx_transcribe, audio_path, opts, settings.hf_token)
         store.jobs[job_id]["status"] = "completed"
         store.jobs[job_id]["result"] = _normalize_result(raw)
@@ -237,6 +265,9 @@ def _normalize_result(raw: dict[str, Any]) -> dict[str, Any]:
 @app.get("/health")
 async def health(request: Request):
     settings = get_settings(request)
+    ready, reason = await asyncio.to_thread(whisperx_check_readiness, settings.model, settings.compute_type)
+    if not ready:
+        return _json_error(503, f"not ready: {reason}")
     return {"status": "ok", "implementation": "whisperx", "model": settings.model}
 
 
