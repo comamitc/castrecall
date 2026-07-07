@@ -115,6 +115,9 @@ type RawHealthBody = {
 };
 
 const ACCEPTS_VALUES = new Set(["audio_url", "upload", "both"]);
+const HEALTH_STATUS_VALUES = new Set(["ok", "degraded"]);
+/** Bounded so a host that accepts the connection but never answers can't hang a scheduled run (issue #63 review). */
+const HEALTH_TIMEOUT_MS = 10_000;
 
 /** `undefined` (not present/valid) unless the raw value is a real boolean — never coerced from truthy/falsy. */
 function optionalBool(value: unknown): boolean | undefined {
@@ -134,6 +137,9 @@ function malformedHealthShapeReason(body: unknown): string | undefined {
   if (raw.status !== undefined && typeof raw.status !== "string") {
     return "health endpoint returned a malformed shape (`status` is not a string).";
   }
+  if (raw.status !== undefined && !HEALTH_STATUS_VALUES.has(raw.status)) {
+    return `health endpoint returned a malformed shape (\`status\` is not one of ok/degraded: "${raw.status}").`;
+  }
   if (raw.implementation !== undefined && typeof raw.implementation !== "string") {
     return "health endpoint returned a malformed shape (`implementation` is not a string).";
   }
@@ -146,11 +152,16 @@ function malformedHealthShapeReason(body: unknown): string | undefined {
   if (raw.model_ready !== undefined && typeof raw.model_ready !== "boolean") {
     return "health endpoint returned a malformed shape (`model_ready` is not a boolean).";
   }
-  if (
-    raw.capabilities !== undefined &&
-    (typeof raw.capabilities !== "object" || raw.capabilities === null || Array.isArray(raw.capabilities))
-  ) {
-    return "health endpoint returned a malformed shape (`capabilities` is not an object).";
+  if (raw.capabilities !== undefined) {
+    if (typeof raw.capabilities !== "object" || raw.capabilities === null || Array.isArray(raw.capabilities)) {
+      return "health endpoint returned a malformed shape (`capabilities` is not an object).";
+    }
+    if (raw.capabilities.diarization !== undefined && typeof raw.capabilities.diarization !== "boolean") {
+      return "health endpoint returned a malformed shape (`capabilities.diarization` is not a boolean).";
+    }
+    if (raw.capabilities.timestamps !== undefined && typeof raw.capabilities.timestamps !== "boolean") {
+      return "health endpoint returned a malformed shape (`capabilities.timestamps` is not a boolean).";
+    }
   }
   if (raw.accepts !== undefined && !ACCEPTS_VALUES.has(raw.accepts)) {
     return `health endpoint returned a malformed shape (\`accepts\` is not one of audio_url/upload/both: "${raw.accepts}").`;
@@ -164,13 +175,20 @@ function malformedHealthShapeReason(body: unknown): string | undefined {
  * `detectLocalWhisper`. Tri-state (issue #63): `unavailable` blocks a
  * corpus-scale run (see buildTranscriptionPreflight), `degraded` never does.
  */
-export async function remoteSttHealth(config: ResolvedConfig, fetchImpl: FetchLike = fetch): Promise<RemoteSttHealth> {
+export async function remoteSttHealth(
+  config: ResolvedConfig,
+  fetchImpl: FetchLike = fetch,
+  timeoutMs: number = HEALTH_TIMEOUT_MS,
+): Promise<RemoteSttHealth> {
   if (!config.stt.remoteBaseUrl) {
     return { state: "unavailable", reason: "CASTRECALL_REMOTE_STT_BASE_URL is not set." };
   }
   const base = trimmedBaseUrl(config.stt.remoteBaseUrl);
   try {
-    const response = await fetchImpl(`${base}/health`, { headers: authHeaders(config) });
+    const response = await fetchImpl(`${base}/health`, {
+      headers: authHeaders(config),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
     if (response.status === 401 || response.status === 403) {
       return {
         state: "unavailable",

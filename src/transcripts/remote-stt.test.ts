@@ -167,6 +167,20 @@ describe("remoteSttHealth", () => {
       const fetchImpl: FetchLike = (async () => new Response("boom", { status: 500 })) as FetchLike;
       expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("unavailable");
     });
+
+    it("is unavailable instead of hanging when the host accepts the connection but never answers (issue #63 review)", async () => {
+      // Simulates a stalled health endpoint: the fetch never settles on its own —
+      // only aborting the passed-through signal ever resolves it. Regression test
+      // for the missing health-probe deadline; a bounded `timeoutMs` is what lets
+      // this test (and a real scheduled pipeline run) complete instead of hanging.
+      const fetchImpl: FetchLike = ((_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("The operation was aborted.")));
+        })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl, 20);
+      expect(result.state).toBe("unavailable");
+      expect(result.reason).toContain("Remote STT health check failed");
+    });
   });
 
   describe("missing capability (issue #63)", () => {
@@ -261,6 +275,37 @@ describe("remoteSttHealth", () => {
     it("is degraded on a JSON array instead of an object", async () => {
       const fetchImpl: FetchLike = (async () => new Response(JSON.stringify([1, 2, 3]), { status: 200 })) as FetchLike;
       expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("degraded");
+    });
+
+    it("is degraded on JSON with a `status` value outside the ok/degraded enum (malformed shape)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "failed" }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("malformed shape");
+      expect(result.reason).toContain("status");
+    });
+
+    it("is degraded on JSON with a non-boolean `capabilities.diarization` (malformed shape)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", capabilities: { diarization: "yes" } }), {
+          status: 200,
+        })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("malformed shape");
+      expect(result.reason).toContain("capabilities.diarization");
+    });
+
+    it("is degraded on JSON with a non-boolean `capabilities.timestamps` (malformed shape)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", capabilities: { timestamps: 1 } }), {
+          status: 200,
+        })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("malformed shape");
+      expect(result.reason).toContain("capabilities.timestamps");
     });
 
     it("still returns ready on an empty 200 body (unaffected by shape validation)", async () => {
