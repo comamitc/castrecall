@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.18.0 — 2026-07-07
+
+The remote STT track — and the roadmap — completes: endpoint validation in
+setup, and the provider model documented end to end.
+
+- **Remote-endpoint setup/status checks** (#63, PR #87): remote STT
+  endpoints are now validated with the same rigor as local Whisper and
+  cloud providers — reachability, auth, reported implementation/model, and
+  contract-shape checks surface in `castrecall_setup` and
+  `castrecall_setup_status` before a corpus run ever depends on the
+  service, with clear per-failure reasons (unreachable host, rejected
+  token, unsupported response shape).
+- **Remote/self-hosted STT docs** (#64, PR #88): README and setup docs now
+  frame the full provider model — built-in cloud providers, local Whisper,
+  and self-hosted remote STT as a supported advanced tier with WhisperX as
+  the reference worker — so a GPU deployment reads as a documented path,
+  not bespoke infrastructure.
+
 ## v0.17.0 — 2026-07-07
 
 Self-hosted transcription becomes a first-class provider: a generic
