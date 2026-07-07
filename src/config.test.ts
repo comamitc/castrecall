@@ -80,6 +80,14 @@ describe("resolveConfig", () => {
     expect(config.stt.remoteForceUpload).toBe(false);
     expect(config.stt.remoteBaseUrl).toBeUndefined();
     expect(config.stt.remoteToken).toBeUndefined();
+    expect(config.stt.remoteAllowUnverified).toBe(false);
+  });
+
+  it("resolves remoteAllowUnverified from CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED (issue #63)", () => {
+    expect(
+      resolveConfig({}, { CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED: "true" }).stt.remoteAllowUnverified,
+    ).toBe(true);
+    expect(resolveConfig({}, {}).stt.remoteAllowUnverified).toBe(false);
   });
 
   it("uses plugin settings when env is empty", () => {

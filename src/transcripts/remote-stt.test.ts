@@ -69,46 +69,305 @@ describe("sttAvailability for remote-stt", () => {
 });
 
 describe("remoteSttHealth", () => {
-  it("returns ok with reported implementation/model on a 200", async () => {
+  it("returns ready with reported implementation/model on a 200", async () => {
     const fetchImpl: FetchLike = (async () =>
       new Response(JSON.stringify({ status: "ok", implementation: "whisperx", model: "large-v3" }), {
         status: 200,
       })) as FetchLike;
     const result = await remoteSttHealth(config(), fetchImpl);
-    expect(result.ok).toBe(true);
+    expect(result.state).toBe("ready");
     expect(result.implementation).toBe("whisperx");
     expect(result.model).toBe("large-v3");
   });
 
-  it("returns ok on a 200 with no body at all", async () => {
-    const fetchImpl: FetchLike = (async () => new Response("", { status: 200 })) as FetchLike;
+  it("surfaces version, model readiness, capabilities, and accepts on a full ready body (issue #63)", async () => {
+    const fetchImpl: FetchLike = (async () =>
+      new Response(
+        JSON.stringify({
+          status: "ok",
+          implementation: "whisperx",
+          version: "1.2.3",
+          model: "large-v3",
+          model_ready: true,
+          capabilities: { diarization: true, timestamps: true },
+          accepts: "both",
+        }),
+        { status: 200 },
+      )) as FetchLike;
     const result = await remoteSttHealth(config(), fetchImpl);
-    expect(result.ok).toBe(true);
+    expect(result.state).toBe("ready");
+    expect(result.version).toBe("1.2.3");
+    expect(result.modelReady).toBe(true);
+    expect(result.capabilities).toEqual({ diarization: true, timestamps: true });
+    expect(result.accepts).toBe("both");
   });
 
-  it("never throws: returns ok:false on a non-2xx response", async () => {
+  it("returns ready on a 200 with no body at all", async () => {
+    const fetchImpl: FetchLike = (async () => new Response("", { status: 200 })) as FetchLike;
+    const result = await remoteSttHealth(config(), fetchImpl);
+    expect(result.state).toBe("ready");
+  });
+
+  it("never throws: returns unavailable on a non-2xx, non-auth response", async () => {
     const fetchImpl: FetchLike = (async () => new Response("down", { status: 503 })) as FetchLike;
     const result = await remoteSttHealth(config(), fetchImpl);
-    expect(result.ok).toBe(false);
+    expect(result.state).toBe("unavailable");
     expect(result.reason).toContain("503");
   });
 
-  it("never throws: returns ok:false on a rejected fetch", async () => {
+  it("never throws: returns unavailable on a rejected fetch", async () => {
     const fetchImpl: FetchLike = (async () => {
       throw new Error("ECONNREFUSED");
     }) as FetchLike;
     const result = await remoteSttHealth(config(), fetchImpl);
-    expect(result.ok).toBe(false);
+    expect(result.state).toBe("unavailable");
     expect(result.reason).toContain("ECONNREFUSED");
   });
 
-  it("returns ok:false when no base URL is configured", async () => {
+  it("returns unavailable when no base URL is configured", async () => {
     const result = await remoteSttHealth(
       resolveConfig({}, { CASTRECALL_STT_PROVIDER: "remote-stt" }),
       (async () => new Response("", { status: 200 })) as FetchLike,
     );
-    expect(result.ok).toBe(false);
+    expect(result.state).toBe("unavailable");
     expect(result.reason).toContain("CASTRECALL_REMOTE_STT_BASE_URL");
+  });
+
+  describe("auth rejected vs auth required (issue #63)", () => {
+    it("reports 'provider rejected the token' when a token IS configured and the provider 401s", async () => {
+      const fetchImpl: FetchLike = (async () => new Response("nope", { status: 401 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("unavailable");
+      expect(result.reason).toContain("rejected");
+      expect(result.reason).toContain("CASTRECALL_REMOTE_STT_TOKEN");
+      expect(result.reason).not.toContain(TOKEN);
+    });
+
+    it("reports 'requires auth but token is not set' when no token is configured and the provider 403s", async () => {
+      const fetchImpl: FetchLike = (async () => new Response("nope", { status: 403 })) as FetchLike;
+      const result = await remoteSttHealth(
+        resolveConfig({}, { CASTRECALL_STT_PROVIDER: "remote-stt", CASTRECALL_REMOTE_STT_BASE_URL: BASE_URL }),
+        fetchImpl,
+      );
+      expect(result.state).toBe("unavailable");
+      expect(result.reason).toContain("requires auth");
+      expect(result.reason).toContain("CASTRECALL_REMOTE_STT_TOKEN");
+    });
+  });
+
+  describe("unreachable (issue #63)", () => {
+    it("is unavailable on a rejected fetch (network failure)", async () => {
+      const fetchImpl: FetchLike = (async () => {
+        throw new Error("ECONNREFUSED");
+      }) as FetchLike;
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("unavailable");
+    });
+
+    it("is unavailable on a non-401/403 5xx", async () => {
+      const fetchImpl: FetchLike = (async () => new Response("boom", { status: 500 })) as FetchLike;
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("unavailable");
+    });
+
+    it("is unavailable instead of hanging when the host accepts the connection but never answers (issue #63 review)", async () => {
+      // Simulates a stalled health endpoint: the fetch never settles on its own —
+      // only aborting the passed-through signal ever resolves it. Regression test
+      // for the missing health-probe deadline; a bounded `timeoutMs` is what lets
+      // this test (and a real scheduled pipeline run) complete instead of hanging.
+      const fetchImpl: FetchLike = ((_url: string, init?: RequestInit) =>
+        new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(new Error("The operation was aborted.")));
+        })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl, 20);
+      expect(result.state).toBe("unavailable");
+      expect(result.reason).toContain("Remote STT health check failed");
+    });
+  });
+
+  describe("missing capability (issue #63)", () => {
+    it("is degraded when model_ready is false", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", model_ready: false }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("model is not ready");
+    });
+
+    it("is degraded when the provider reports status: degraded", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "degraded" }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("degraded");
+    });
+
+    it("is degraded when configured for upload but the provider only accepts audio_url", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", accepts: "audio_url" }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config({ CASTRECALL_REMOTE_STT_UPLOAD: "true" }), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("upload");
+      expect(result.reason).toContain("audio_url");
+    });
+
+    it("is degraded when configured for audio_url but the provider only accepts upload", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", accepts: "upload" }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+    });
+
+    it("is ready when accepts is 'both', regardless of configured submit mode", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", accepts: "both" }), { status: 200 })) as FetchLike;
+      expect((await remoteSttHealth(config({ CASTRECALL_REMOTE_STT_UPLOAD: "true" }), fetchImpl)).state).toBe(
+        "ready",
+      );
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("ready");
+    });
+
+    it("is ready when accepts matches the configured submit mode", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", accepts: "audio_url" }), { status: 200 })) as FetchLike;
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("ready");
+    });
+
+    it("is ready (unknown) when accepts is absent entirely", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok" }), { status: 200 })) as FetchLike;
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("ready");
+    });
+  });
+
+  describe("malformed health body (issue #63)", () => {
+    it("is degraded on a non-empty, non-JSON 200 body (malformed text)", async () => {
+      const fetchImpl: FetchLike = (async () => new Response("<html>not json</html>", { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("non-JSON");
+    });
+
+    it("is degraded on JSON with an invalid `accepts` enum value (malformed shape)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", accepts: "carrier-pigeon" }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("malformed shape");
+      expect(result.reason).toContain("accepts");
+    });
+
+    it("is degraded on JSON with a non-object `capabilities` (malformed shape)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", capabilities: "diarization,timestamps" }), {
+          status: 200,
+        })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("malformed shape");
+      expect(result.reason).toContain("capabilities");
+    });
+
+    it("is degraded on JSON with a non-string `model`", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", model: 42 }), { status: 200 })) as FetchLike;
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("degraded");
+    });
+
+    it("is degraded on a JSON array instead of an object", async () => {
+      const fetchImpl: FetchLike = (async () => new Response(JSON.stringify([1, 2, 3]), { status: 200 })) as FetchLike;
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("degraded");
+    });
+
+    it("is degraded on JSON with a `status` value outside the ok/degraded enum (malformed shape)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "failed" }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("malformed shape");
+      expect(result.reason).toContain("status");
+    });
+
+    it("is degraded on JSON with a non-boolean `capabilities.diarization` (malformed shape)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", capabilities: { diarization: "yes" } }), {
+          status: 200,
+        })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("malformed shape");
+      expect(result.reason).toContain("capabilities.diarization");
+    });
+
+    it("is degraded on JSON with a non-boolean `capabilities.timestamps` (malformed shape)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", capabilities: { timestamps: 1 } }), {
+          status: 200,
+        })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).toContain("malformed shape");
+      expect(result.reason).toContain("capabilities.timestamps");
+    });
+
+    it("still returns ready on an empty 200 body (unaffected by shape validation)", async () => {
+      const fetchImpl: FetchLike = (async () => new Response("   ", { status: 200 })) as FetchLike;
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("ready");
+    });
+
+    it("is ready on an empty JSON object body (capabilities unknown)", async () => {
+      const fetchImpl: FetchLike = (async () => new Response(JSON.stringify({}), { status: 200 })) as FetchLike;
+      expect((await remoteSttHealth(config(), fetchImpl)).state).toBe("ready");
+    });
+  });
+
+  it("never serializes the bearer token in the reason, even on a 401 with the token set", async () => {
+    const fetchImpl: FetchLike = (async () => new Response("nope", { status: 401 })) as FetchLike;
+    const result = await remoteSttHealth(config(), fetchImpl);
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
+  describe("token redaction (issue #63 review)", () => {
+    it("redacts the configured token if a hostile/misconfigured host echoes it into implementation/version/model", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(
+          JSON.stringify({
+            status: "ok",
+            implementation: `whisperx Authorization: Bearer ${TOKEN}`,
+            version: TOKEN,
+            model: `large-v3-${TOKEN}`,
+          }),
+          { status: 200 },
+        )) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(JSON.stringify(result)).not.toContain(TOKEN);
+      expect(result.implementation).toContain("[redacted]");
+      expect(result.version).toBe("[redacted]");
+      expect(result.model).toBe(`large-v3-[redacted]`);
+    });
+
+    it("redacts the token if it is echoed into the malformed-shape `status`/`accepts` reason text", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: TOKEN }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).not.toContain(TOKEN);
+      expect(result.reason).toContain("[redacted]");
+    });
+
+    it("does nothing when no token is configured (nothing to redact)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", model: "large-v3" }), { status: 200 })) as FetchLike;
+      const noTokenConfig = resolveConfig(
+        {},
+        {
+          CASTRECALL_ENABLE_STT: "true",
+          CASTRECALL_STT_PROVIDER: "remote-stt",
+          CASTRECALL_REMOTE_STT_BASE_URL: BASE_URL,
+          CASTRECALL_DATA_DIR: DATA_DIR,
+        },
+      );
+      const result = await remoteSttHealth(noTokenConfig, fetchImpl);
+      expect(result.model).toBe("large-v3");
+    });
   });
 });
 

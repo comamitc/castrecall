@@ -98,6 +98,7 @@ export function resolveConfig(settings = {}, env = process.env) {
             remoteToken: nonEmpty(env.CASTRECALL_REMOTE_STT_TOKEN),
             remoteModel: nonEmpty(env.CASTRECALL_REMOTE_STT_MODEL),
             remoteForceUpload: envFlag(env.CASTRECALL_REMOTE_STT_UPLOAD) ?? false,
+            remoteAllowUnverified: envFlag(env.CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED) ?? false,
         },
         secrets: {
             keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,

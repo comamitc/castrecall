@@ -293,25 +293,69 @@ describe("buildSetupPlan", () => {
     expect(on.explanation).toContain("remote-stt");
   });
 
-  it("downgrades the stt step to missing when the remote-stt health probe is not ready (issue #61 review)", () => {
+  it("downgrades the stt step to missing when the remote-stt health probe reports unavailable (issue #61 review)", () => {
     const cfg = config({
       CASTRECALL_ENABLE_STT: "true",
       CASTRECALL_STT_PROVIDER: "remote-stt",
       CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
     });
     const down = plan(cfg, {
-      remoteStt: { ok: false, reason: "Remote STT health check failed with HTTP 401." },
+      remoteStt: { state: "unavailable", reason: "Remote STT health check failed with HTTP 401." },
     }).find((s) => s.id === "providers.stt")!;
     expect(down.status).toBe("missing");
     expect(down.explanation).toContain("NOT ready");
     expect(down.explanation).toContain("HTTP 401");
 
     const healthy = plan(cfg, {
-      remoteStt: { ok: true, implementation: "whisperx", model: "large-v3" },
+      remoteStt: { state: "ready", implementation: "whisperx", model: "large-v3" },
     }).find((s) => s.id === "providers.stt")!;
     expect(healthy.status).toBe("configured");
     expect(healthy.explanation).toContain("remote service healthy");
     expect(healthy.explanation).toContain("whisperx");
+  });
+
+  it("keeps the stt step configured but caveated when the remote-stt health probe reports degraded (issue #63)", () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
+    });
+    const degraded = plan(cfg, {
+      remoteStt: {
+        state: "degraded",
+        reason: "Remote STT provider reports its model is not ready.",
+        implementation: "whisperx",
+        version: "1.2.3",
+      },
+    }).find((s) => s.id === "providers.stt")!;
+    expect(degraded.status).toBe("configured");
+    expect(degraded.caveat).toContain("model is not ready");
+    expect(degraded.explanation).toContain("degraded");
+    expect(degraded.explanation).toContain("whisperx");
+    expect(degraded.explanation).toContain("1.2.3");
+  });
+
+  it("surfaces version/capabilities/accepts in the ready explanation (issue #63)", () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
+    });
+    const ready = plan(cfg, {
+      remoteStt: {
+        state: "ready",
+        implementation: "whisperx",
+        version: "2.0.0",
+        model: "large-v3",
+        capabilities: { diarization: true, timestamps: true },
+        accepts: "both",
+      },
+    }).find((s) => s.id === "providers.stt")!;
+    expect(ready.explanation).toContain("2.0.0");
+    expect(ready.explanation).toContain("diarization");
+    expect(ready.explanation).toContain("timestamps");
+    expect(ready.explanation).toContain("accepts both");
+    expect(ready.envVars).toContain("CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED");
   });
 
   it("surfaces a detected gbrain inbox suggestion when export is unset", () => {

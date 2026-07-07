@@ -71,6 +71,30 @@ function keychainStoreRecipe(service, secretBackend) {
         : `security add-generic-password -U -s ${service} -a pocketcasts-email -w <email> ` +
             `&& security add-generic-password -U -s ${service} -a pocketcasts-password -w <password>`;
 }
+/** Human-readable explanation of the remote-stt tri-state for the setup plan and setup_status. */
+function remoteSttExplanation(config, remoteStt) {
+    const details = [
+        remoteStt.implementation
+            ? `${remoteStt.implementation}${remoteStt.version ? ` v${remoteStt.version}` : ""}`
+            : undefined,
+        remoteStt.model,
+        remoteStt.modelReady === false ? "model not ready" : undefined,
+        remoteStt.capabilities?.diarization ? "diarization" : undefined,
+        remoteStt.capabilities?.timestamps ? "timestamps" : undefined,
+        remoteStt.accepts ? `accepts ${remoteStt.accepts}` : undefined,
+    ].filter(Boolean);
+    const detailSuffix = details.length > 0 ? ` (${details.join(", ")})` : "";
+    if (remoteStt.state === "unavailable") {
+        return (`Enabled (${config.stt.provider}) but the remote service is NOT ready: ` +
+            `${remoteStt.reason ?? "health check failed."} Fix the service or ` +
+            "CASTRECALL_REMOTE_STT_BASE_URL/_TOKEN before running corpus-scale transcription.");
+    }
+    if (remoteStt.state === "degraded") {
+        return (`Enabled (${config.stt.provider}) — remote service reachable but degraded${detailSuffix}: ` +
+            `${remoteStt.reason ?? "see health check."}`);
+    }
+    return `Enabled (${config.stt.provider}) — remote service healthy${detailSuffix}.`;
+}
 export function buildSetupPlan(config, deps) {
     const credentialsConfigured = deps.credentials.configured;
     const taddyOk = taddyConfigured(config);
@@ -182,7 +206,7 @@ export function buildSetupPlan(config, deps) {
         {
             id: "providers.stt",
             title: "Cloud speech-to-text (optional, costs money)",
-            status: stt.ok && deps.remoteStt && !deps.remoteStt.ok
+            status: stt.ok && deps.remoteStt?.state === "unavailable"
                 ? "missing"
                 : stt.ok
                     ? "configured"
@@ -198,17 +222,16 @@ export function buildSetupPlan(config, deps) {
                 "CASTRECALL_REMOTE_STT_TOKEN",
                 "CASTRECALL_REMOTE_STT_MODEL",
                 "CASTRECALL_REMOTE_STT_UPLOAD",
+                "CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED",
             ],
             explanation: !stt.ok
                 ? (stt.reason ?? "Disabled.")
                 : deps.remoteStt
-                    ? deps.remoteStt.ok
-                        ? `Enabled (${config.stt.provider}) — remote service healthy` +
-                            `${deps.remoteStt.implementation ? ` (${deps.remoteStt.implementation}${deps.remoteStt.model ? `, ${deps.remoteStt.model}` : ""})` : ""}.`
-                        : `Enabled (${config.stt.provider}) but the remote service is NOT ready: ` +
-                            `${deps.remoteStt.reason ?? "health check failed."} Fix the service or ` +
-                            "CASTRECALL_REMOTE_STT_BASE_URL/_TOKEN before running corpus-scale transcription."
+                    ? remoteSttExplanation(config, deps.remoteStt)
                     : `Enabled (${config.stt.provider}).`,
+            ...(stt.ok && deps.remoteStt?.state === "degraded"
+                ? { caveat: deps.remoteStt.reason ?? "Remote STT service reported a degraded health check." }
+                : {}),
         },
         {
             id: "export",

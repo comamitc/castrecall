@@ -70,6 +70,10 @@ export async function runTranscriptLadder(
      * this run and STT would otherwise run as the very next rung — never set for the unrelated
      * STT-retry-budget-exhausted skip, which uses its own detail message below. */
     skipSttPreflightBlocked?: boolean;
+    /** Which preflight gate is behind `skipSttPreflightBlocked`, so the skipped-rung detail names
+     * the actual reason (issue #63): the #55 low-quality-local gate, or the #63 remote-stt
+     * reachability gate. Defaults to the #55 message when unset, for callers predating #63. */
+    skipSttReason?: "low-quality-local" | "remote-unavailable";
     /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run. */
     skipLocalWhisper?: boolean;
   } = {},
@@ -308,10 +312,15 @@ export async function runTranscriptLadder(
       rung: "stt",
       outcome: "skipped",
       detail: options.skipSttPreflightBlocked
-        ? "Corpus-scale preflight blocked low-quality local transcription for this run, and paid " +
-          "cloud STT would otherwise run as the next rung (castrecall_transcription_preflight). Run " +
-          "castrecall_fetch_transcript directly for this episode, or opt in for the whole run with " +
-          "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or CASTRECALL_LOCAL_WHISPER_PRESET=best."
+        ? options.skipSttReason === "remote-unavailable"
+          ? "Corpus-scale preflight blocked this run because the remote STT endpoint's health check " +
+            "reports unavailable (castrecall_transcription_preflight). Run castrecall_fetch_transcript " +
+            "directly for this episode, fix the endpoint, or opt in for the whole run with " +
+            "CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED=true."
+          : "Corpus-scale preflight blocked low-quality local transcription for this run, and paid " +
+            "cloud STT would otherwise run as the next rung (castrecall_transcription_preflight). Run " +
+            "castrecall_fetch_transcript directly for this episode, or opt in for the whole run with " +
+            "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or CASTRECALL_LOCAL_WHISPER_PRESET=best."
         : "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
       ...(options.skipSttPreflightBlocked ? { preflightBlocked: true } : {}),
     });

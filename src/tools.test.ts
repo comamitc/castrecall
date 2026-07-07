@@ -84,6 +84,7 @@ describe("tools", () => {
     })) as Record<string, any>;
     expect(healthy.transcriptLadder.stt).toContain("remote healthy");
     expect(healthy.transcriptLadder.stt).toContain("whisperx");
+    expect(healthy.remoteStt).toMatchObject({ state: "ready", implementation: "whisperx" });
     expect(JSON.stringify(healthy)).not.toContain("hunter2-token");
 
     const down = (await setupStatus(cfg, {
@@ -91,6 +92,32 @@ describe("tools", () => {
       fetchImpl: (async () => new Response("down", { status: 503 })) as typeof fetch,
     })) as Record<string, any>;
     expect(down.transcriptLadder.stt).toContain("remote NOT ready");
+    expect(down.remoteStt).toMatchObject({ state: "unavailable" });
+    expect(JSON.stringify(down)).not.toContain("hunter2-token");
+
+    const degraded = (await setupStatus(cfg, {
+      env: { PATH: "" },
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ status: "ok", model_ready: false }), { status: 200 })) as typeof fetch,
+    })) as Record<string, any>;
+    expect(degraded.transcriptLadder.stt).toContain("remote degraded");
+    expect(degraded.remoteStt).toMatchObject({ state: "degraded" });
+  });
+
+  it("setup_status reports 401 with the token set as an unavailable auth-rejected reason, and never leaks the token (issue #63)", async () => {
+    const cfg = config({
+      CASTRECALL_ENABLE_STT: "true",
+      CASTRECALL_STT_PROVIDER: "remote-stt",
+      CASTRECALL_REMOTE_STT_BASE_URL: "https://5090-box.internal.example.com",
+      CASTRECALL_REMOTE_STT_TOKEN: "hunter2-token",
+    });
+    const status = (await setupStatus(cfg, {
+      env: { PATH: "" },
+      fetchImpl: (async () => new Response("nope", { status: 401 })) as typeof fetch,
+    })) as Record<string, any>;
+    expect(status.remoteStt).toMatchObject({ state: "unavailable" });
+    expect(status.remoteStt.reason).toContain("rejected");
+    expect(JSON.stringify(status)).not.toContain("hunter2-token");
   });
 
   it("setup rejects a down or unauthorized remote-stt endpoint instead of reporting configured (issue #61 review)", async () => {
@@ -910,6 +937,96 @@ describe("tools", () => {
       const filesAfter = await fs.readdir(dir, { recursive: true } as any);
       expect(after).toBe(before);
       expect(filesAfter.sort()).toEqual(filesBefore.sort());
+    });
+  });
+
+  describe("transcriptionPreflight remote-stt reachability gate (issue #63)", () => {
+    async function seedPendingEpisodes(count: number) {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens(
+        Array.from({ length: count }, (_, i) => ({
+          uuid: `ep-${i}`,
+          title: `Episode ${i}`,
+          url: `https://cdn.example.com/ep${i}.mp3`,
+          podcastUuid: "pod-1",
+          podcastTitle: "Show",
+        })),
+      );
+    }
+
+    function remoteConfig(env: NodeJS.ProcessEnv = {}) {
+      return config({
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "remote-stt",
+        CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
+        ...env,
+      });
+    }
+
+    it("probes the endpoint live — no injected fact — and reports remoteSttBlocked when unreachable at corpus scale", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const fetchImpl = vi.fn(async () => new Response("down", { status: 503 }));
+      const result = await transcriptionPreflight(remoteConfig(), {
+        env: { PATH: "" },
+        fetchImpl: fetchImpl as unknown as typeof fetch,
+      });
+      // Proves the tool itself probed (no remoteStt fact can be injected
+      // through this public call), not that a fake was fed in.
+      expect(fetchImpl).toHaveBeenCalled();
+      expect(result.remoteSttBlocked).toBe(true);
+      expect(result.remoteSttReason).toBeDefined();
+      expect(result.remoteSttRemediation).toBeDefined();
+    });
+
+    it("does not report remoteSttBlocked once the endpoint is reachable", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const fetchImpl = (async () =>
+        new Response(JSON.stringify({ status: "ok" }), { status: 200 })) as typeof fetch;
+      const result = await transcriptionPreflight(remoteConfig(), { env: { PATH: "" }, fetchImpl });
+      expect(result.remoteSttBlocked).toBe(false);
+    });
+
+    it("never probes remote-stt when the provider is not remote-stt", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200 }));
+      await transcriptionPreflight(
+        config({ CASTRECALL_ENABLE_STT: "true", ASSEMBLYAI_API_KEY: "key_x" }),
+        { env: { PATH: "" }, fetchImpl: fetchImpl as unknown as typeof fetch },
+      );
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("fetch_transcript remote-stt reachability skip (issue #63)", () => {
+    async function seedEpisode() {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens([
+        {
+          uuid: "ep-1",
+          title: "Episode One",
+          url: "https://cdn.example.com/ep1.mp3",
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        },
+      ]);
+    }
+
+    const missAll = (async () => new Response("nope", { status: 404 })) as typeof fetch;
+
+    it("skips the stt rung with a remote-unavailable detail when skipStt/skipSttReason are set", async () => {
+      await seedEpisode();
+      const result = (await fetchTranscript(
+        config({ CASTRECALL_ENABLE_STT: "true", CASTRECALL_STT_PROVIDER: "remote-stt", CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com" }),
+        { episodeUuid: "ep-1", scheduled: true, skipStt: true, skipSttReason: "remote-unavailable" },
+        { fetchImpl: missAll, env: { PATH: "" } },
+      )) as any;
+      const rungs = Object.fromEntries(result.ladder.map((r: any) => [r.rung, r]));
+      expect(rungs["stt"].outcome).toBe("skipped");
+      expect(rungs["stt"].detail).toContain("remote STT endpoint");
+      expect(rungs["stt"].detail).toContain("unavailable");
+      expect(result.status).toBe("preflight-blocked");
     });
   });
 

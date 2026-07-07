@@ -32,6 +32,18 @@ def client(monkeypatch, token):
         yield test_client
 
 
+@pytest.fixture
+def client_with_diarization(monkeypatch, token):
+    monkeypatch.setenv("WORKER_TOKEN", token)
+    monkeypatch.setenv("MAX_ACTIVE_JOBS", "1")
+    monkeypatch.setenv("MAX_QUEUED_JOBS", "16")
+    monkeypatch.setenv("WHISPERX_DIARIZE", "true")
+    monkeypatch.delenv("HF_TOKEN", raising=False)
+    monkeypatch.setattr(app_module, "whisperx_check_readiness", lambda model, compute_type: (True, None))
+    with TestClient(app_module.app) as test_client:
+        yield test_client
+
+
 def wait_for_status(client, job_id: str, headers: dict[str, str], status: str, timeout: float = 5.0) -> dict:
     import time
 

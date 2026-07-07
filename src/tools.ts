@@ -305,12 +305,31 @@ export async function setupStatus(config: ResolvedConfig, deps: ToolDeps = {}): 
       stt: stt.ok
         ? `enabled (${config.stt.provider})` +
           (remoteSttStatus
-            ? remoteSttStatus.ok
+            ? remoteSttStatus.state === "ready"
               ? ` — remote healthy${remoteSttStatus.implementation ? ` (${remoteSttStatus.implementation})` : ""}`
-              : ` — remote NOT ready: ${remoteSttStatus.reason}`
+              : remoteSttStatus.state === "degraded"
+                ? ` — remote degraded: ${remoteSttStatus.reason}`
+                : ` — remote NOT ready: ${remoteSttStatus.reason}`
             : "")
         : `off — ${stt.reason}`,
     },
+    // Machine-readable tri-state (issue #63) alongside the prose above — set
+    // only when this run actually probed remote-stt (STT enabled, provider
+    // remote-stt); never present, rather than a token, when not applicable.
+    ...(remoteSttStatus
+      ? {
+          remoteStt: {
+            state: remoteSttStatus.state,
+            ...(remoteSttStatus.reason ? { reason: remoteSttStatus.reason } : {}),
+            ...(remoteSttStatus.implementation ? { implementation: remoteSttStatus.implementation } : {}),
+            ...(remoteSttStatus.version ? { version: remoteSttStatus.version } : {}),
+            ...(remoteSttStatus.model ? { model: remoteSttStatus.model } : {}),
+            ...(remoteSttStatus.modelReady !== undefined ? { modelReady: remoteSttStatus.modelReady } : {}),
+            ...(remoteSttStatus.capabilities ? { capabilities: remoteSttStatus.capabilities } : {}),
+            ...(remoteSttStatus.accepts ? { accepts: remoteSttStatus.accepts } : {}),
+          },
+        }
+      : {}),
     counts: {
       syncedListens: episodes.length,
       transcriptsStored: episodes.filter((e) => e.transcriptStatus === "stored").length,
@@ -430,10 +449,18 @@ export async function transcriptionPreflight(
   const now = deps.now ?? (() => new Date());
   const { pending } = selectPendingTranscripts(Object.values(state.episodes), now().getTime());
   const whisper = await detectLocalWhisper(config, deps.env);
+  // Always probed (never injected) here, unlike buildTranscriptionPreflight's
+  // test-only `remoteStt` param: a real preflight report can never claim a
+  // remote endpoint is reachable without having just checked (issue #63).
+  const remoteStt =
+    config.stt.enabled && config.stt.provider === "remote-stt"
+      ? await remoteSttHealth(config, deps.fetchImpl)
+      : undefined;
   return buildTranscriptionPreflight({
     config,
     whisper,
     episodesPendingTranscript: pending.length,
+    remoteStt,
   });
 }
 
@@ -488,8 +515,10 @@ export async function fetchTranscript(
     scheduled?: boolean;
     /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run; never set by the castrecall_fetch_transcript tool itself, so a direct single-episode call is never gated. */
     skipLocalWhisper?: boolean;
-    /** Corpus-scale preflight (issue #55) also blocked the paid cloud STT fallback for this run, since it would otherwise run as the very next rung right behind the blocked local Whisper one; never set by the castrecall_fetch_transcript tool itself. */
+    /** Corpus-scale preflight (issue #55) also blocked the paid cloud STT fallback for this run, since it would otherwise run as the very next rung right behind the blocked local Whisper one — or (issue #63) the remote-stt endpoint's own health check reports unavailable; never set by the castrecall_fetch_transcript tool itself. */
     skipStt?: boolean;
+    /** Which gate is behind `skipStt`, so the skipped-rung detail names the actual reason (issue #63); never set by the castrecall_fetch_transcript tool itself. */
+    skipSttReason?: "low-quality-local" | "remote-unavailable";
   },
   deps: ToolDeps = {},
 ): Promise<unknown> {
@@ -556,6 +585,7 @@ export async function fetchTranscript(
     env: deps.env,
     skipStt: sttRetryBudgetSpent || params.skipStt === true,
     skipSttPreflightBlocked: !sttRetryBudgetSpent && params.skipStt === true,
+    skipSttReason: params.skipSttReason,
     skipLocalWhisper: params.skipLocalWhisper,
   });
   if (!result.transcript) {

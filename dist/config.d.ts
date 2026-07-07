@@ -83,6 +83,8 @@ export type ResolvedConfig = {
         remoteModel?: string;
         /** Download the audio and multipart-upload it instead of submitting `audio_url`, for providers that can't fetch remote URLs. */
         remoteForceUpload: boolean;
+        /** Testing-only bypass of the corpus-scale remote-stt reachability gate (issue #63) — never set this for a real run. */
+        remoteAllowUnverified: boolean;
     };
     secrets: {
         /** CASTRECALL_DISABLE_KEYCHAIN=1 disables the durable keychain sink only. */

@@ -49,6 +49,10 @@ DOWNLOAD_TIMEOUT_SECONDS = 60.0 * 30  # long-form podcast episodes can take a wh
 MAX_AUDIO_URL_REDIRECTS = 5
 # Multipart boundaries/headers around the file part; generous but bounded.
 MULTIPART_OVERHEAD_BYTES = 1024 * 1024
+# This worker's own contract-shape version (issue #63's `/health` `version`
+# field) — not WhisperX's version. Bump when this worker's request/response
+# shapes change in a way an operator should be able to see in health output.
+WORKER_VERSION = "0.1.0"
 
 
 class AudioTooLargeError(Exception):
@@ -496,7 +500,18 @@ async def health(request: Request):
     ready, reason = await asyncio.to_thread(whisperx_check_readiness, settings.model, settings.compute_type)
     if not ready:
         return _json_error(503, f"not ready: {reason}")
-    return {"status": "ok", "implementation": "whisperx", "model": settings.model}
+    return {
+        "status": "ok",
+        "implementation": "whisperx",
+        "version": WORKER_VERSION,
+        "model": settings.model,
+        "model_ready": True,
+        # This worker always accepts either audio_url or a multipart upload
+        # (see _parse_transcribe_request) — CASTRECALL_REMOTE_STT_UPLOAD is a
+        # CastRecall-side choice, not a worker limitation.
+        "capabilities": {"diarization": settings.diarize, "timestamps": True},
+        "accepts": "both",
+    }
 
 
 @app.post("/transcribe")

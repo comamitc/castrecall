@@ -219,6 +219,29 @@ describe("runTranscriptLadder local-whisper rung with mlx-whisper detected", () 
     expect(sttRung.detail).not.toContain("retry budget exhausted");
   });
 
+  it("names the remote-stt reachability gate in the skipped-rung detail when skipSttReason is remote-unavailable (issue #63)", async () => {
+    const result = await runTranscriptLadder(
+      config({ CASTRECALL_ENABLE_STT: "true", ASSEMBLYAI_API_KEY: "key_x" }),
+      RECORD,
+      {
+        fetchImpl: missAll,
+        env: { PATH: binDir },
+        skipStt: true,
+        skipSttPreflightBlocked: true,
+        skipSttReason: "remote-unavailable",
+        skipLocalWhisper: true,
+      },
+    );
+
+    const sttRung = result.rungs.find((r) => r.rung === "stt")!;
+    expect(sttRung.outcome).toBe("skipped");
+    expect(sttRung.preflightBlocked).toBe(true);
+    expect(sttRung.detail).toContain("remote STT endpoint");
+    expect(sttRung.detail).toContain("unavailable");
+    expect(sttRung.detail).toContain("CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED");
+    expect(sttRung.detail).not.toContain("low-quality local");
+  });
+
   it("still uses the retry-budget-exhausted message when skipStt is set without skipSttPreflightBlocked", async () => {
     const result = await runTranscriptLadder(
       config({ CASTRECALL_ENABLE_STT: "true", ASSEMBLYAI_API_KEY: "key_x" }),

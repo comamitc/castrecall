@@ -235,10 +235,15 @@ export async function runTranscriptLadder(config, record, options = {}) {
             rung: "stt",
             outcome: "skipped",
             detail: options.skipSttPreflightBlocked
-                ? "Corpus-scale preflight blocked low-quality local transcription for this run, and paid " +
-                    "cloud STT would otherwise run as the next rung (castrecall_transcription_preflight). Run " +
-                    "castrecall_fetch_transcript directly for this episode, or opt in for the whole run with " +
-                    "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or CASTRECALL_LOCAL_WHISPER_PRESET=best."
+                ? options.skipSttReason === "remote-unavailable"
+                    ? "Corpus-scale preflight blocked this run because the remote STT endpoint's health check " +
+                        "reports unavailable (castrecall_transcription_preflight). Run castrecall_fetch_transcript " +
+                        "directly for this episode, fix the endpoint, or opt in for the whole run with " +
+                        "CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED=true."
+                    : "Corpus-scale preflight blocked low-quality local transcription for this run, and paid " +
+                        "cloud STT would otherwise run as the next rung (castrecall_transcription_preflight). Run " +
+                        "castrecall_fetch_transcript directly for this episode, or opt in for the whole run with " +
+                        "CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true or CASTRECALL_LOCAL_WHISPER_PRESET=best."
                 : "STT retry budget exhausted for this episode; run castrecall_fetch_transcript manually to retry billing.",
             ...(options.skipSttPreflightBlocked ? { preflightBlocked: true } : {}),
         });

@@ -15,6 +15,7 @@
  */
 import type { ResolvedConfig, SttProvider } from "../config.js";
 import { type LocalWhisperModelSource, type WhisperDetection, type WhisperFlavor, type WhisperModelResolution } from "./local-whisper.js";
+import type { RemoteSttHealth } from "./remote-stt.js";
 /**
  * Corpus-scale threshold (issue #55): below this, a run is a single-episode
  * or small test batch and is never gated, regardless of model quality. This
@@ -70,6 +71,12 @@ export type TranscriptionPreflight = {
      * corpus-scale run can never silently fall through a free local block into billed
      * transcription without the operator seeing this report first. */
     sttFallbackBlocked: boolean;
+    /** True when provider is remote-stt, corpus-scale, the endpoint is configured but the health
+     * probe reports "unavailable", and CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED is not set (issue #63).
+     * A "degraded" endpoint never blocks — only "unavailable" does. */
+    remoteSttBlocked: boolean;
+    remoteSttReason?: string;
+    remoteSttRemediation?: string[];
     blocked: boolean;
     reason?: string;
     remediation?: string[];
@@ -78,4 +85,6 @@ export declare function buildTranscriptionPreflight(params: {
     config: ResolvedConfig;
     whisper: WhisperDetection;
     episodesPendingTranscript: number;
+    /** Live remote-stt health probe (test-injection only — real callers must always probe live; see transcriptionPreflight() in ../tools.ts and runPipeline in ../pipeline.ts). */
+    remoteStt?: RemoteSttHealth;
 }): TranscriptionPreflight;

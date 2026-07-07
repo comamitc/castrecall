@@ -89,6 +89,8 @@ export type ResolvedConfig = {
     remoteModel?: string;
     /** Download the audio and multipart-upload it instead of submitting `audio_url`, for providers that can't fetch remote URLs. */
     remoteForceUpload: boolean;
+    /** Testing-only bypass of the corpus-scale remote-stt reachability gate (issue #63) — never set this for a real run. */
+    remoteAllowUnverified: boolean;
   };
   secrets: {
     /** CASTRECALL_DISABLE_KEYCHAIN=1 disables the durable keychain sink only. */
@@ -233,6 +235,7 @@ export function resolveConfig(
       remoteToken: nonEmpty(env.CASTRECALL_REMOTE_STT_TOKEN),
       remoteModel: nonEmpty(env.CASTRECALL_REMOTE_STT_MODEL),
       remoteForceUpload: envFlag(env.CASTRECALL_REMOTE_STT_UPLOAD) ?? false,
+      remoteAllowUnverified: envFlag(env.CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED) ?? false,
     },
     secrets: {
       keychainDisabled: envFlag(env.CASTRECALL_DISABLE_KEYCHAIN) ?? false,

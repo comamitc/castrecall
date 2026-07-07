@@ -53,6 +53,10 @@ export declare function runTranscriptLadder(config: ResolvedConfig, record: List
      * this run and STT would otherwise run as the very next rung — never set for the unrelated
      * STT-retry-budget-exhausted skip, which uses its own detail message below. */
     skipSttPreflightBlocked?: boolean;
+    /** Which preflight gate is behind `skipSttPreflightBlocked`, so the skipped-rung detail names
+     * the actual reason (issue #63): the #55 low-quality-local gate, or the #63 remote-stt
+     * reachability gate. Defaults to the #55 message when unset, for callers predating #63. */
+    skipSttReason?: "low-quality-local" | "remote-unavailable";
     /** Corpus-scale preflight (issue #55) blocked low-quality local generation for this run. */
     skipLocalWhisper?: boolean;
 }): Promise<LadderResult>;

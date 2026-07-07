@@ -51,6 +51,19 @@ def test_health_with_correct_token(client, auth_headers):
     assert "model" in body
 
 
+def test_health_reports_version_capabilities_and_accepts(client, auth_headers):
+    body = client.get("/health", headers=auth_headers).json()
+    assert isinstance(body["version"], str) and body["version"]
+    assert body["model_ready"] is True
+    assert body["capabilities"] == {"diarization": False, "timestamps": True}
+    assert body["accepts"] == "both"
+
+
+def test_health_reports_diarization_capability_from_settings(client_with_diarization, auth_headers):
+    body = client_with_diarization.get("/health", headers=auth_headers).json()
+    assert body["capabilities"]["diarization"] is True
+
+
 def test_health_reports_503_when_not_ready(client, auth_headers, monkeypatch):
     monkeypatch.setattr(
         app_module, "whisperx_check_readiness", lambda model, compute_type: (False, "CUDA is not available")

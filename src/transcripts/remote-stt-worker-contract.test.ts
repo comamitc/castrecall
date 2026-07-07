@@ -61,11 +61,19 @@ function fakeClock() {
 }
 
 describe("worker contract: remoteSttHealth", () => {
-  it("parses the worker's health.json fixture", async () => {
+  it("parses the worker's health.json fixture, including version/capabilities/accepts (issue #63)", async () => {
     const body = await fixture("health.json");
     const fetchImpl: FetchLike = (async () => new Response(JSON.stringify(body), { status: 200 })) as FetchLike;
     const result = await remoteSttHealth(config(), fetchImpl);
-    expect(result).toEqual({ ok: true, implementation: "whisperx", model: "large-v3" });
+    expect(result).toEqual({
+      state: "ready",
+      implementation: "whisperx",
+      version: "0.1.0",
+      model: "large-v3",
+      modelReady: true,
+      capabilities: { diarization: false, timestamps: true },
+      accepts: "both",
+    });
   });
 });
 

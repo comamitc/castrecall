@@ -70,7 +70,7 @@ export function estimateRuntimeClass(episodesPendingTranscript, backend) {
     return { runtimeClass: "half a day or more", runtimeCaveat: RUNTIME_CAVEAT };
 }
 export function buildTranscriptionPreflight(params) {
-    const { config, whisper, episodesPendingTranscript } = params;
+    const { config, whisper, episodesPendingTranscript, remoteStt } = params;
     const flavor = whisper.detected?.flavor;
     const readiness = localWhisperReadiness(whisper, config.localWhisper);
     const resolved = resolveWhisperModel(flavor, config.localWhisper);
@@ -92,6 +92,17 @@ export function buildTranscriptionPreflight(params) {
     // STT would actually run (enabled AND configured), so this never double-reports rung 5
     // being unavailable for its own unrelated reasons (sttAvailability already covers those).
     const sttFallbackBlocked = blocked && sttAvailable;
+    // Corpus-scale remote-stt reachability gate (issue #63): only "unavailable"
+    // blocks — "degraded" (model not ready, capability mismatch, malformed
+    // health body) runs with a visible warning instead, since the ladder does
+    // not refuse to attempt the rung for those. Gated on sttAvailable so an
+    // unconfigured remote-stt (no base URL — already reported by the "off"
+    // stt step) is never double-reported as a reachability failure here.
+    const remoteSttBlocked = corpusScale &&
+        config.stt.provider === "remote-stt" &&
+        sttAvailable &&
+        remoteStt?.state === "unavailable" &&
+        !config.stt.remoteAllowUnverified;
     return {
         episodesPendingTranscript,
         corpusScale,
@@ -112,6 +123,19 @@ export function buildTranscriptionPreflight(params) {
         lowQualityOptIn,
         sttFallback: { enabled: config.stt.enabled, provider: config.stt.provider, available: sttAvailable },
         sttFallbackBlocked,
+        remoteSttBlocked,
+        ...(remoteSttBlocked
+            ? {
+                remoteSttReason: `${episodesPendingTranscript} episode${episodesPendingTranscript === 1 ? "" : "s"} ` +
+                    `could be sent to the remote STT endpoint, but its health check reports "unavailable"` +
+                    `${remoteStt?.reason ? `: ${remoteStt.reason}` : "."} Corpus-scale runs require a ` +
+                    "reachable endpoint before generating transcripts this way.",
+                remoteSttRemediation: [
+                    "Fix the remote service or CASTRECALL_REMOTE_STT_BASE_URL/_TOKEN so the health check passes.",
+                    "Or set CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED=true to explicitly bypass this check for testing.",
+                ],
+            }
+            : {}),
         blocked,
         ...(blocked
             ? {
