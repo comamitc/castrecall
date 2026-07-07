@@ -6,8 +6,10 @@
  *
  * Contract (normative — mirrored verbatim in README):
  * - Every request carries `Authorization: Bearer <token>` when a token is configured.
- * - `GET {base}/health` — 200 (optionally `{ status, implementation, model }`) means ready;
- *   any non-2xx or network failure means not ready. Never throws.
+ * - `GET {base}/health` — 200 (optionally `{ status, implementation, version, model, model_ready,
+ *   capabilities: { diarization, timestamps }, accepts }`) means ready (or degraded, see
+ *   `remoteSttHealth`'s tri-state — issue #63); any non-2xx or network failure means unavailable;
+ *   401/403 means unavailable due to auth. Never throws.
  * - `POST {base}/transcribe` — JSON `{ audio_url, model? }` by default, or
  *   `multipart/form-data` with a `file` field (+ `model`) when
  *   `CASTRECALL_REMOTE_STT_UPLOAD=true` — upload mode downloads the audio itself
@@ -47,15 +49,27 @@ export type RemoteSttDeps = {
     /** Injectable clock (ms since epoch) so the poll deadline is deterministic in tests. */
     now?: () => number;
 };
+/** Tri-state readiness (issue #63) reported by `castrecall_setup`/`castrecall_setup_status`. */
+export type RemoteSttHealth = {
+    state: "ready" | "degraded" | "unavailable";
+    /** Actionable, present for degraded/unavailable; NEVER the bearer token. */
+    reason?: string;
+    implementation?: string;
+    version?: string;
+    model?: string;
+    modelReady?: boolean;
+    capabilities?: {
+        diarization?: boolean;
+        timestamps?: boolean;
+    };
+    /** Submit mode(s) the provider accepts — see `submittedBy` in transcribeWithRemoteStt. */
+    accepts?: "audio_url" | "upload" | "both";
+};
 /**
  * Readiness probe for `castrecall_setup`/`castrecall_setup_status` — outside
  * the billed ladder path, so it deliberately never throws, mirroring
- * `detectLocalWhisper`.
+ * `detectLocalWhisper`. Tri-state (issue #63): `unavailable` blocks a
+ * corpus-scale run (see buildTranscriptionPreflight), `degraded` never does.
  */
-export declare function remoteSttHealth(config: ResolvedConfig, fetchImpl?: FetchLike): Promise<{
-    ok: boolean;
-    reason?: string;
-    implementation?: string;
-    model?: string;
-}>;
+export declare function remoteSttHealth(config: ResolvedConfig, fetchImpl?: FetchLike): Promise<RemoteSttHealth>;
 export declare function transcribeWithRemoteStt(config: ResolvedConfig, audioUrl: string, deps?: RemoteSttDeps): Promise<SttResult>;

@@ -283,4 +283,87 @@ describe("buildTranscriptionPreflight", () => {
       expect(result.sttFallbackBlocked).toBe(false);
     });
   });
+
+  describe("remoteSttBlocked (issue #63 — corpus-scale remote-stt reachability gate)", () => {
+    function remoteConfig(env: NodeJS.ProcessEnv = {}) {
+      return config({
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "remote-stt",
+        CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
+        ...env,
+      });
+    }
+
+    it("blocks a corpus-scale run when the endpoint is unavailable", () => {
+      const result = buildTranscriptionPreflight({
+        config: remoteConfig(),
+        whisper: NO_WHISPER,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+        remoteStt: { state: "unavailable", reason: "Remote STT health check failed with HTTP 503." },
+      });
+      expect(result.remoteSttBlocked).toBe(true);
+      expect(result.remoteSttReason).toContain("unavailable");
+      expect(result.remoteSttRemediation).toBeDefined();
+      expect(result.remoteSttRemediation!.join(" ")).toContain("CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED");
+    });
+
+    it("does not block when CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED opts in", () => {
+      const result = buildTranscriptionPreflight({
+        config: remoteConfig({ CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED: "true" }),
+        whisper: NO_WHISPER,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+        remoteStt: { state: "unavailable", reason: "down" },
+      });
+      expect(result.remoteSttBlocked).toBe(false);
+    });
+
+    it("does not block below the corpus-scale threshold", () => {
+      const result = buildTranscriptionPreflight({
+        config: remoteConfig(),
+        whisper: NO_WHISPER,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES - 1,
+        remoteStt: { state: "unavailable", reason: "down" },
+      });
+      expect(result.remoteSttBlocked).toBe(false);
+    });
+
+    it("never blocks on a degraded (only unreachable) health state", () => {
+      const result = buildTranscriptionPreflight({
+        config: remoteConfig(),
+        whisper: NO_WHISPER,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+        remoteStt: { state: "degraded", reason: "model not ready" },
+      });
+      expect(result.remoteSttBlocked).toBe(false);
+    });
+
+    it("does not block for a non-remote-stt provider", () => {
+      const result = buildTranscriptionPreflight({
+        config: config({ CASTRECALL_ENABLE_STT: "true", ASSEMBLYAI_API_KEY: "key_x" }),
+        whisper: NO_WHISPER,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+        remoteStt: { state: "unavailable", reason: "down" },
+      });
+      expect(result.remoteSttBlocked).toBe(false);
+    });
+
+    it("does not block when the endpoint isn't configured at all (sttAvailability already reports off)", () => {
+      const result = buildTranscriptionPreflight({
+        config: config({ CASTRECALL_ENABLE_STT: "true", CASTRECALL_STT_PROVIDER: "remote-stt" }),
+        whisper: NO_WHISPER,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+        remoteStt: { state: "unavailable", reason: "CASTRECALL_REMOTE_STT_BASE_URL is not set." },
+      });
+      expect(result.remoteSttBlocked).toBe(false);
+    });
+
+    it("does not block when no remoteStt fact was provided at all", () => {
+      const result = buildTranscriptionPreflight({
+        config: remoteConfig(),
+        whisper: NO_WHISPER,
+        episodesPendingTranscript: CORPUS_SCALE_MIN_EPISODES,
+      });
+      expect(result.remoteSttBlocked).toBe(false);
+    });
+  });
 });

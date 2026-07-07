@@ -1094,6 +1094,109 @@ describe("runPipeline", () => {
     });
   });
 
+  describe("corpus-scale remote-stt reachability gate (issue #63)", () => {
+    async function seedPendingEpisodes(count: number) {
+      const storage = new Storage(dir);
+      await storage.init();
+      await storage.recordListens(
+        Array.from({ length: count }, (_, i) => ({
+          uuid: `ep-${i}`,
+          title: `Episode ${i}`,
+          url: `https://cdn.example.com/ep${i}.mp3`,
+          podcastUuid: "pod-1",
+          podcastTitle: "Example Show",
+        })),
+      );
+    }
+
+    function remoteConfig(env: NodeJS.ProcessEnv = {}) {
+      return config({
+        CASTRECALL_ENABLE_STT: "true",
+        CASTRECALL_STT_PROVIDER: "remote-stt",
+        CASTRECALL_REMOTE_STT_BASE_URL: "https://stt.example.com",
+        ...env,
+      });
+    }
+
+    function fetchImplUnreachableHealth(transcribeCalls: { count: number }) {
+      return (async (input: any) => {
+        const url = String(input);
+        if (url.endsWith("/health")) return new Response("down", { status: 503 });
+        if (url.endsWith("/transcribe")) {
+          transcribeCalls.count += 1;
+          return new Response(JSON.stringify({ text: "should never be billed" }), { status: 200 });
+        }
+        if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+        if (url.endsWith("/user/history")) return new Response(JSON.stringify({ episodes: [] }), { status: 200 });
+        return new Response("nope", { status: 404 });
+      }) as typeof fetch;
+    }
+
+    it("blocks a corpus-scale run when the remote-stt endpoint is unreachable, defers (not fails) the episodes, and never bills /transcribe", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const transcribeCalls = { count: 0 };
+      const result = (await runPipeline(
+        remoteConfig(),
+        {},
+        { fetchImpl: fetchImplUnreachableHealth(transcribeCalls), env: { PATH: "" } },
+      )) as Record<string, any>;
+
+      expect(result.preflight).toMatchObject({ remoteSttBlocked: true, corpusScale: true });
+      expect(result.transcripts).toMatchObject({
+        stored: 0,
+        failed: 0,
+        preflightDeferred: CORPUS_SCALE_MIN_EPISODES,
+      });
+      expect(transcribeCalls.count).toBe(0);
+
+      const state = JSON.parse(await fs.readFile(path.join(dir, "state.json"), "utf8"));
+      for (let i = 0; i < CORPUS_SCALE_MIN_EPISODES; i++) {
+        expect(state.episodes[`ep-${i}`].transcriptStatus).toBe("none");
+        expect(state.episodes[`ep-${i}`].transcriptError).toBeUndefined();
+      }
+    });
+
+    it("does not block once CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED opts in, and /transcribe is actually called", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES);
+      const transcribeCalls = { count: 0 };
+      const result = (await runPipeline(
+        remoteConfig({ CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED: "true" }),
+        {},
+        {
+          fetchImpl: (async (input: any) => {
+            const url = String(input);
+            if (url.endsWith("/health")) return new Response("down", { status: 503 });
+            if (url.endsWith("/transcribe")) {
+              transcribeCalls.count += 1;
+              return new Response(JSON.stringify({ text: "billed transcript" }), { status: 200 });
+            }
+            if (url.endsWith("/user/login")) return new Response(JSON.stringify({ token: "tok" }), { status: 200 });
+            if (url.endsWith("/user/history")) return new Response(JSON.stringify({ episodes: [] }), { status: 200 });
+            if (/ep\d+\.mp3$/.test(url)) return new Response("fake audio bytes", { status: 200 });
+            return new Response("nope", { status: 404 });
+          }) as typeof fetch,
+          env: { PATH: "" },
+        },
+      )) as Record<string, any>;
+
+      expect(result.preflight.remoteSttBlocked).toBe(false);
+      expect(transcribeCalls.count).toBe(CORPUS_SCALE_MIN_EPISODES);
+      expect(result.transcripts.stored).toBe(CORPUS_SCALE_MIN_EPISODES);
+    });
+
+    it("does not block below the corpus-scale threshold", async () => {
+      await seedPendingEpisodes(CORPUS_SCALE_MIN_EPISODES - 1);
+      const transcribeCalls = { count: 0 };
+      const result = (await runPipeline(
+        remoteConfig(),
+        {},
+        { fetchImpl: fetchImplUnreachableHealth(transcribeCalls), env: { PATH: "" } },
+      )) as Record<string, any>;
+
+      expect(result.preflight).toMatchObject({ remoteSttBlocked: false, corpusScale: false });
+    });
+  });
+
   describe("repetition-loop quarantine (issue #42)", () => {
     const LOOPED_TEXT = Array.from({ length: 40 }, () => "Thank you for watching.").join(" ");
 

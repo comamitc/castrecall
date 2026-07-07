@@ -18,6 +18,7 @@ import { PocketCastsApiError } from "./pocketcasts/client.js";
 import { LOCK_TTL_MS, selectPendingTranscripts, Storage } from "./storage.js";
 import { detectLocalWhisper } from "./transcripts/local-whisper.js";
 import { buildTranscriptionPreflight } from "./transcripts/preflight.js";
+import { remoteSttHealth } from "./transcripts/remote-stt.js";
 import { exportAndRecord, fetchTranscript, generateReview, syncHistory, } from "./tools.js";
 /** Renew the run lock at half the abandonment TTL, so a run that legitimately
  * takes longer than `LOCK_TTL_MS` (e.g. local-Whisper transcription) is never
@@ -133,10 +134,18 @@ export async function runPipeline(config, params = {}, deps = {}) {
         // can never fall through a free quality gate into billed transcription
         // without that tradeoff having been surfaced in the report first.
         const whisperDetection = await detectLocalWhisper(config, deps.env);
+        // Probed unconditionally (never test-injected) here, the same as
+        // transcriptionPreflight() in tools.ts: a real corpus-scale run can never
+        // report/enforce remote-stt reachability without having just checked it
+        // (issue #63).
+        const remoteStt = config.stt.enabled && config.stt.provider === "remote-stt"
+            ? await remoteSttHealth(config, deps.fetchImpl)
+            : undefined;
         const preflight = buildTranscriptionPreflight({
             config,
             whisper: whisperDetection,
             episodesPendingTranscript: pendingTranscripts.length,
+            remoteStt,
         });
         let stored = 0;
         let failed = 0;
@@ -151,7 +160,8 @@ export async function runPipeline(config, params = {}, deps = {}) {
                     episodeUuid: episode.uuid,
                     scheduled: true,
                     skipLocalWhisper: preflight.blocked,
-                    skipStt: preflight.sttFallbackBlocked,
+                    skipStt: preflight.sttFallbackBlocked || preflight.remoteSttBlocked,
+                    skipSttReason: preflight.remoteSttBlocked ? "remote-unavailable" : "low-quality-local",
                 }, deps));
                 if (result.status === "stored" || result.status === "already-stored") {
                     stored += 1;

@@ -29,7 +29,7 @@ suffix**:
 
 | Canonical (CastRecall calls these) | Purpose |
 | --- | --- |
-| `GET  {base}/health` | readiness probe: `200` only once CUDA is available and the configured model loads; `503` otherwise |
+| `GET  {base}/health` | readiness probe: `200` (with `implementation`, `version`, `model`, `model_ready`, `capabilities: { diarization, timestamps }`, `accepts: "both"`) only once CUDA is available and the configured model loads; `503` otherwise. Read by CastRecall's tri-state setup/status checks (issue #63) — see root README "Remote STT contract". |
 | `POST {base}/transcribe` | submit |
 | `GET  {base}/jobs/{job_id}` | poll status; `result` field once completed |
 

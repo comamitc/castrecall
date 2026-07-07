@@ -1,5 +1,9 @@
 {
   "status": "ok",
   "implementation": "whisperx",
-  "model": "large-v3"
+  "version": "0.1.0",
+  "model": "large-v3",
+  "model_ready": true,
+  "capabilities": { "diarization": false, "timestamps": true },
+  "accepts": "both"
 }

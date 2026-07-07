@@ -13,6 +13,7 @@
  * OpenClaw's own plugin inventory — a signal this process cannot see itself.
  */
 import { type ResolvedConfig } from "./config.js";
+import type { RemoteSttHealth } from "./transcripts/remote-stt.js";
 import { type WhisperDetection } from "./transcripts/local-whisper.js";
 export type SetupStepStatus = "configured" | "missing" | "optional-off";
 export type SetupStep = {
@@ -69,15 +70,12 @@ export type SetupPlanDeps = {
      * Live `GET {base}/health` probe result for a configured remote-stt
      * provider (issue #61 contract: the health check backs BOTH
      * castrecall_setup and castrecall_setup_status). Populated by setup()
-     * whenever STT is enabled with provider remote-stt and a base URL; a
-     * not-ready probe downgrades the stt step to "missing" so a down or
-     * unauthorized service is caught at setup time, not mid-corpus-run.
+     * whenever STT is enabled with provider remote-stt and a base URL. Tri-state
+     * (issue #63): "unavailable" downgrades the stt step to "missing" so a down
+     * or unauthorized service is caught at setup time, not mid-corpus-run;
+     * "degraded" stays "configured" with a caveat (e.g. model not ready, or a
+     * capability mismatch) since the ladder still runs the rung.
      */
-    remoteStt?: {
-        ok: boolean;
-        reason?: string;
-        implementation?: string;
-        model?: string;
-    };
+    remoteStt?: RemoteSttHealth;
 };
 export declare function buildSetupPlan(config: ResolvedConfig, deps: SetupPlanDeps): SetupStep[];

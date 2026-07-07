@@ -221,12 +221,31 @@ export async function setupStatus(config, deps = {}) {
             stt: stt.ok
                 ? `enabled (${config.stt.provider})` +
                     (remoteSttStatus
-                        ? remoteSttStatus.ok
+                        ? remoteSttStatus.state === "ready"
                             ? ` — remote healthy${remoteSttStatus.implementation ? ` (${remoteSttStatus.implementation})` : ""}`
-                            : ` — remote NOT ready: ${remoteSttStatus.reason}`
+                            : remoteSttStatus.state === "degraded"
+                                ? ` — remote degraded: ${remoteSttStatus.reason}`
+                                : ` — remote NOT ready: ${remoteSttStatus.reason}`
                         : "")
                 : `off — ${stt.reason}`,
         },
+        // Machine-readable tri-state (issue #63) alongside the prose above — set
+        // only when this run actually probed remote-stt (STT enabled, provider
+        // remote-stt); never present, rather than a token, when not applicable.
+        ...(remoteSttStatus
+            ? {
+                remoteStt: {
+                    state: remoteSttStatus.state,
+                    ...(remoteSttStatus.reason ? { reason: remoteSttStatus.reason } : {}),
+                    ...(remoteSttStatus.implementation ? { implementation: remoteSttStatus.implementation } : {}),
+                    ...(remoteSttStatus.version ? { version: remoteSttStatus.version } : {}),
+                    ...(remoteSttStatus.model ? { model: remoteSttStatus.model } : {}),
+                    ...(remoteSttStatus.modelReady !== undefined ? { modelReady: remoteSttStatus.modelReady } : {}),
+                    ...(remoteSttStatus.capabilities ? { capabilities: remoteSttStatus.capabilities } : {}),
+                    ...(remoteSttStatus.accepts ? { accepts: remoteSttStatus.accepts } : {}),
+                },
+            }
+            : {}),
         counts: {
             syncedListens: episodes.length,
             transcriptsStored: episodes.filter((e) => e.transcriptStatus === "stored").length,
@@ -334,10 +353,17 @@ export async function transcriptionPreflight(config, deps = {}) {
     const now = deps.now ?? (() => new Date());
     const { pending } = selectPendingTranscripts(Object.values(state.episodes), now().getTime());
     const whisper = await detectLocalWhisper(config, deps.env);
+    // Always probed (never injected) here, unlike buildTranscriptionPreflight's
+    // test-only `remoteStt` param: a real preflight report can never claim a
+    // remote endpoint is reachable without having just checked (issue #63).
+    const remoteStt = config.stt.enabled && config.stt.provider === "remote-stt"
+        ? await remoteSttHealth(config, deps.fetchImpl)
+        : undefined;
     return buildTranscriptionPreflight({
         config,
         whisper,
         episodesPendingTranscript: pending.length,
+        remoteStt,
     });
 }
 export async function syncHistory(config, params, deps = {}) {
@@ -420,6 +446,7 @@ export async function fetchTranscript(config, params, deps = {}) {
         env: deps.env,
         skipStt: sttRetryBudgetSpent || params.skipStt === true,
         skipSttPreflightBlocked: !sttRetryBudgetSpent && params.skipStt === true,
+        skipSttReason: params.skipSttReason,
         skipLocalWhisper: params.skipLocalWhisper,
     });
     if (!result.transcript) {

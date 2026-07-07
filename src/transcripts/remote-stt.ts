@@ -6,8 +6,10 @@
  *
  * Contract (normative — mirrored verbatim in README):
  * - Every request carries `Authorization: Bearer <token>` when a token is configured.
- * - `GET {base}/health` — 200 (optionally `{ status, implementation, model }`) means ready;
- *   any non-2xx or network failure means not ready. Never throws.
+ * - `GET {base}/health` — 200 (optionally `{ status, implementation, version, model, model_ready,
+ *   capabilities: { diarization, timestamps }, accepts }`) means ready (or degraded, see
+ *   `remoteSttHealth`'s tri-state — issue #63); any non-2xx or network failure means unavailable;
+ *   401/403 means unavailable due to auth. Never throws.
  * - `POST {base}/transcribe` — JSON `{ audio_url, model? }` by default, or
  *   `multipart/form-data` with a `file` field (+ `model`) when
  *   `CASTRECALL_REMOTE_STT_UPLOAD=true` — upload mode downloads the audio itself
@@ -88,29 +90,151 @@ function authHeaders(config: ResolvedConfig): Record<string, string> {
   return config.stt.remoteToken ? { authorization: `Bearer ${config.stt.remoteToken}` } : {};
 }
 
+/** Tri-state readiness (issue #63) reported by `castrecall_setup`/`castrecall_setup_status`. */
+export type RemoteSttHealth = {
+  state: "ready" | "degraded" | "unavailable";
+  /** Actionable, present for degraded/unavailable; NEVER the bearer token. */
+  reason?: string;
+  implementation?: string;
+  version?: string;
+  model?: string;
+  modelReady?: boolean;
+  capabilities?: { diarization?: boolean; timestamps?: boolean };
+  /** Submit mode(s) the provider accepts — see `submittedBy` in transcribeWithRemoteStt. */
+  accepts?: "audio_url" | "upload" | "both";
+};
+
+type RawHealthBody = {
+  status?: string;
+  implementation?: string;
+  version?: string;
+  model?: string;
+  model_ready?: boolean;
+  capabilities?: { diarization?: unknown; timestamps?: unknown };
+  accepts?: string;
+};
+
+const ACCEPTS_VALUES = new Set(["audio_url", "upload", "both"]);
+
+/** `undefined` (not present/valid) unless the raw value is a real boolean — never coerced from truthy/falsy. */
+function optionalBool(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined;
+}
+
+/**
+ * Validates the health body's shape before trusting any field: every present
+ * field must be the type the contract promises, or the body is treated as
+ * malformed (degraded) rather than silently accepting garbage as "ready".
+ */
+function malformedHealthShapeReason(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    return "health endpoint returned a malformed shape (expected a JSON object).";
+  }
+  const raw = body as RawHealthBody;
+  if (raw.status !== undefined && typeof raw.status !== "string") {
+    return "health endpoint returned a malformed shape (`status` is not a string).";
+  }
+  if (raw.implementation !== undefined && typeof raw.implementation !== "string") {
+    return "health endpoint returned a malformed shape (`implementation` is not a string).";
+  }
+  if (raw.version !== undefined && typeof raw.version !== "string") {
+    return "health endpoint returned a malformed shape (`version` is not a string).";
+  }
+  if (raw.model !== undefined && typeof raw.model !== "string") {
+    return "health endpoint returned a malformed shape (`model` is not a string).";
+  }
+  if (raw.model_ready !== undefined && typeof raw.model_ready !== "boolean") {
+    return "health endpoint returned a malformed shape (`model_ready` is not a boolean).";
+  }
+  if (
+    raw.capabilities !== undefined &&
+    (typeof raw.capabilities !== "object" || raw.capabilities === null || Array.isArray(raw.capabilities))
+  ) {
+    return "health endpoint returned a malformed shape (`capabilities` is not an object).";
+  }
+  if (raw.accepts !== undefined && !ACCEPTS_VALUES.has(raw.accepts)) {
+    return `health endpoint returned a malformed shape (\`accepts\` is not one of audio_url/upload/both: "${raw.accepts}").`;
+  }
+  return undefined;
+}
+
 /**
  * Readiness probe for `castrecall_setup`/`castrecall_setup_status` — outside
  * the billed ladder path, so it deliberately never throws, mirroring
- * `detectLocalWhisper`.
+ * `detectLocalWhisper`. Tri-state (issue #63): `unavailable` blocks a
+ * corpus-scale run (see buildTranscriptionPreflight), `degraded` never does.
  */
-export async function remoteSttHealth(
-  config: ResolvedConfig,
-  fetchImpl: FetchLike = fetch,
-): Promise<{ ok: boolean; reason?: string; implementation?: string; model?: string }> {
+export async function remoteSttHealth(config: ResolvedConfig, fetchImpl: FetchLike = fetch): Promise<RemoteSttHealth> {
   if (!config.stt.remoteBaseUrl) {
-    return { ok: false, reason: "CASTRECALL_REMOTE_STT_BASE_URL is not set." };
+    return { state: "unavailable", reason: "CASTRECALL_REMOTE_STT_BASE_URL is not set." };
   }
   const base = trimmedBaseUrl(config.stt.remoteBaseUrl);
   try {
     const response = await fetchImpl(`${base}/health`, { headers: authHeaders(config) });
-    if (!response.ok) {
-      return { ok: false, reason: `Remote STT health check failed with HTTP ${response.status}.` };
+    if (response.status === 401 || response.status === 403) {
+      return {
+        state: "unavailable",
+        reason: config.stt.remoteToken
+          ? `Remote STT provider rejected CASTRECALL_REMOTE_STT_TOKEN (HTTP ${response.status}).`
+          : "Remote STT endpoint requires auth but CASTRECALL_REMOTE_STT_TOKEN is not set.",
+      };
     }
-    const body = (await response.json().catch(() => ({}))) as { implementation?: string; model?: string };
-    return { ok: true, implementation: body.implementation, model: body.model };
+    if (!response.ok) {
+      return { state: "unavailable", reason: `Remote STT health check failed with HTTP ${response.status}.` };
+    }
+    const text = await response.text();
+    if (!text.trim()) return { state: "ready" };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return {
+        state: "degraded",
+        reason:
+          "Remote STT health endpoint returned a non-JSON body — verify CASTRECALL_REMOTE_STT_BASE_URL " +
+          "points at the STT service.",
+      };
+    }
+    const shapeReason = malformedHealthShapeReason(parsed);
+    if (shapeReason) return { state: "degraded", reason: shapeReason };
+    const body = parsed as RawHealthBody;
+    const capabilities: { diarization?: boolean; timestamps?: boolean } | undefined = body.capabilities
+      ? {
+          diarization: optionalBool(body.capabilities.diarization),
+          timestamps: optionalBool(body.capabilities.timestamps),
+        }
+      : undefined;
+    const accepts = body.accepts as RemoteSttHealth["accepts"] | undefined;
+    const ready: RemoteSttHealth = {
+      state: "ready",
+      implementation: body.implementation,
+      version: body.version,
+      model: body.model,
+      modelReady: optionalBool(body.model_ready),
+      capabilities,
+      accepts,
+    };
+    if (body.status === "degraded") {
+      return { ...ready, state: "degraded", reason: "Remote STT provider reported status: degraded." };
+    }
+    if (body.model_ready === false) {
+      return { ...ready, state: "degraded", reason: "Remote STT provider reports its model is not ready." };
+    }
+    const configuredMode = config.stt.remoteForceUpload ? "upload" : "audio_url";
+    const otherMode = configuredMode === "upload" ? "audio_url" : "upload";
+    if (accepts === otherMode) {
+      return {
+        ...ready,
+        state: "degraded",
+        reason:
+          `Remote STT is configured to submit "${configuredMode}", but the provider only accepts ` +
+          `"${accepts}" — set CASTRECALL_REMOTE_STT_UPLOAD=${configuredMode === "upload" ? "false" : "true"}.`,
+      };
+    }
+    return ready;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, reason: `Remote STT health check failed: ${message}.` };
+    return { state: "unavailable", reason: `Remote STT health check failed: ${message}.` };
   }
 }
 

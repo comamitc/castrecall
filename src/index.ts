@@ -94,7 +94,10 @@ export default defineToolPlugin({
       description:
         "Report CastRecall setup and health: data directory, which credentials/providers are " +
         "configured (never the values), transcript ladder availability, and counts of synced " +
-        "listens, stored transcripts, and pending reviews. Run this first.",
+        "listens, stored transcripts, and pending reviews. When CASTRECALL_STT_PROVIDER=remote-stt " +
+        "is enabled, includes a live health probe reported as ready/degraded/unavailable (never " +
+        "the bearer token) — see the 'remoteStt' field and README 'Remote STT contract'. Run this " +
+        "first.",
       parameters: Type.Object({}),
       execute: async (_params, settings: PluginSettings) => setupStatus(resolveConfig(settings)),
     }),
@@ -263,8 +266,12 @@ export default defineToolPlugin({
         "(e.g. tiny/small, or CASTRECALL_LOCAL_WHISPER_PRESET=fast) is blocked by " +
         "castrecall_run_pipeline unless CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true is set — when " +
         "paid STT is also enabled, that same block skips it too (sttFallbackBlocked), so the run " +
-        "never falls through into billed transcription instead. This tool shows that decision " +
-        "before compute starts. Single-episode castrecall_fetch_transcript calls are never gated.",
+        "never falls through into billed transcription instead. When CASTRECALL_STT_PROVIDER=" +
+        "remote-stt is configured, also live-probes the endpoint's health and reports " +
+        "remoteSttBlocked when a corpus-scale run would defer episodes because it's unreachable " +
+        "(issue #63) — bypass with CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED=true for testing. This " +
+        "tool shows that decision before compute starts. Single-episode castrecall_fetch_transcript " +
+        "calls are never gated.",
       parameters: Type.Object({}),
       execute: async (_params, settings: PluginSettings) =>
         transcriptionPreflight(resolveConfig(settings)),
@@ -280,9 +287,11 @@ export default defineToolPlugin({
         "(issue #55) before generating any transcript and blocks local generation with a low-" +
         "quality model for that run unless CASTRECALL_WHISPER_ALLOW_LOW_QUALITY=true is set — " +
         "when paid cloud STT is also enabled, the same block skips it too so the run never falls " +
-        "through into billed transcription instead. See castrecall_transcription_preflight to " +
-        "inspect this before running. This is the tool a scheduler recipe should call — see " +
-        "README 'Scheduled / periodic sync'.",
+        "through into billed transcription instead. When CASTRECALL_STT_PROVIDER=remote-stt is " +
+        "configured, also defers (never fails) corpus-scale episodes when the endpoint's own " +
+        "health check reports unavailable, unless CASTRECALL_REMOTE_STT_ALLOW_UNVERIFIED=true " +
+        "(issue #63). See castrecall_transcription_preflight to inspect this before running. This " +
+        "is the tool a scheduler recipe should call — see README 'Scheduled / periodic sync'.",
       parameters: Type.Object({
         limit: Type.Optional(
           Type.Number({ description: "Max history entries to ingest this run (default 100)." }),
