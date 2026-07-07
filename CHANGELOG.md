@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.17.0 — 2026-07-07
+
+Self-hosted transcription becomes a first-class provider: a generic
+remote-STT contract, and a reference WhisperX worker that implements it.
+
+- **Generic remote STT provider contract** (#61, PR #84):
+  `CASTRECALL_STT_PROVIDER=remote-stt` calls any private/self-hosted STT
+  service — WhisperX, faster-whisper, anything speaking the documented
+  contract (bearer auth; `GET /health`; `POST /transcribe` by
+  `audio_url` or multipart upload; sync inline results or async
+  `job_id` + `GET /jobs/{id}` polling; normalized text/segments/model
+  metadata). Hardened across eleven review rounds: setup probes the
+  health endpoint; uploads spool to disk (never full-episode buffering);
+  timed-out async jobs are resumed by a persisted job id keyed to the
+  full request configuration — never resubmitted as duplicate GPU work —
+  with unknown-job responses the only fresh-submit trigger and ambiguous
+  auth failures retained under a bounded, progress-resetting counter.
+- **WhisperX reference worker** (#62, PR #85): an optional, self-contained
+  FastAPI worker under `worker/whisperx/` (Dockerfile + compose + smoke
+  test + 55-test suite) implementing the contract on CUDA hosts —
+  bounded job queue with backpressure, diarization/timestamps flags, and
+  defense-in-depth on `audio_url` fetching: only globally-routable
+  non-multicast destinations, DNS-rebinding-proof pinned connections
+  across every validated address and redirect hop, per-attempt staging
+  truncation, and upload size enforced before the body is ever parsed.
+
 ## v0.16.0 — 2026-07-06
 
 The transcript quality track completes: readable transcripts, and known
