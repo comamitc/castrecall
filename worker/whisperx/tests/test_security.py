@@ -222,6 +222,74 @@ def test_globally_routable_multicast_is_blocked(monkeypatch, client, auth_header
     assert "disallowed address" in body["error"]
 
 
+def test_partial_bytes_from_failed_address_never_prefix_the_retry(monkeypatch):
+    """First pinned address streams partial bytes then dies mid-read; the
+    second address succeeds. The staged file must contain ONLY the second
+    attempt's bytes -- no stale prefix from the failed attempt."""
+    import asyncio as _asyncio
+    import httpx as _httpx
+
+    _patch_resolve_host(monkeypatch, {"multi.example": ["93.184.216.34", "93.184.216.35"]})
+
+    class _PartialResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b"PARTIAL-GARBAGE-"
+            raise _httpx.ReadError("connection reset mid-stream")
+
+    class _GoodResponse:
+        status_code = 200
+        headers: dict = {}
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self):
+            yield b"clean-audio-bytes"
+
+    class _StreamCtx:
+        def __init__(self, response):
+            self._response = response
+
+        async def __aenter__(self):
+            return self._response
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _TwoAddressClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def stream(self, method, url, **kwargs):
+            if "93.184.216.34" in str(url):
+                return _StreamCtx(_PartialResponse())
+            return _StreamCtx(_GoodResponse())
+
+    monkeypatch.setattr(app_module.httpx, "AsyncClient", _TwoAddressClient)
+    from config import load_settings
+
+    settings = load_settings({"WORKER_TOKEN": "t"})
+    path = _asyncio.run(
+        app_module._stage_audio("http://multi.example/ep.mp3", None, settings)
+    )
+    try:
+        assert pathlib.Path(path).read_bytes() == b"clean-audio-bytes"
+    finally:
+        pathlib.Path(path).unlink(missing_ok=True)
+
+
 # --- Audio size ceiling -------------------------------------------------------
 
 

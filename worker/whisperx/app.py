@@ -386,6 +386,12 @@ async def _stage_audio(audio_url: Optional[str], staged_path: Optional[str], set
                             request_url, pin_headers, pin_extensions = _pinned_request(current_url, address)
                         else:
                             request_url, pin_headers, pin_extensions = current_url, {}, {}
+                        # Each attempt owns the staging file from byte 0: a
+                        # previous candidate may have written partial bytes
+                        # before failing mid-stream, and appending after them
+                        # would hand the backend corrupted audio.
+                        f.seek(0)
+                        f.truncate()
                         try:
                             async with client.stream(
                                 "GET", request_url, headers=pin_headers, extensions=pin_extensions
