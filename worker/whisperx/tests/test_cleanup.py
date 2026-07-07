@@ -190,7 +190,7 @@ def test_download_failure_marks_job_failed_and_leaves_no_temp_file(client, auth_
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def stream(self, method, url):
+        def stream(self, method, url, **kwargs):
             return _FailingStreamCtx()
 
     tmp_dir = pathlib.Path(tempfile.gettempdir())

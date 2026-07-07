@@ -380,7 +380,7 @@ def test_url_downloads_are_bounded_by_max_active_not_max_queued(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def stream(self, method, url):
+        def stream(self, method, url, **kwargs):
             return _SlowStreamCtx()
 
     with TestClient(app_module.app) as slow_client:

@@ -107,7 +107,7 @@ def test_audio_url_redirect_to_private_address_is_blocked(client, auth_headers, 
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def stream(self, method, url):
+        def stream(self, method, url, **kwargs):
             return _RedirectStreamCtx()
 
     monkeypatch.setattr(app_module.httpx, "AsyncClient", _RedirectAsyncClient)
@@ -156,7 +156,7 @@ def test_allow_private_audio_urls_opt_out_permits_loopback(monkeypatch):
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def stream(self, method, url):
+        def stream(self, method, url, **kwargs):
             return _OkStreamCtx()
 
     with TestClient(app_module.app) as private_client:
@@ -167,6 +167,43 @@ def test_allow_private_audio_urls_opt_out_permits_loopback(monkeypatch):
         )
         job_id = submitted.json()["job_id"]
         wait_for_status(private_client, job_id, headers, "completed")
+
+
+def test_audio_url_resolving_to_cgnat_shared_space_is_blocked(client, auth_headers, monkeypatch):
+    """100.64.0.0/10 (shared address space, used by Tailscale) is not
+    `is_private`, so a flag-allowlist check let it through -- the deny rule
+    is now `not is_global`, which covers every non-public range."""
+    _patch_resolve_host(monkeypatch, {"tailnet.example": ["100.101.102.103"]})
+    submitted = client.post(
+        "/transcribe", headers=auth_headers, json={"audio_url": "http://tailnet.example/ep.mp3"}
+    )
+    job_id = submitted.json()["job_id"]
+    body = wait_for_status(client, job_id, auth_headers, "failed")
+    assert "disallowed address" in body["error"]
+
+
+def test_download_connects_to_the_validated_address_not_a_second_dns_answer(monkeypatch):
+    """DNS rebinding: validation resolves the host once; the actual request
+    must be pinned to that vetted address (with the original hostname kept
+    in the Host header), so a different answer at connect time is unreachable."""
+    pinned_url, headers, extensions = app_module._pinned_request(
+        "http://public.example:8080/ep.mp3?tok=1", "93.184.216.34"
+    )
+    assert pinned_url == "http://93.184.216.34:8080/ep.mp3?tok=1"
+    assert headers["host"] == "public.example:8080"
+    assert extensions == {}
+
+    https_url, https_headers, https_extensions = app_module._pinned_request(
+        "https://public.example/ep.mp3", "2606:2800:220:1:248:1893:25c8:1946"
+    )
+    assert https_url == "https://[2606:2800:220:1:248:1893:25c8:1946]/ep.mp3"
+    assert https_headers["host"] == "public.example"
+    assert https_extensions == {"sni_hostname": "public.example"}
+
+
+def test_validator_returns_the_pinned_address(monkeypatch):
+    _patch_resolve_host(monkeypatch, {"public.example": ["93.184.216.34"]})
+    assert app_module._validate_audio_url_sync("http://public.example/ep.mp3") == "93.184.216.34"
 
 
 # --- Audio size ceiling -------------------------------------------------------
@@ -190,6 +227,38 @@ def test_oversized_multipart_upload_rejected_with_413_and_no_leaked_file(monkeyp
 
     after = {p.name for p in tmp_dir.glob("whisperx-worker-*")}
     assert after == before
+
+
+def test_oversized_multipart_content_length_rejected_before_body_parse(monkeypatch):
+    """The declared Content-Length is enforced BEFORE Starlette parses (and
+    spools) the multipart body, so an oversized request cannot consume
+    request-time temp storage first."""
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("WORKER_TOKEN", "prelimit-token")
+    monkeypatch.setenv("MAX_AUDIO_BYTES", "10")
+    headers = {
+        "authorization": "Bearer prelimit-token",
+        "content-type": "multipart/form-data; boundary=deadbeef",
+        "content-length": str(50 * 1024 * 1024),
+    }
+    with TestClient(app_module.app) as pre_client:
+        response = pre_client.post("/transcribe", headers=headers, content=b"")
+        assert response.status_code == 413
+
+
+def test_multipart_without_content_length_is_rejected(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setenv("WORKER_TOKEN", "nolen-token")
+    headers = {
+        "authorization": "Bearer nolen-token",
+        "content-type": "multipart/form-data; boundary=deadbeef",
+        "transfer-encoding": "chunked",
+    }
+    with TestClient(app_module.app) as nolen_client:
+        response = nolen_client.post("/transcribe", headers=headers, content=iter([b"x"]))
+        assert response.status_code == 411
 
 
 def test_oversized_audio_url_download_marks_job_failed_and_leaves_no_temp_file(monkeypatch):
@@ -227,7 +296,7 @@ def test_oversized_audio_url_download_marks_job_failed_and_leaves_no_temp_file(m
         async def __aexit__(self, exc_type, exc, tb):
             return False
 
-        def stream(self, method, url):
+        def stream(self, method, url, **kwargs):
             return _BigStreamCtx()
 
     tmp_dir = pathlib.Path(tempfile.gettempdir())

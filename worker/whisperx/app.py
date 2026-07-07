@@ -47,6 +47,8 @@ from whisperx_backend import transcribe as whisperx_transcribe
 
 DOWNLOAD_TIMEOUT_SECONDS = 60.0 * 30  # long-form podcast episodes can take a while to fetch
 MAX_AUDIO_URL_REDIRECTS = 5
+# Multipart boundaries/headers around the file part; generous but bounded.
+MULTIPART_OVERHEAD_BYTES = 1024 * 1024
 
 
 class AudioTooLargeError(Exception):
@@ -176,6 +178,26 @@ async def _parse_transcribe_request(
     """
     content_type = request.headers.get("content-type", "")
     if content_type.startswith("multipart/form-data"):
+        # Enforce the size bound BEFORE Starlette parses the multipart body:
+        # request.form() spools the whole upload to disk first, so a
+        # post-parse check would let an oversized request consume temp
+        # storage before the 413. Content-Length is required (the server
+        # rejects bodies that exceed the declared length at the protocol
+        # level), with slack for multipart framing overhead.
+        declared = request.headers.get("content-length")
+        if declared is None:
+            raise HTTPException(
+                status_code=411, detail="Content-Length is required for multipart uploads"
+            )
+        try:
+            declared_bytes = int(declared)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="invalid Content-Length") from exc
+        if declared_bytes > settings.max_audio_bytes + MULTIPART_OVERHEAD_BYTES:
+            raise AudioTooLargeError(
+                f"multipart request declares {declared_bytes} bytes, exceeding the "
+                f"{settings.max_audio_bytes}-byte limit (MAX_AUDIO_BYTES)"
+            )
         form = await request.form()
         upload = form.get("file")
         fields = {
@@ -269,7 +291,13 @@ def _resolve_host(host: str) -> list[str]:
     return [info[4][0] for info in socket.getaddrinfo(host, None)]
 
 
-def _validate_audio_url_sync(url: str) -> None:
+def _validate_audio_url_sync(url: str) -> str:
+    """Validates the URL and returns the single vetted address the caller
+    must PIN its connection to. Denies every non-global destination
+    (`ipaddress`'s `is_global` is False for private, loopback, link-local,
+    multicast, reserved, unspecified AND shared/CGNAT 100.64.0.0/10 space —
+    the range Tailscale uses — which the old allowlist-of-flags missed).
+    """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise AudioUrlBlockedError(f"audio_url scheme {parsed.scheme!r} is not allowed; use http or https")
@@ -280,27 +308,49 @@ def _validate_audio_url_sync(url: str) -> None:
         addresses = _resolve_host(host)
     except OSError as exc:
         raise AudioUrlBlockedError(f"could not resolve audio_url host {host!r}: {exc}") from exc
+    if not addresses:
+        raise AudioUrlBlockedError(f"audio_url host {host!r} resolved to no addresses")
     for address in addresses:
         ip = ipaddress.ip_address(address)
-        blocked = (
-            ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
-            or ip.is_unspecified
-        )
-        if blocked:
+        if not ip.is_global:
             raise AudioUrlBlockedError(f"audio_url host {host!r} resolves to disallowed address {ip}")
+    return addresses[0]
 
 
-async def _validate_audio_url(url: str, settings: Settings) -> None:
-    """Blocks fetches to loopback/private/link-local/multicast/reserved
-    addresses so a malicious or compromised podcast feed can't use this
-    worker's own network access to reach internal services (metadata
-    endpoints, Tailscale-only hosts, etc). `ALLOW_PRIVATE_AUDIO_URLS` opts
-    an operator out for a deployment that deliberately hosts audio
-    internally.
+async def _validate_audio_url(url: str, settings: Settings) -> Optional[str]:
+    """Blocks fetches to any non-public address so a malicious or
+    compromised podcast feed can't use this worker's own network access to
+    reach internal services (metadata endpoints, Tailscale-only hosts,
+    etc). Returns the vetted address the caller must connect to — the
+    download is PINNED to it, so a DNS answer that changes between
+    validation and connect (DNS rebinding) can never redirect the fetch to
+    a different address than the one checked. `ALLOW_PRIVATE_AUDIO_URLS`
+    opts an operator out (no pinning) for deployments that deliberately
+    host audio internally.
     """
     if settings.allow_private_audio_urls:
-        return
-    await asyncio.to_thread(_validate_audio_url_sync, url)
+        return None
+    return await asyncio.to_thread(_validate_audio_url_sync, url)
+
+
+def _pinned_request(url: str, pinned_address: str) -> tuple[str, dict[str, str], dict[str, Any]]:
+    """Rewrites `url` to connect to `pinned_address` while preserving the
+    original hostname for the Host header and TLS SNI/verification — the
+    connection can only reach the address that was actually validated.
+    """
+    parsed = urlparse(url)
+    host = parsed.hostname or ""
+    ip_host = f"[{pinned_address}]" if ":" in pinned_address else pinned_address
+    netloc = ip_host if parsed.port is None else f"{ip_host}:{parsed.port}"
+    pinned_url = parsed._replace(netloc=netloc).geturl()
+    host_header = host if parsed.port is None else f"{host}:{parsed.port}"
+    headers = {"host": host_header}
+    extensions: dict[str, Any] = {}
+    if parsed.scheme == "https":
+        # httpcore uses sni_hostname for both SNI and certificate
+        # verification, so the cert is still checked against the real name.
+        extensions["sni_hostname"] = host
+    return pinned_url, headers, extensions
 
 
 async def _stage_audio(audio_url: Optional[str], staged_path: Optional[str], settings: Settings) -> str:
@@ -325,8 +375,14 @@ async def _stage_audio(audio_url: Optional[str], staged_path: Optional[str], set
             async with httpx.AsyncClient(follow_redirects=False, timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
                 current_url = audio_url
                 for _ in range(MAX_AUDIO_URL_REDIRECTS + 1):
-                    await _validate_audio_url(current_url, settings)
-                    async with client.stream("GET", current_url) as response:
+                    pinned = await _validate_audio_url(current_url, settings)
+                    if pinned is not None:
+                        request_url, pin_headers, pin_extensions = _pinned_request(current_url, pinned)
+                    else:
+                        request_url, pin_headers, pin_extensions = current_url, {}, {}
+                    async with client.stream(
+                        "GET", request_url, headers=pin_headers, extensions=pin_extensions
+                    ) as response:
                         if response.status_code in (301, 302, 303, 307, 308):
                             location = response.headers.get("location")
                             if not location:
