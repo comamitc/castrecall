@@ -1,0 +1,11 @@
+{
+  "status": "completed",
+  "result": {
+    "segments": [
+      { "speaker": 0, "text": "Trailing-slash base transcript.", "start": 0.0, "end": 2.1 }
+    ],
+    "implementation": "whisperx",
+    "model": "large-v3",
+    "duration": 2.1
+  }
+}

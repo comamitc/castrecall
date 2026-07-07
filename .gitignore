@@ -3,3 +3,9 @@ node_modules/
 *.log
 .DS_Store
 .agent-pipeline/
+
+# worker/whisperx (Python)
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/

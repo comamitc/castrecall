@@ -1,0 +1,5 @@
+{
+  "status": "ok",
+  "implementation": "whisperx",
+  "model": "large-v3"
+}

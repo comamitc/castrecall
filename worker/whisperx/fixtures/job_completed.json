@@ -1,0 +1,10 @@
+{
+  "status": "completed",
+  "result": {
+    "segments": [
+      { "speaker": 0, "text": "Async transcript body.", "start": 0.0, "end": 4.5 }
+    ],
+    "implementation": "whisperx",
+    "duration": 4.5
+  }
+}
