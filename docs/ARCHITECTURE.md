@@ -455,6 +455,8 @@ in `transcripts/remote-stt.ts`'s `transcribeWithRemoteStt`.
 | `warnings` | Provider-reported warnings, if any. |
 | `durationSeconds` | Provider-reported audio duration, if reported. |
 
+`worker/whisperx/` (issue #62) is an optional, self-contained reference implementation of this contract for CUDA hosts — not required by anything above; see its own README.
+
 #### `provenance.quality` fields (issue #41)
 
 A stored transcript's `quality` is computed once, at store time, by

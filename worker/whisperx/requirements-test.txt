@@ -1,0 +1,9 @@
+# Test-only dependencies. Deliberately NOT `-r requirements.txt`: whisperx_backend.py
+# imports `whisperx` lazily (inside transcribe(), not at module scope), so the
+# full pytest suite runs with the backend mocked and never needs torch/whisperx
+# or a GPU installed. See README "Running the tests without a GPU".
+fastapi==0.115.0
+uvicorn==0.30.6
+python-multipart==0.0.9
+httpx==0.27.2
+pytest==8.3.3

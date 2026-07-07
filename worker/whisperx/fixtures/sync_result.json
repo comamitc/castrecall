@@ -1,0 +1,9 @@
+{
+  "segments": [
+    { "speaker": 0, "text": "Welcome to the show.", "start": 0.0, "end": 3.2 },
+    { "speaker": 1, "text": "Thanks for having me.", "start": 3.2, "end": 5.8 }
+  ],
+  "model": "large-v3",
+  "implementation": "whisperx",
+  "duration": 812.4
+}

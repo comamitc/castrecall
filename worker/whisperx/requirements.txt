@@ -1,0 +1,10 @@
+# Reference WhisperX worker — runtime dependencies.
+# Paired base image: nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04, Python 3.11.
+# WhisperX/torch/ctranslate2 installs are fragile if these versions drift —
+# see README "Version matrix" before bumping any of them.
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.9
+httpx==0.27.2
+torch==2.4.1
+whisperx==3.3.1
