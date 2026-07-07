@@ -15,8 +15,8 @@ from conftest import wait_for_status
 def _spy_stage_audio(monkeypatch, captured: list):
     real_stage_audio = app_module._stage_audio
 
-    async def spy(audio_url, staged_path):
-        path = await real_stage_audio(audio_url, staged_path)
+    async def spy(audio_url, staged_path, settings):
+        path = await real_stage_audio(audio_url, staged_path, settings)
         captured.append(path)
         return path
 
@@ -56,8 +56,8 @@ def test_multipart_upload_streamed_to_disk_matches_uploaded_bytes(client, auth_h
     captured_content: list = []
     real_stage_audio = app_module._stage_audio
 
-    async def spy(audio_url, staged_path):
-        path = await real_stage_audio(audio_url, staged_path)
+    async def spy(audio_url, staged_path, settings):
+        path = await real_stage_audio(audio_url, staged_path, settings)
         captured_content.append(pathlib.Path(path).read_bytes())
         return path
 
@@ -138,9 +138,9 @@ def test_temp_file_kept_when_delete_audio_false(monkeypatch):
 
 
 def test_multipart_upload_rejected_by_backpressure_leaves_no_temp_file(monkeypatch):
-    """A multipart upload is streamed to disk before the queue-full check
-    runs (the request body must be consumed either way). A 429 rejection
-    must still clean up that staged file instead of leaking it.
+    """The queue-full check reserves capacity before the request body is
+    read at all, so a full queue must reject a multipart upload without
+    ever staging it to disk in the first place.
     """
     from fastapi.testclient import TestClient
 
@@ -164,6 +164,7 @@ def test_multipart_upload_rejected_by_backpressure_leaves_no_temp_file(monkeypat
 def test_download_failure_marks_job_failed_and_leaves_no_temp_file(client, auth_headers, monkeypatch):
     class _FailingResponse:
         status_code = 503
+        headers: dict = {}
 
         def raise_for_status(self):
             raise RuntimeError("download failed with status 503")
@@ -194,6 +195,7 @@ def test_download_failure_marks_job_failed_and_leaves_no_temp_file(client, auth_
 
     tmp_dir = pathlib.Path(tempfile.gettempdir())
     before = {p.name for p in tmp_dir.glob("whisperx-worker-*")}
+    monkeypatch.setattr(app_module, "_resolve_host", lambda host: ["93.184.216.34"])
     monkeypatch.setattr(app_module.httpx, "AsyncClient", _FailingAsyncClient)
 
     submitted = client.post("/transcribe", headers=auth_headers, json={"audio_url": "https://example.com/gone.mp3"})

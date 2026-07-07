@@ -13,7 +13,7 @@ import app as app_module
 from conftest import wait_for_status
 
 
-async def _fake_stage_audio(audio_url, staged_path):
+async def _fake_stage_audio(audio_url, staged_path, settings):
     return staged_path or "/tmp/fake-staged-audio.mp3"
 
 
@@ -349,6 +349,7 @@ def test_url_downloads_are_bounded_by_max_active_not_max_queued(monkeypatch):
 
     class _SlowResponse:
         status_code = 200
+        headers: dict = {}
 
         def raise_for_status(self):
             return None
@@ -383,6 +384,7 @@ def test_url_downloads_are_bounded_by_max_active_not_max_queued(monkeypatch):
             return _SlowStreamCtx()
 
     with TestClient(app_module.app) as slow_client:
+        monkeypatch.setattr(app_module, "_resolve_host", lambda host: ["93.184.216.34"])
         monkeypatch.setattr(app_module.httpx, "AsyncClient", _SlowAsyncClient)
         monkeypatch.setattr(
             app_module,

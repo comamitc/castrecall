@@ -32,6 +32,9 @@ class Settings:
     delete_audio: bool
     max_active_jobs: int
     max_queued_jobs: int
+    max_audio_bytes: int
+    max_completed_jobs: int
+    allow_private_audio_urls: bool
 
 
 def _bool(raw: Optional[str], default: bool) -> bool:
@@ -73,4 +76,7 @@ def load_settings(env: Optional[Mapping[str, str]] = None) -> Settings:
         delete_audio=_bool(source.get("DELETE_AUDIO"), True),
         max_active_jobs=_int(source.get("MAX_ACTIVE_JOBS"), 1),
         max_queued_jobs=_int(source.get("MAX_QUEUED_JOBS"), 16),
+        max_audio_bytes=_int(source.get("MAX_AUDIO_BYTES"), 2 * 1024 * 1024 * 1024),
+        max_completed_jobs=_int(source.get("MAX_COMPLETED_JOBS"), 200),
+        allow_private_audio_urls=_bool(source.get("ALLOW_PRIVATE_AUDIO_URLS"), False),
     )

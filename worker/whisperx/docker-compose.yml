@@ -16,6 +16,9 @@ services:
       DELETE_AUDIO: ${DELETE_AUDIO:-true}
       MAX_ACTIVE_JOBS: ${MAX_ACTIVE_JOBS:-1}
       MAX_QUEUED_JOBS: ${MAX_QUEUED_JOBS:-16}
+      MAX_AUDIO_BYTES: ${MAX_AUDIO_BYTES:-2147483648}
+      MAX_COMPLETED_JOBS: ${MAX_COMPLETED_JOBS:-200}
+      ALLOW_PRIVATE_AUDIO_URLS: ${ALLOW_PRIVATE_AUDIO_URLS:-false}
     ports:
       # Bound to the host's loopback only — reach it over Tailscale/a private
       # network via an SSH tunnel or a Tailscale-aware reverse proxy, never

@@ -27,6 +27,9 @@ def test_defaults_when_only_token_is_set():
     assert settings.delete_audio is True
     assert settings.max_active_jobs == 1
     assert settings.max_queued_jobs == 16
+    assert settings.max_audio_bytes == 2 * 1024 * 1024 * 1024
+    assert settings.max_completed_jobs == 200
+    assert settings.allow_private_audio_urls is False
 
 
 def test_overrides_are_applied():
@@ -44,6 +47,9 @@ def test_overrides_are_applied():
             "DELETE_AUDIO": "false",
             "MAX_ACTIVE_JOBS": "2",
             "MAX_QUEUED_JOBS": "32",
+            "MAX_AUDIO_BYTES": "1024",
+            "MAX_COMPLETED_JOBS": "5",
+            "ALLOW_PRIVATE_AUDIO_URLS": "true",
         }
     )
     assert settings.bind_host == "0.0.0.0"
@@ -57,3 +63,6 @@ def test_overrides_are_applied():
     assert settings.delete_audio is False
     assert settings.max_active_jobs == 2
     assert settings.max_queued_jobs == 32
+    assert settings.max_audio_bytes == 1024
+    assert settings.max_completed_jobs == 5
+    assert settings.allow_private_audio_urls is True

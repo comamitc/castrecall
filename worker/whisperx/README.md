@@ -176,8 +176,38 @@ naturally defers the episode instead of failing it.
 job's `audio_url` is deferred until `MAX_ACTIVE_JOBS` actually admits it, so
 at most `MAX_ACTIVE_JOBS` audio downloads ever run concurrently — not up to
 `MAX_QUEUED_JOBS` of them. A multipart file upload is streamed straight to
-disk as it's received instead of buffered in memory, since the request
-body has to be consumed regardless of queue capacity.
+disk as it's received instead of buffered in memory. The queue-full check
+reserves capacity *before* the request body is read at all, so a full
+queue rejects a submission without staging any bytes to disk first.
+
+## Audio size limit
+
+`MAX_AUDIO_BYTES` (default 2 GiB) bounds how much audio a single job may
+stage on disk, whether uploaded or downloaded from `audio_url`. A multipart
+upload over the limit aborts the stream and returns `413` immediately. An
+`audio_url` download over the limit aborts the stream and fails the job
+instead (the submit request has already returned `200 queued` by the time
+the download runs), so poll `/jobs/{job_id}` to see the failure.
+
+## Outbound audio_url safety
+
+Podcast enclosure URLs can come from a feed publisher CastRecall doesn't
+control. By default, `audio_url` (and every redirect target it leads to) is
+rejected if it resolves to a loopback, private, link-local, multicast,
+or reserved address — otherwise a malicious/compromised feed could use this
+worker's own network access to reach internal services on the machine or
+network it runs on (metadata endpoints, other Tailscale-only hosts, etc).
+Only `http`/`https` are accepted. Set `ALLOW_PRIVATE_AUDIO_URLS=true` only
+if you deliberately host audio internally and trust every `audio_url` this
+worker will ever receive.
+
+## Completed job retention
+
+`MAX_COMPLETED_JOBS` (default 200) bounds how many completed/failed jobs
+stay queryable in memory at once — the oldest are evicted first once the
+cap is exceeded, so a long-running worker doesn't retain every past
+transcript forever. Polling a job past its retention window returns `404`,
+same as an unknown job id.
 
 ## Running the tests without a GPU
 

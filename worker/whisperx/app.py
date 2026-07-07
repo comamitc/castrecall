@@ -28,11 +28,14 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import ipaddress
+import socket
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urljoin, urlparse
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -43,6 +46,18 @@ from whisperx_backend import check_readiness as whisperx_check_readiness
 from whisperx_backend import transcribe as whisperx_transcribe
 
 DOWNLOAD_TIMEOUT_SECONDS = 60.0 * 30  # long-form podcast episodes can take a while to fetch
+MAX_AUDIO_URL_REDIRECTS = 5
+
+
+class AudioTooLargeError(Exception):
+    """Raised when staged/downloaded audio exceeds `Settings.max_audio_bytes`."""
+
+
+class AudioUrlBlockedError(Exception):
+    """Raised when an `audio_url` (or a redirect target) is disallowed —
+    wrong scheme, or resolves to a loopback/private/link-local/multicast
+    address on the worker's own network (see `_validate_audio_url`).
+    """
 
 
 class JobStore:
@@ -52,23 +67,57 @@ class JobStore:
     (submitting past it returns 429 — CastRecall treats 429 as retryable).
     `max_active` bounds how many transcriptions actually run concurrently
     (a semaphore around the GPU work itself); a single CUDA device can only
-    usefully serialize one WhisperX run at a time by default.
+    usefully serialize one WhisperX run at a time by default. `max_completed_jobs`
+    bounds how many terminal (completed/failed) jobs are kept in memory at
+    once, so a long-running worker doesn't accumulate every past transcript
+    forever (see `mark_terminal`).
     """
 
-    def __init__(self, max_active: int, max_queued: int):
+    def __init__(self, max_active: int, max_queued: int, max_completed_jobs: int):
         self.jobs: dict[str, dict[str, Any]] = {}
         self.max_queued = max_queued
+        self.max_completed_jobs = max_completed_jobs
         self.semaphore = asyncio.Semaphore(max_active)
+        self._reserved = 0
+        self._terminal_order: list[str] = []
 
     def active_count(self) -> int:
         return sum(1 for job in self.jobs.values() if job["status"] in ("queued", "processing"))
+
+    def try_reserve(self) -> bool:
+        """Atomically reserves a queue slot before the request body is read,
+        so a full queue rejects a submission before any bytes are staged to
+        disk. Safe against concurrent submissions because nothing here
+        awaits between the check and the increment.
+        """
+        if self.active_count() + self._reserved >= self.max_queued:
+            return False
+        self._reserved += 1
+        return True
+
+    def release_reservation(self) -> None:
+        self._reserved -= 1
+
+    def commit_reservation(self, job_id: str, entry: dict[str, Any]) -> None:
+        self._reserved -= 1
+        self.jobs[job_id] = entry
+
+    def mark_terminal(self, job_id: str) -> None:
+        """Evicts the oldest terminal jobs once more than `max_completed_jobs`
+        are retained, so completed/failed transcripts don't accumulate in
+        memory indefinitely on a long-running worker.
+        """
+        self._terminal_order.append(job_id)
+        while len(self._terminal_order) > self.max_completed_jobs:
+            oldest = self._terminal_order.pop(0)
+            self.jobs.pop(oldest, None)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = load_settings()
     app.state.settings = settings
-    app.state.store = JobStore(settings.max_active_jobs, settings.max_queued_jobs)
+    app.state.store = JobStore(settings.max_active_jobs, settings.max_queued_jobs, settings.max_completed_jobs)
     yield
 
 
@@ -115,7 +164,9 @@ def _coerce_int(raw: Any, default: int) -> int:
     return int(raw)
 
 
-async def _parse_transcribe_request(request: Request) -> tuple[dict[str, Any], Optional[str], Optional[str]]:
+async def _parse_transcribe_request(
+    request: Request, settings: Settings
+) -> tuple[dict[str, Any], Optional[str], Optional[str]]:
     """Returns (fields, staged_path, uploaded_filename).
 
     Multipart uploads are streamed straight to a temp file in chunks here
@@ -138,19 +189,25 @@ async def _parse_transcribe_request(request: Request) -> tuple[dict[str, Any], O
         }
         if upload is not None and hasattr(upload, "read"):
             filename = getattr(upload, "filename", None)
-            path = await _stream_upload_to_tempfile(upload, filename)
+            path = await _stream_upload_to_tempfile(upload, filename, settings.max_audio_bytes)
             return fields, path, filename
         return fields, None, None
     body = await request.json() if await request.body() else {}
     return body, None, None
 
 
-async def _stream_upload_to_tempfile(upload: Any, filename: Optional[str]) -> str:
+async def _stream_upload_to_tempfile(upload: Any, filename: Optional[str], max_bytes: int) -> str:
     suffix = Path(filename or "").suffix or ".mp3"
     fd, path = tempfile.mkstemp(prefix="whisperx-worker-", suffix=suffix)
+    total = 0
     try:
         with open(fd, "wb") as f:
             while chunk := await upload.read(1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise AudioTooLargeError(
+                        f"uploaded audio exceeds the {max_bytes}-byte limit (MAX_AUDIO_BYTES)"
+                    )
                 f.write(chunk)
         return path
     except Exception:
@@ -161,40 +218,103 @@ async def _stream_upload_to_tempfile(upload: Any, filename: Optional[str]) -> st
 async def _submit_transcribe(request: Request) -> dict[str, str]:
     settings = get_settings(request)
     store = get_store(request)
-    fields, staged_path, filename = await _parse_transcribe_request(request)
-    audio_url = fields.get("audio_url") or None
 
-    if not audio_url and staged_path is None:
-        raise HTTPException(status_code=400, detail="audio_url or an uploaded file is required")
-
-    if store.active_count() >= store.max_queued:
-        if staged_path:
-            Path(staged_path).unlink(missing_ok=True)
+    # Reserve queue capacity before reading the request body at all: a full
+    # queue must reject the submission before staging any audio to disk,
+    # not after (see AudioTooLargeError finding — a full queue was still
+    # accepting and writing a whole upload before returning 429).
+    if not store.try_reserve():
         raise HTTPException(status_code=429, detail="worker queue is full; try again later")
 
-    opts = TranscribeOptions(
-        model=fields.get("model") or settings.model,
-        language=fields.get("language") or settings.language,
-        batch_size=_coerce_int(fields.get("batch_size"), settings.batch_size),
-        compute_type=fields.get("compute_type") or settings.compute_type,
-        timestamps=_coerce_bool(fields.get("timestamps"), True),
-        diarize=_coerce_bool(fields.get("diarize"), settings.diarize),
-    )
+    staged_path: Optional[str] = None
+    try:
+        fields, staged_path, filename = await _parse_transcribe_request(request, settings)
+        audio_url = fields.get("audio_url") or None
 
-    job_id = str(uuid.uuid4())
-    store.jobs[job_id] = {"status": "queued", "result": None, "error": None}
+        if not audio_url and staged_path is None:
+            raise HTTPException(status_code=400, detail="audio_url or an uploaded file is required")
+
+        opts = TranscribeOptions(
+            model=fields.get("model") or settings.model,
+            language=fields.get("language") or settings.language,
+            batch_size=_coerce_int(fields.get("batch_size"), settings.batch_size),
+            compute_type=fields.get("compute_type") or settings.compute_type,
+            timestamps=_coerce_bool(fields.get("timestamps"), True),
+            diarize=_coerce_bool(fields.get("diarize"), settings.diarize),
+        )
+
+        job_id = str(uuid.uuid4())
+        store.commit_reservation(job_id, {"status": "queued", "result": None, "error": None})
+    except AudioTooLargeError as exc:
+        store.release_reservation()
+        if staged_path:
+            Path(staged_path).unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    except Exception:
+        store.release_reservation()
+        if staged_path:
+            Path(staged_path).unlink(missing_ok=True)
+        raise
+
     asyncio.create_task(
         _run_job(job_id, audio_url=audio_url, staged_path=staged_path, opts=opts, settings=settings, store=store)
     )
     return {"job_id": job_id, "status": "queued"}
 
 
-async def _stage_audio(audio_url: Optional[str], staged_path: Optional[str]) -> str:
+def _resolve_host(host: str) -> list[str]:
+    """Thin wrapper around `socket.getaddrinfo` so tests can substitute
+    resolved addresses without real DNS/network access.
+    """
+    return [info[4][0] for info in socket.getaddrinfo(host, None)]
+
+
+def _validate_audio_url_sync(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise AudioUrlBlockedError(f"audio_url scheme {parsed.scheme!r} is not allowed; use http or https")
+    host = parsed.hostname
+    if not host:
+        raise AudioUrlBlockedError("audio_url has no hostname")
+    try:
+        addresses = _resolve_host(host)
+    except OSError as exc:
+        raise AudioUrlBlockedError(f"could not resolve audio_url host {host!r}: {exc}") from exc
+    for address in addresses:
+        ip = ipaddress.ip_address(address)
+        blocked = (
+            ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved
+            or ip.is_unspecified
+        )
+        if blocked:
+            raise AudioUrlBlockedError(f"audio_url host {host!r} resolves to disallowed address {ip}")
+
+
+async def _validate_audio_url(url: str, settings: Settings) -> None:
+    """Blocks fetches to loopback/private/link-local/multicast/reserved
+    addresses so a malicious or compromised podcast feed can't use this
+    worker's own network access to reach internal services (metadata
+    endpoints, Tailscale-only hosts, etc). `ALLOW_PRIVATE_AUDIO_URLS` opts
+    an operator out for a deployment that deliberately hosts audio
+    internally.
+    """
+    if settings.allow_private_audio_urls:
+        return
+    await asyncio.to_thread(_validate_audio_url_sync, url)
+
+
+async def _stage_audio(audio_url: Optional[str], staged_path: Optional[str], settings: Settings) -> str:
     """Returns the local path to transcribe. An already-staged upload is
     returned as-is; an `audio_url` is downloaded here instead — called only
     once `store.semaphore` is held (see `_run_job`), so at most
     `MAX_ACTIVE_JOBS` downloads ever run concurrently instead of up to
     `MAX_QUEUED_JOBS`.
+
+    Every hop (the initial URL and each redirect target) is re-validated by
+    `_validate_audio_url` and the download is capped at
+    `settings.max_audio_bytes`, aborting the stream as soon as it's crossed
+    — redirects aren't followed automatically by httpx here specifically so
+    a redirect to a disallowed address can't bypass the check.
     """
     if staged_path is not None:
         return staged_path
@@ -202,12 +322,39 @@ async def _stage_audio(audio_url: Optional[str], staged_path: Optional[str]) -> 
     fd, path = tempfile.mkstemp(prefix="whisperx-worker-", suffix=suffix)
     try:
         with open(fd, "wb") as f:
-            async with httpx.AsyncClient(follow_redirects=True, timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
-                async with client.stream("GET", audio_url) as response:
-                    response.raise_for_status()
-                    async for chunk in response.aiter_bytes():
-                        f.write(chunk)
-        return path
+            async with httpx.AsyncClient(follow_redirects=False, timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
+                current_url = audio_url
+                for _ in range(MAX_AUDIO_URL_REDIRECTS + 1):
+                    await _validate_audio_url(current_url, settings)
+                    async with client.stream("GET", current_url) as response:
+                        if response.status_code in (301, 302, 303, 307, 308):
+                            location = response.headers.get("location")
+                            if not location:
+                                raise AudioUrlBlockedError("redirect response missing Location header")
+                            current_url = urljoin(current_url, location)
+                            continue
+                        response.raise_for_status()
+                        max_bytes = settings.max_audio_bytes
+                        content_length = response.headers.get("content-length")
+                        if content_length is not None:
+                            try:
+                                if int(content_length) > max_bytes:
+                                    raise AudioTooLargeError(
+                                        f"audio_url reports {content_length} bytes, exceeding the "
+                                        f"{max_bytes}-byte limit (MAX_AUDIO_BYTES)"
+                                    )
+                            except ValueError:
+                                pass
+                        total = 0
+                        async for chunk in response.aiter_bytes():
+                            total += len(chunk)
+                            if total > max_bytes:
+                                raise AudioTooLargeError(
+                                    f"audio_url download exceeds the {max_bytes}-byte limit (MAX_AUDIO_BYTES)"
+                                )
+                            f.write(chunk)
+                        return path
+                raise AudioUrlBlockedError("audio_url redirected too many times")
     except Exception:
         Path(path).unlink(missing_ok=True)
         raise
@@ -226,7 +373,7 @@ async def _run_job(
     audio_path: Optional[str] = None
     try:
         async with store.semaphore:
-            audio_path = await _stage_audio(audio_url, staged_path)
+            audio_path = await _stage_audio(audio_url, staged_path, settings)
             raw = await asyncio.to_thread(whisperx_transcribe, audio_path, opts, settings.hf_token)
         store.jobs[job_id]["status"] = "completed"
         store.jobs[job_id]["result"] = _normalize_result(raw)
@@ -238,6 +385,7 @@ async def _run_job(
         # failure) unless the operator explicitly opts to keep it.
         if audio_path and settings.delete_audio:
             Path(audio_path).unlink(missing_ok=True)
+        store.mark_terminal(job_id)
 
 
 def _normalize_result(raw: dict[str, Any]) -> dict[str, Any]:
