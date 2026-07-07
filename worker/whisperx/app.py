@@ -291,7 +291,7 @@ def _resolve_host(host: str) -> list[str]:
     return [info[4][0] for info in socket.getaddrinfo(host, None)]
 
 
-def _validate_audio_url_sync(url: str) -> str:
+def _validate_audio_url_sync(url: str) -> list[str]:
     """Validates the URL and returns the single vetted address the caller
     must PIN its connection to. Denies every non-global destination
     (`ipaddress`'s `is_global` is False for private, loopback, link-local,
@@ -312,12 +312,15 @@ def _validate_audio_url_sync(url: str) -> str:
         raise AudioUrlBlockedError(f"audio_url host {host!r} resolved to no addresses")
     for address in addresses:
         ip = ipaddress.ip_address(address)
-        if not ip.is_global:
+        # is_multicast is checked explicitly: some multicast ranges (GLOP,
+        # 224.0.1.0/24 …) are "globally routable" and pass is_global, but a
+        # multicast destination is never a legitimate audio host.
+        if ip.is_multicast or not ip.is_global:
             raise AudioUrlBlockedError(f"audio_url host {host!r} resolves to disallowed address {ip}")
-    return addresses[0]
+    return list(dict.fromkeys(addresses))
 
 
-async def _validate_audio_url(url: str, settings: Settings) -> Optional[str]:
+async def _validate_audio_url(url: str, settings: Settings) -> Optional[list[str]]:
     """Blocks fetches to any non-public address so a malicious or
     compromised podcast feed can't use this worker's own network access to
     reach internal services (metadata endpoints, Tailscale-only hosts,
@@ -375,41 +378,56 @@ async def _stage_audio(audio_url: Optional[str], staged_path: Optional[str], set
             async with httpx.AsyncClient(follow_redirects=False, timeout=DOWNLOAD_TIMEOUT_SECONDS) as client:
                 current_url = audio_url
                 for _ in range(MAX_AUDIO_URL_REDIRECTS + 1):
-                    pinned = await _validate_audio_url(current_url, settings)
-                    if pinned is not None:
-                        request_url, pin_headers, pin_extensions = _pinned_request(current_url, pinned)
-                    else:
-                        request_url, pin_headers, pin_extensions = current_url, {}, {}
-                    async with client.stream(
-                        "GET", request_url, headers=pin_headers, extensions=pin_extensions
-                    ) as response:
-                        if response.status_code in (301, 302, 303, 307, 308):
-                            location = response.headers.get("location")
-                            if not location:
-                                raise AudioUrlBlockedError("redirect response missing Location header")
-                            current_url = urljoin(current_url, location)
+                    validated = await _validate_audio_url(current_url, settings)
+                    candidates: list[Optional[str]] = list(validated) if validated else [None]
+                    redirect_to: Optional[str] = None
+                    for index, address in enumerate(candidates):
+                        if address is not None:
+                            request_url, pin_headers, pin_extensions = _pinned_request(current_url, address)
+                        else:
+                            request_url, pin_headers, pin_extensions = current_url, {}, {}
+                        try:
+                            async with client.stream(
+                                "GET", request_url, headers=pin_headers, extensions=pin_extensions
+                            ) as response:
+                                if response.status_code in (301, 302, 303, 307, 308):
+                                    location = response.headers.get("location")
+                                    if not location:
+                                        raise AudioUrlBlockedError("redirect response missing Location header")
+                                    redirect_to = urljoin(current_url, location)
+                                    break
+                                response.raise_for_status()
+                                max_bytes = settings.max_audio_bytes
+                                content_length = response.headers.get("content-length")
+                                if content_length is not None:
+                                    try:
+                                        if int(content_length) > max_bytes:
+                                            raise AudioTooLargeError(
+                                                f"audio_url reports {content_length} bytes, exceeding the "
+                                                f"{max_bytes}-byte limit (MAX_AUDIO_BYTES)"
+                                            )
+                                    except ValueError:
+                                        pass
+                                total = 0
+                                async for chunk in response.aiter_bytes():
+                                    total += len(chunk)
+                                    if total > max_bytes:
+                                        raise AudioTooLargeError(
+                                            f"audio_url download exceeds the {max_bytes}-byte limit (MAX_AUDIO_BYTES)"
+                                        )
+                                    f.write(chunk)
+                                return path
+                        except httpx.TransportError:
+                            # Connection-level failure on THIS validated
+                            # address: try the next one. Only transport
+                            # errors fall through — HTTP responses are
+                            # authoritative for the host, not the address.
+                            if index == len(candidates) - 1:
+                                raise
                             continue
-                        response.raise_for_status()
-                        max_bytes = settings.max_audio_bytes
-                        content_length = response.headers.get("content-length")
-                        if content_length is not None:
-                            try:
-                                if int(content_length) > max_bytes:
-                                    raise AudioTooLargeError(
-                                        f"audio_url reports {content_length} bytes, exceeding the "
-                                        f"{max_bytes}-byte limit (MAX_AUDIO_BYTES)"
-                                    )
-                            except ValueError:
-                                pass
-                        total = 0
-                        async for chunk in response.aiter_bytes():
-                            total += len(chunk)
-                            if total > max_bytes:
-                                raise AudioTooLargeError(
-                                    f"audio_url download exceeds the {max_bytes}-byte limit (MAX_AUDIO_BYTES)"
-                                )
-                            f.write(chunk)
-                        return path
+                    if redirect_to is not None:
+                        current_url = redirect_to
+                        continue
                 raise AudioUrlBlockedError("audio_url redirected too many times")
     except Exception:
         Path(path).unlink(missing_ok=True)

@@ -201,9 +201,25 @@ def test_download_connects_to_the_validated_address_not_a_second_dns_answer(monk
     assert https_extensions == {"sni_hostname": "public.example"}
 
 
-def test_validator_returns_the_pinned_address(monkeypatch):
-    _patch_resolve_host(monkeypatch, {"public.example": ["93.184.216.34"]})
-    assert app_module._validate_audio_url_sync("http://public.example/ep.mp3") == "93.184.216.34"
+def test_validator_returns_all_pinned_addresses(monkeypatch):
+    _patch_resolve_host(monkeypatch, {"public.example": ["93.184.216.34", "93.184.216.35"]})
+    assert app_module._validate_audio_url_sync("http://public.example/ep.mp3") == [
+        "93.184.216.34",
+        "93.184.216.35",
+    ]
+
+
+def test_globally_routable_multicast_is_blocked(monkeypatch, client, auth_headers):
+    """224.0.1.1 passes is_global (GLOP/global multicast ranges are
+    'globally routable'), but a multicast destination is never a legitimate
+    audio host -- multicast is denied explicitly."""
+    _patch_resolve_host(monkeypatch, {"mcast.example": ["224.0.1.1"]})
+    submitted = client.post(
+        "/transcribe", headers=auth_headers, json={"audio_url": "http://mcast.example/ep.mp3"}
+    )
+    job_id = submitted.json()["job_id"]
+    body = wait_for_status(client, job_id, auth_headers, "failed")
+    assert "disallowed address" in body["error"]
 
 
 # --- Audio size ceiling -------------------------------------------------------
