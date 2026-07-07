@@ -41,6 +41,9 @@ function authHeaders(config) {
     return config.stt.remoteToken ? { authorization: `Bearer ${config.stt.remoteToken}` } : {};
 }
 const ACCEPTS_VALUES = new Set(["audio_url", "upload", "both"]);
+const HEALTH_STATUS_VALUES = new Set(["ok", "degraded"]);
+/** Bounded so a host that accepts the connection but never answers can't hang a scheduled run (issue #63 review). */
+const HEALTH_TIMEOUT_MS = 10_000;
 /** `undefined` (not present/valid) unless the raw value is a real boolean — never coerced from truthy/falsy. */
 function optionalBool(value) {
     return typeof value === "boolean" ? value : undefined;
@@ -58,6 +61,9 @@ function malformedHealthShapeReason(body) {
     if (raw.status !== undefined && typeof raw.status !== "string") {
         return "health endpoint returned a malformed shape (`status` is not a string).";
     }
+    if (raw.status !== undefined && !HEALTH_STATUS_VALUES.has(raw.status)) {
+        return `health endpoint returned a malformed shape (\`status\` is not one of ok/degraded: "${raw.status}").`;
+    }
     if (raw.implementation !== undefined && typeof raw.implementation !== "string") {
         return "health endpoint returned a malformed shape (`implementation` is not a string).";
     }
@@ -70,9 +76,16 @@ function malformedHealthShapeReason(body) {
     if (raw.model_ready !== undefined && typeof raw.model_ready !== "boolean") {
         return "health endpoint returned a malformed shape (`model_ready` is not a boolean).";
     }
-    if (raw.capabilities !== undefined &&
-        (typeof raw.capabilities !== "object" || raw.capabilities === null || Array.isArray(raw.capabilities))) {
-        return "health endpoint returned a malformed shape (`capabilities` is not an object).";
+    if (raw.capabilities !== undefined) {
+        if (typeof raw.capabilities !== "object" || raw.capabilities === null || Array.isArray(raw.capabilities)) {
+            return "health endpoint returned a malformed shape (`capabilities` is not an object).";
+        }
+        if (raw.capabilities.diarization !== undefined && typeof raw.capabilities.diarization !== "boolean") {
+            return "health endpoint returned a malformed shape (`capabilities.diarization` is not a boolean).";
+        }
+        if (raw.capabilities.timestamps !== undefined && typeof raw.capabilities.timestamps !== "boolean") {
+            return "health endpoint returned a malformed shape (`capabilities.timestamps` is not a boolean).";
+        }
     }
     if (raw.accepts !== undefined && !ACCEPTS_VALUES.has(raw.accepts)) {
         return `health endpoint returned a malformed shape (\`accepts\` is not one of audio_url/upload/both: "${raw.accepts}").`;
@@ -80,18 +93,48 @@ function malformedHealthShapeReason(body) {
     return undefined;
 }
 /**
+ * Scrubs the configured remote-stt token out of health-derived strings
+ * before they reach setup/status output: `reason`/`implementation`/`version`/
+ * `model` can echo raw bytes from the remote body (e.g. via the malformed-shape
+ * message, or a misconfigured/hostile host reflecting the Authorization header
+ * back), which would otherwise leak the bearer token (issue #63 review).
+ */
+function redactToken(value, token) {
+    if (!value || !token)
+        return value;
+    return value.split(token).join("[redacted]");
+}
+function redactHealth(health, token) {
+    if (!token)
+        return health;
+    return {
+        ...health,
+        reason: redactToken(health.reason, token),
+        implementation: redactToken(health.implementation, token),
+        version: redactToken(health.version, token),
+        model: redactToken(health.model, token),
+    };
+}
+/**
  * Readiness probe for `castrecall_setup`/`castrecall_setup_status` — outside
  * the billed ladder path, so it deliberately never throws, mirroring
  * `detectLocalWhisper`. Tri-state (issue #63): `unavailable` blocks a
  * corpus-scale run (see buildTranscriptionPreflight), `degraded` never does.
  */
-export async function remoteSttHealth(config, fetchImpl = fetch) {
+export async function remoteSttHealth(config, fetchImpl = fetch, timeoutMs = HEALTH_TIMEOUT_MS) {
+    const health = await remoteSttHealthUnredacted(config, fetchImpl, timeoutMs);
+    return redactHealth(health, config.stt.remoteToken);
+}
+async function remoteSttHealthUnredacted(config, fetchImpl, timeoutMs) {
     if (!config.stt.remoteBaseUrl) {
         return { state: "unavailable", reason: "CASTRECALL_REMOTE_STT_BASE_URL is not set." };
     }
     const base = trimmedBaseUrl(config.stt.remoteBaseUrl);
     try {
-        const response = await fetchImpl(`${base}/health`, { headers: authHeaders(config) });
+        const response = await fetchImpl(`${base}/health`, {
+            headers: authHeaders(config),
+            signal: AbortSignal.timeout(timeoutMs),
+        });
         if (response.status === 401 || response.status === 403) {
             return {
                 state: "unavailable",

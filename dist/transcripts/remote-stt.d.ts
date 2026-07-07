@@ -71,5 +71,5 @@ export type RemoteSttHealth = {
  * `detectLocalWhisper`. Tri-state (issue #63): `unavailable` blocks a
  * corpus-scale run (see buildTranscriptionPreflight), `degraded` never does.
  */
-export declare function remoteSttHealth(config: ResolvedConfig, fetchImpl?: FetchLike): Promise<RemoteSttHealth>;
+export declare function remoteSttHealth(config: ResolvedConfig, fetchImpl?: FetchLike, timeoutMs?: number): Promise<RemoteSttHealth>;
 export declare function transcribeWithRemoteStt(config: ResolvedConfig, audioUrl: string, deps?: RemoteSttDeps): Promise<SttResult>;

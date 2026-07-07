@@ -324,6 +324,51 @@ describe("remoteSttHealth", () => {
     const result = await remoteSttHealth(config(), fetchImpl);
     expect(JSON.stringify(result)).not.toContain(TOKEN);
   });
+
+  describe("token redaction (issue #63 review)", () => {
+    it("redacts the configured token if a hostile/misconfigured host echoes it into implementation/version/model", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(
+          JSON.stringify({
+            status: "ok",
+            implementation: `whisperx Authorization: Bearer ${TOKEN}`,
+            version: TOKEN,
+            model: `large-v3-${TOKEN}`,
+          }),
+          { status: 200 },
+        )) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(JSON.stringify(result)).not.toContain(TOKEN);
+      expect(result.implementation).toContain("[redacted]");
+      expect(result.version).toBe("[redacted]");
+      expect(result.model).toBe(`large-v3-[redacted]`);
+    });
+
+    it("redacts the token if it is echoed into the malformed-shape `status`/`accepts` reason text", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: TOKEN }), { status: 200 })) as FetchLike;
+      const result = await remoteSttHealth(config(), fetchImpl);
+      expect(result.state).toBe("degraded");
+      expect(result.reason).not.toContain(TOKEN);
+      expect(result.reason).toContain("[redacted]");
+    });
+
+    it("does nothing when no token is configured (nothing to redact)", async () => {
+      const fetchImpl: FetchLike = (async () =>
+        new Response(JSON.stringify({ status: "ok", model: "large-v3" }), { status: 200 })) as FetchLike;
+      const noTokenConfig = resolveConfig(
+        {},
+        {
+          CASTRECALL_ENABLE_STT: "true",
+          CASTRECALL_STT_PROVIDER: "remote-stt",
+          CASTRECALL_REMOTE_STT_BASE_URL: BASE_URL,
+          CASTRECALL_DATA_DIR: DATA_DIR,
+        },
+      );
+      const result = await remoteSttHealth(noTokenConfig, fetchImpl);
+      expect(result.model).toBe("large-v3");
+    });
+  });
 });
 
 describe("transcribeWithRemoteStt — sync (inline) happy path", () => {

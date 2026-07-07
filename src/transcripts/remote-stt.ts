@@ -170,6 +170,29 @@ function malformedHealthShapeReason(body: unknown): string | undefined {
 }
 
 /**
+ * Scrubs the configured remote-stt token out of health-derived strings
+ * before they reach setup/status output: `reason`/`implementation`/`version`/
+ * `model` can echo raw bytes from the remote body (e.g. via the malformed-shape
+ * message, or a misconfigured/hostile host reflecting the Authorization header
+ * back), which would otherwise leak the bearer token (issue #63 review).
+ */
+function redactToken(value: string | undefined, token: string | undefined): string | undefined {
+  if (!value || !token) return value;
+  return value.split(token).join("[redacted]");
+}
+
+function redactHealth(health: RemoteSttHealth, token: string | undefined): RemoteSttHealth {
+  if (!token) return health;
+  return {
+    ...health,
+    reason: redactToken(health.reason, token),
+    implementation: redactToken(health.implementation, token),
+    version: redactToken(health.version, token),
+    model: redactToken(health.model, token),
+  };
+}
+
+/**
  * Readiness probe for `castrecall_setup`/`castrecall_setup_status` — outside
  * the billed ladder path, so it deliberately never throws, mirroring
  * `detectLocalWhisper`. Tri-state (issue #63): `unavailable` blocks a
@@ -179,6 +202,15 @@ export async function remoteSttHealth(
   config: ResolvedConfig,
   fetchImpl: FetchLike = fetch,
   timeoutMs: number = HEALTH_TIMEOUT_MS,
+): Promise<RemoteSttHealth> {
+  const health = await remoteSttHealthUnredacted(config, fetchImpl, timeoutMs);
+  return redactHealth(health, config.stt.remoteToken);
+}
+
+async function remoteSttHealthUnredacted(
+  config: ResolvedConfig,
+  fetchImpl: FetchLike,
+  timeoutMs: number,
 ): Promise<RemoteSttHealth> {
   if (!config.stt.remoteBaseUrl) {
     return { state: "unavailable", reason: "CASTRECALL_REMOTE_STT_BASE_URL is not set." };
